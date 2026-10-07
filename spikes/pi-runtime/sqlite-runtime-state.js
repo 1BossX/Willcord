@@ -9,8 +9,9 @@ export class RuntimeStateError extends Error {
 
 /** Durable job/root counters and parent-child waits for the P0 runtime seam. */
 export class SqliteRuntimeStateStore {
-  constructor(filename) {
-    this.db = new Database(filename);
+  constructor(filename, { db } = {}) {
+    this.ownsDatabase = !db;
+    this.db = db ?? new Database(filename);
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('synchronous = FULL');
     this.db.pragma('foreign_keys = ON');
@@ -19,7 +20,7 @@ export class SqliteRuntimeStateStore {
   }
 
   close() {
-    this.db.close();
+    if (this.ownsDatabase) this.db.close();
   }
 
   createJob({ jobId, rootJobId = jobId, parentJobId = null, maxTokens, maxSteps }) {

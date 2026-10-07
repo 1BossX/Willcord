@@ -101,3 +101,59 @@ and normative RFC fixtures are still production work. Process/data-directory
 exclusive ownership, authenticated transport, lifecycle blocking persistence,
 RPC dispatch, result acknowledgments and full Coordinator scheduling are also
 not implemented by this spike.
+
+`execution-coordinator.js` is the first worker-role integration. It uses the
+checkpoint store's **same SQLite connection** for job/root counters, ordered
+history, lifecycle, generation, attempts and immutable worker request bindings.
+Assistant usage + complete intent batch + bindings + authorization lifecycle
+commit in one transaction. A binding/checkpoint failure rolls all of them back
+and leaves durable `needs_attention`, even when Pi converts a hook exception
+into a tool error. Lifecycle success is never inferred from Pi JSONL.
+
+`createJob()` durably records the user request. `runStep()` issues at most one
+actual Pi model request only for a ready job, commits normalized usage once,
+then accepts/executes serial original worker requests. Terminal assistant history
+and completed lifecycle commit together. `recover()` fences interrupted sessions,
+imports cached worker results or executes authoritatively never-accepted original
+intents without regenerating the model turn. It holds known active observations
+and persists ambiguity as `needs_attention`. Repeated automatic recovery never
+clears a model attempt with unknown final usage or failed batch authorization.
+
+`cancel()` persists intent and invalidates generation before aborting Pi. A late
+provider response cannot commit usage, intent, effects or terminal lifecycle.
+Already-running worker facts may still be cached by the worker and later imported;
+a missing result stays blocked. Pending calls receive not-executed error results
+only with authoritative proof of no worker acceptance. Resolved cancellation
+never starts another model request. Cancellation lifecycle is durable; this
+Coordinator does **not** append the SDK's aborted assistant stream to history.
+
+Pi normalized usage counts `input + cacheRead + cacheWrite` as input and `output`
+as output, because pinned provider adapters report cache categories separately.
+This is token accounting, not dollar billing. `totalTokens` is not added again.
+Final usage commits once per generation despite repeated tool hooks. Job/root
+ceilings gate tools (including between serial worker acceptances) and the next
+model request. A separate durable per-root/job attempt cap is reserved before
+starting the model, so empty crashes/cancellations cannot retry indefinitely.
+Interrupted provider attempts without final usage remain blocked; already
+accounted counters survive restart, but unknown provider costs cannot be billed
+exactly or guaranteed below a strict monetary ceiling.
+
+This stage is a **single-owner spike** with injected fake worker transport and
+host-verified identity. It integrates worker execution, recovery, lifecycle and
+budgets. It does not integrate `delegate`, durable parent/child waits or matching
+child completion into the Coordinator yet. Those remain the next P0 integration
+PR. Production ownership locks, remote cancellation/cleanup, Rust/WSS and
+RFC8785 request interoperability remain deferred.
+
+Before accepting either a live or recovered call, the Coordinator validates its
+original stored arguments with the same public Pi `validateToolArguments` API.
+Pi validates each current call before its hook, but a hook commits the whole
+batch, including later unvalidated calls. Invalid arguments receive a paired
+not-executed result only after trusted absence proof. This spike also rejects
+coercion or prepareArguments transformations to keep executed payload identical
+to the original intent/hash; normalized execution-payload persistence is deferred.
+
+Missing final usage is derived from the durable attempt/usage row relationship,
+not a transient lifecycle marker. Recovery fences generation and records that
+blocked decision in the same opening transaction; runStep independently checks
+for an unresolved attempt even if a stale lifecycle says ready.

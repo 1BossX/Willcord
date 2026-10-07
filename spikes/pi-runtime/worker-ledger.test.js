@@ -79,6 +79,10 @@ test('retained floor, ledger loss/change, hash contradictions and missing bindin
   assert.throws(() => f.worker.accept(f.requests[0]), /deduplication proof/);
   assert.throws(() => f.worker.accept({ ...f.requests[0], jobId: 'another-job' }), /deduplication proof/, 'retired call IDs retain cross-job dedup proof');
   assert.equal(f.reconcile('call-1', f.worker, { ...f.worker.identity, ledgerId: 'changed' }).action, 'needs_attention');
+  const replacement = new SqliteWorkerLedger(join(f.root, 'replacement.sqlite'), { workerId: 'worker', bootId: 'replacement-boot' });
+  t.after(() => replacement.close());
+  assert.notEqual(replacement.identity.ledgerId, f.worker.identity.ledgerId);
+  assert.equal(f.reconcile('call-1', replacement, replacement.identity).action, 'needs_attention', 'fresh real SQLite ledger cannot prove absence in the original ledger');
   assert.equal(f.reconcile('call-1', { identity: f.worker.identity, observe() { throw new Error('lost'); } }).action, 'needs_attention');
   assert.equal(f.reconcile('call-1', f.worker, null).action, 'needs_attention');
   f.host.db.prepare('DELETE FROM host_worker_bindings WHERE call_id = ?').run('call-1');

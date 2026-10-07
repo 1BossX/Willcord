@@ -9,8 +9,8 @@
 
 | 项目 | 需要时间 | 要求 | 状态 |
 |---|---|---|---|
-| 远端 Git 仓库 | 推送代码前 | GitHub/GitLab 等仓库地址、可推送权限；提供组织/命名约定及公开/私有选择 | 待提供 |
-| 模型供应商和模型名 | P0 实际模型验证前 | 指定兼容 provider/model；密钥通过安全环境变量注入 | 待决定 |
+| 远端 Git 仓库 | 推送代码前 | 私有 GitHub 仓库 `1BossX/WorkerPlane`；当前 Git CLI 身份具备 `repo` 权限 | 已配置 |
+| 模型供应商和模型名 | P0 实际模型验证前 | OpenRouter + `deepseek/deepseek-v4.1-flash`；`OPENROUTER_KEY` 已在本机 `~/.zshrc` 配置，运行时映射为 `OPENROUTER_API_KEY`，不写入仓库 | 已验证真实 usage 和 Pi 端到端取消；取消请求最终费用未知 |
 | 第一台 worker | P2 联调前 | 可安装 Rust worker 的 Linux 或 macOS 机器；有管理员权限安装/启动服务 | 待准备 |
 | 主节点可访问地址 | P2 worker 联调前 | worker 能出站访问的 HTTPS/WSS 地址；开发阶段可用临时隧道或测试网络 | 待准备 |
 | 第二台 worker | P5 双机委派联调前 | 第二台 Linux/macOS 机器及唯一 worker 身份/token | 待准备 |
@@ -25,19 +25,19 @@
 - [x] 纳入最终架构和开发阶段验收文档。
 - [x] P0 Pi SDK spike：固定 Pi SDK 1.0.4；faux-provider 验证工具隔离、执行前完整调用 checkpoint seam、串行调用、transcript 恢复、取消信号、预算 gate 和委派等待 seam。
 - [x] P0 SQLite checkpoint adapter：整轮/工具意图事务提交、幂等重试、调用序号、派发/结果状态约束；已从真实 Pi hook 集成测试，SQLite 重开后保留待对账调用。
-- [ ] P0 剩余验收：选择 provider/model 并安全配置密钥，验证真实 provider 的取消与 usage；覆盖 Pi transcript 和 SQLite 双存储崩溃对账、未决 RPC/worker 账本恢复、job/root 累计预算及持久父子等待。
+- [ ] P0 剩余验收：验证 Pi transcript 和 SQLite 双存储崩溃对账、未决 RPC/worker 账本恢复；将 SQLite job/root 预算和父子等待 adapter 接入 ExecutionCoordinator 并完成竞争/重启验收。
 - [ ] 初始化 TypeScript/Rust workspace、CI 与协议 Schema。
 - [ ] 写入数据库初始 migration 与部署模板。
 
-P0 不需要真实 worker、域名或线上主机。已完成的 faux-provider spike 证明 Pi SDK seam 与应用侧编排可行，但没有外部模型请求。真实 provider 取消与 usage 尚需用户选定 provider/model，并在环境中安全配置密钥；mock 结果不能替代这一验收。
+P0 不需要真实 worker、域名或线上主机。用户已选择 OpenRouter + `deepseek/deepseek-v4.1-flash`，并在 `~/.zshrc` 配置 `OPENROUTER_KEY`。普通沙盒网络无法解析外部 DNS；提升网络权限后 `registry.npmjs.org` 与 `openrouter.ai` 均可连接，锁定依赖安装成功。2026-10-07 已完成真实模型 usage、Pi AgentSession 到 OpenRouter 的取消验证，以及 SQLite job/root 预算与父子等待 adapter 的持久化验证；尚未接入完整 ExecutionCoordinator。密钥不得写入仓库或聊天。
 
 ## 远端仓库状态
 
 - [x] GitHub 私有仓库 `1BossX/WorkerPlane` 已存在。
 - [x] 初始文档和 P0 spike 已提交到远端 `main`；最新提交见仓库历史。
-- [ ] 在本地仓库配置 `origin` 和 Git CLI 凭据，供后续原生 `git push` 使用。
+- [x] 本地仓库配置 `origin`；Git CLI 已切换到可用的 `agentx1boss` 身份，供原生 `git push` 使用。
 
-当前执行环境的 `GH_TOKEN` 无效，因此本次通过已授权的 GitHub 连接器完成远端提交；本地仓库尚未绑定 `origin`。
+Git CLI 使用系统钥匙串中的 GitHub 凭据；不要将凭据写入仓库或聊天。
 
 ## 集成配置模板（不填入秘密值）
 

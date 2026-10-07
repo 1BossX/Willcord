@@ -6,4 +6,4 @@
 
 ## 当前状态
 
-目前仓库包含架构与开发计划文档和初始目录。各阶段尚未实施，P0 Pi spike 是第一项工程工作。
+P0 Pi runtime spike 的八条验收已在受控环境通过，证据见 [P0 结果](spikes/pi-runtime/RESULTS.md#p0-最终验收矩阵2026-10-07)。当前实现是实际 Pi SDK + SQLite 的 single-owner spike；下一阶段为 P1 工程、协议、存储与身份，尚未具备生产 Rust/WSS 执行能力。

@@ -1,7 +1,7 @@
 # 资源与开工待办
 
 状态：准备中  
-最后更新：2026-10-06
+最后更新：2026-10-07
 
 本文记录开始实施和进入联调/发布阶段所需的外部资源。凭据不得提交到此文件、仓库或聊天中；使用主机环境变量或部署密钥管理。
 
@@ -25,11 +25,11 @@
 - [x] 纳入最终架构和开发阶段验收文档。
 - [x] P0 Pi SDK spike：固定 Pi SDK 1.0.4；faux-provider 验证工具隔离、执行前完整调用 checkpoint seam、串行调用、transcript 恢复、取消信号、预算 gate 和委派等待 seam。
 - [x] P0 SQLite checkpoint adapter：整轮/工具意图事务提交、幂等重试、调用序号、派发/结果状态约束；已从真实 Pi hook 集成测试，SQLite 重开后保留待对账调用。
-- [ ] P0 剩余验收：验证 Pi transcript 和 SQLite 双存储崩溃对账、未决 RPC/worker 账本恢复；将 SQLite job/root 预算和父子等待 adapter 接入 ExecutionCoordinator 并完成竞争/重启验收。
+- [x] P0 八条验收：实际 Pi/SQLite 历史投影、账本对账、worker/Main Coordinator、预算、父子等待、取消历史重载和明确中断重试；见 spike 结果矩阵。受控本地传输验证不代表生产 WSS/Rust 已实现。
 - [ ] 初始化 TypeScript/Rust workspace、CI 与协议 Schema。
 - [ ] 写入数据库初始 migration 与部署模板。
 
-P0 不需要真实 worker、域名或线上主机。用户已选择 OpenRouter + `deepseek/deepseek-v4.1-flash`，并在 `~/.zshrc` 配置 `OPENROUTER_KEY`。普通沙盒网络无法解析外部 DNS；提升网络权限后 `registry.npmjs.org` 与 `openrouter.ai` 均可连接，锁定依赖安装成功。2026-10-07 已完成真实模型 usage、Pi AgentSession 到 OpenRouter 的取消验证，以及 SQLite job/root 预算与父子等待 adapter 的持久化验证；尚未接入完整 ExecutionCoordinator。密钥不得写入仓库或聊天。
+P0 不需要真实 worker、域名或线上主机。用户已选择 OpenRouter + `deepseek/deepseek-v4.1-flash`，并在 `~/.zshrc` 配置 `OPENROUTER_KEY`。普通沙盒网络无法解析外部 DNS；提升网络权限后 `registry.npmjs.org` 与 `openrouter.ai` 均可连接，锁定依赖安装成功。2026-10-07 已完成真实模型 usage、Pi AgentSession 到 OpenRouter 的取消验证，以及 SQLite job/root 预算与父子等待 adapter 的持久化验证；已接入 single-owner spike Coordinator 并完成 P0 八条受控验收；生产调度、协议与身份仍属 P1–P7。密钥不得写入仓库或聊天。
 
 ## 远端仓库状态
 

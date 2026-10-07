@@ -10,7 +10,7 @@
 
 每阶段交付代码、操作说明和验收记录。记录包括版本、平台、场景、预期、实际结果以及必要的 job/call 标识。自动化验证可使用脚本化模型；涉及 Pi 能力时必须使用实际 SDK，涉及执行安全时必须使用真实 SQLite 和子进程。
 
-P0 已有部分 spike 验证，阶段整体仍未通过；P1–P7 尚未验收。本文件定义标准，不代表已通过检查。P2 的演示闭环仅在受控环境验证，完成 P3/P4 前不作为可发布版本。
+P0 八条验收已在受控 spike 环境通过，证据与边界见结果文件；P1–P7 尚未验收。本文件定义标准，不代表已通过检查。P2 的演示闭环仅在受控环境验证，完成 P3/P4 前不作为可发布版本。
 
 ## 阶段总览
 
@@ -29,7 +29,7 @@ P0 已有部分 spike 验证，阶段整体仍未通过；P1–P7 尚未验收�
 
 交付物：最小 Pi Adapter、能力验证程序、规范化模型历史与 checkpoint 格式、固定 SDK 版本、spike 结论。
 
-当前 spike 结果见 [P0 PiRuntime Spike 结果](../spikes/pi-runtime/RESULTS.md)。Pi SDK 1.0.4 的受控工具、执行前完整批次 hook、SessionManager transcript 重开、faux provider abort、host 预算 gate 均已验证；P0 阶段整体仍进行中。
+当前 spike 结果见 [P0 PiRuntime Spike 结果](../spikes/pi-runtime/RESULTS.md)。Pi SDK 1.0.4 的工具隔离、SQLite 权威历史恢复、取消与草稿隔离、预算以及持久父子等待均已验证；八条验收矩阵与实际测试见结果文件。未知 provider 用量保持阻塞，只允许可信 host 提交已核对用量及证据后明确重试；取消任务保持终态。
 
 开发范围：替换工具执行、关闭本地工具、捕获完整模型轮次、恢复历史、取消请求、步数/token 限制和草稿事件。使用无实际外部副作用的测试工具。
 

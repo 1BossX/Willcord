@@ -3,7 +3,7 @@
 日期：2026-10-06  
 Pi SDK：`@earendil-works/pi-coding-agent` 1.0.4  
 验证模型：自动化 spike 测试使用 Pi faux provider；2026-10-07 另以 OpenRouter 实际请求验证 `deepseek/deepseek-v4.1-flash`
-状态：SDK seam 验证通过；P0 阶段整体仍未通过
+状态：P0 八条受控 spike 验收通过（2026-10-07）；以下各增量保留其当时状态，当前结论见末尾矩阵
 
 ## 已实际验证
 
@@ -197,3 +197,37 @@ history 与 child lifecycle 原子提交，parent 结果投影与等待解除也
 single-owner、单一配置目标的 spike。没有 full DAG/FIFO/worker registry/Rust/WSS，
 没有生产锁、远程终止核验或规范 RFC8785 互通；aborted provider transcript history
 仍未接入，未知 usage 无法精确计费。**P0 整体仍未宣称通过。**
+
+
+## P0 最终验收矩阵（2026-10-07）
+
+验证命令：`cd spikes/pi-runtime && npm test`，80 项通过，0 失败。固定 Pi SDK
+1.0.4，实际 AgentSession/SessionManager、SQLite WAL/FULL 与独立 SIGKILL 子进程；
+模型响应使用 faux provider，本轮没有调用外部模型。真实 OpenRouter 取消/usage 的
+既有证据日期为 2026-10-07（见上文）；provider 验证代码本轮未改变，未重复外部请求。
+
+| P0 条目 | 预期与实际证据 | 测试来源 | 结论 |
+|---|---|---|---|
+| 1 工具隔离 | Main 仅 list_workers/delegate/get_job；worker 仅注入 read/write/bash，无 Pi 内置本地执行工具 | pi-sdk.test.js role allowlist；parent-child.test.js actual Main | 通过 |
+| 2 授权前不执行、整批串行 | usage/意图/绑定同事务；失败回滚；原调用串行，接受前校验参数 | execution-coordinator.test.js atomic batch/binding failure；pi-sdk.test.js complete batch | 通过 |
+| 3 数据库历史恢复 | SQLite 重建新 Pi 投影；原 call ID、参数、结果关联保留，旧 JSONL 不授权执行 | transcript-recovery.test.js SIGKILL results/integrity；worker-ledger.test.js two results | 通过 |
+| 4 已提交原意图恢复、未提交明确重试 | committed intent crash 不重新生成；草稿 crash 自动阻塞，可信 host 提供已核对用量及证据、新用户消息后重试；旧草稿 ID 不执行 | execution-coordinator.test.js intent SIGKILL；interruption.test.js partial tool draft SIGKILL | 通过 |
+| 5 取消与过时代次 | late provider 不提交 usage/意图/工具/终态；已归档草稿不被迟到事件改写 | execution-coordinator.test.js cancel fences late provider；interruption.test.js cancellation late updates | 通过 |
+| 6 步数/token 预算 | job/root 实际 usage 持久累加；模型 attempt 先落库；重启/核对重试不重置，耗尽后不接受工具或新请求 | sqlite-runtime-state.test.js；execution-coordinator.test.js budget；interruption.test.js attempt/token retry budgets | 通过 |
+| 7 持久父子等待 | 同轮多个 child 只创建一次；Main 一次请求后停止；匹配持久结果扫描/投影后才恢复 | parent-child.test.js actual Main 与 accepted/child_completed/projection SIGKILL | 通过 |
+| 8 取消历史重载与压缩策略 | 已知未接受项明确 notExecuted，与真实完成结果配对；关库重开实际 Pi history；aborted 草稿去除未提交工具块；自动压缩关闭 | interruption.test.js cancelled committed batch reopen/aborted reload；transcript-recovery.test.js autoCompactionEnabled | 通过 |
+
+中断处理记录 `coordinator_drafts`（每 generation 最多 64 KiB 的明确截断快照）与
+`coordinator_usage_resolutions`。草稿只供审计；取消/中断归档为 aborted assistant，
+未提交 toolCall 不进入执行历史。核对接口不接受模型调用：可信 host 必须提供每个
+缺失 generation 的已验证 input/output usage 与 source/reference；计数、核对审计、
+新消息及 lifecycle 同事务提交。重复相同核对幂等，矛盾核对拒绝；未决执行/children
+禁止重试。取消 job 不能通过该接口复活。没有用量证据时继续 needs_attention，
+不猜测、清零或自动重试；精确账单和上游中止时点仍未知。
+
+**P0 的八条接口能力验收已通过，可进入 P1。**这不代表生产 MVP 已完成：single-owner
+锁、认证/协议、FIFO/DAG、多 worker 注册、Rust/WSS、远程进程终止核验与 RFC8785
+互通仍按 P1–P7 实施，不能以此 spike 代替其验收。历史增量中的“P0 未通过”是对应
+提交时的记录，以此矩阵作为当前结论。
+
+Bugbot 收口复核补充：final commit 异常、无 durable finish 出口，以及已进入 needs_attention 的恢复提前返回，都会归档 streaming 草稿；归档与阻塞状态同事务，重复恢复不追加记录。新增实际 Pi final commit failure / binding failure reload 回归。

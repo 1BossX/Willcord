@@ -1,6 +1,6 @@
 import { createPiSession, ROLE_TOOLS } from './pi-runtime.js';
 import { SqliteRuntimeStateStore } from './sqlite-runtime-state.js';
-import { WorkerReconciler } from './worker-ledger.js';
+import { WorkerReconciler, requestHash } from './worker-ledger.js';
 import { recoverTranscript } from './transcript-recovery.js';
 import { validateToolArguments } from '@earendil-works/pi-ai';
 import { isDeepStrictEqual } from 'node:util';
@@ -38,7 +38,9 @@ export class ExecutionCoordinator {
     );
     CREATE TABLE IF NOT EXISTS coordinator_attempts (
       job_id TEXT NOT NULL, generation INTEGER NOT NULL, PRIMARY KEY(job_id, generation)
-    );`);
+    );
+    CREATE TABLE IF NOT EXISTS coordinator_drafts (job_id TEXT NOT NULL, generation INTEGER NOT NULL, message_json TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('streaming','committed','interrupted','cancelled')), event_count INTEGER NOT NULL, truncated INTEGER NOT NULL, PRIMARY KEY(job_id,generation));
+    CREATE TABLE IF NOT EXISTS coordinator_usage_resolutions (job_id TEXT NOT NULL, generation INTEGER NOT NULL, input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL, evidence_json TEXT NOT NULL, retry_prompt TEXT NOT NULL, original_unknown INTEGER NOT NULL DEFAULT 1, PRIMARY KEY(job_id,generation));`);
     this.#upgradeLifecycle();
     store.db.exec(`CREATE TABLE IF NOT EXISTS coordinator_targets (job_id TEXT PRIMARY KEY REFERENCES runtime_job_state(job_id), target_json TEXT NOT NULL, session_id TEXT NOT NULL, timeout_ms INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS coordinator_roles (job_id TEXT PRIMARY KEY REFERENCES runtime_job_state(job_id), role TEXT NOT NULL CHECK(role IN ('main','worker')));
@@ -80,6 +82,73 @@ export class ExecutionCoordinator {
       LEFT JOIN runtime_usage u ON u.job_id = a.job_id AND u.generation = a.generation
       WHERE a.job_id = ? AND u.generation IS NULL LIMIT 1`).get(jobId));
   }
+  drafts(jobId) {
+    return this.store.db.prepare('SELECT * FROM coordinator_drafts WHERE job_id = ? ORDER BY generation').all(jobId)
+      .map((row) => ({ generation: row.generation, message: JSON.parse(row.message_json), status: row.status, eventCount: row.event_count, truncated: Boolean(row.truncated) }));
+  }
+  #observeDraft(jobId, generation, event) {
+    if (!['message_start', 'message_update'].includes(event.type) || event.message?.role !== 'assistant' || !this.#current(jobId, generation)) return;
+    const prior = this.store.db.prepare('SELECT status FROM coordinator_drafts WHERE job_id = ? AND generation = ?').get(jobId, generation);
+    if (prior && prior.status !== 'streaming') return;
+    const message = structuredClone(event.message);
+    let serialized = JSON.stringify(message);
+    let truncated = false;
+    if (Buffer.byteLength(serialized) > 65536) {
+      truncated = true;
+      message.content = [{ type: 'text', text: '[draft snapshot truncated at 64 KiB]' }];
+      serialized = JSON.stringify(message);
+      if (Buffer.byteLength(serialized) > 65536) serialized = JSON.stringify({ role: 'assistant', content: message.content, timestamp: message.timestamp });
+    }
+    this.store.db.prepare(`INSERT INTO coordinator_drafts VALUES (?, ?, ?, 'streaming', 1, ?)
+      ON CONFLICT(job_id,generation) DO UPDATE SET message_json = excluded.message_json, event_count = event_count + 1, truncated = MAX(truncated, excluded.truncated)`).run(jobId, generation, serialized, Number(truncated));
+  }
+  #archiveDraft(jobId, generation, status) {
+    const draft = this.store.db.prepare('SELECT * FROM coordinator_drafts WHERE job_id = ? AND generation = ?').get(jobId, generation);
+    if (!draft || draft.status !== 'streaming') return;
+    const partial = JSON.parse(draft.message_json);
+    // Uncommitted tool blocks stay in draft/audit storage only. An aborted
+    // assistant history entry is diagnostic, never executable intent.
+    const message = { ...partial, role: 'assistant', content: Array.isArray(partial.content) ? partial.content.filter((part) => ['text', 'thinking'].includes(part?.type)) : [],
+      stopReason: 'aborted', errorMessage: `generation ${generation} ${status}; draft is not committed intent` };
+    this.store.appendHistory(jobId, `interrupted-assistant:${generation}`, message);
+    this.store.db.prepare('UPDATE coordinator_drafts SET status = ? WHERE job_id = ? AND generation = ?').run(status, jobId, generation);
+  }
+  #markDraftCommitted(jobId, generation) {
+    this.store.db.prepare("UPDATE coordinator_drafts SET status = 'committed' WHERE job_id = ? AND generation = ? AND status = 'streaming'").run(jobId, generation);
+  }
+  resolveInterrupted({ jobId, generation, verifiedUsage, evidence, prompt }) {
+    if (this.active.has(jobId)) throw new Error('cannot resolve active job');
+    if (typeof prompt !== 'string' || !prompt || typeof evidence?.source !== 'string' || !evidence.source || typeof evidence.reference !== 'string' || !evidence.reference) throw new Error('verified usage evidence and new user prompt required');
+    requestHash(evidence); // Strict finite JSON validation, no silent coercion.
+    return this.store.db.transaction(() => {
+      const old = this.store.db.prepare('SELECT * FROM coordinator_usage_resolutions WHERE job_id = ? AND generation = ?').get(jobId, generation);
+      if (old) {
+        if (old.input_tokens !== verifiedUsage?.inputTokens || old.output_tokens !== verifiedUsage?.outputTokens || old.retry_prompt !== prompt || !isDeepStrictEqual(JSON.parse(old.evidence_json), evidence)) throw new Error('interruption resolution conflict');
+        return this.readJob(jobId);
+      }
+      const job = this.readJob(jobId);
+      if (job.lifecycle !== 'needs_attention' || job.cancelRequested) throw new Error('only interrupted needs_attention jobs may retry');
+      if (this.store.findIncompleteTurns(jobId).length || this.#pendingChildren(jobId).length) throw new Error('unresolved execution or children prevent retry');
+      if (this.ledger.db.prepare("SELECT 1 FROM worker_calls WHERE job_id = ? AND status != 'completed'").get(jobId)) throw new Error('worker execution remains unresolved');
+      const attempt = this.store.db.prepare('SELECT 1 FROM coordinator_attempts WHERE job_id = ? AND generation = ?').get(jobId, generation);
+      const usage = this.store.db.prepare('SELECT 1 FROM runtime_usage WHERE job_id = ? AND generation = ?').get(jobId, generation);
+      if (!attempt || usage) throw new Error('generation is not a missing-usage attempt');
+      this.#archiveDraft(jobId, generation, 'interrupted');
+      this.state.recordVerifiedInterruptedUsage(jobId, generation, verifiedUsage);
+      this.store.db.prepare('INSERT INTO coordinator_usage_resolutions VALUES (?, ?, ?, ?, ?, ?, 1)').run(jobId, generation, verifiedUsage.inputTokens, verifiedUsage.outputTokens, JSON.stringify(evidence), prompt);
+      if (this.#hasUnknownAttempt(jobId)) { this.#set(jobId, 'needs_attention', 'additional unknown model attempts'); return this.readJob(jobId); }
+      this.store.db.prepare("UPDATE runtime_job_state SET generation = generation + 1, status = 'ready' WHERE job_id = ?").run(jobId);
+      const root = this.store.db.prepare('SELECT max_steps FROM runtime_roots WHERE root_job_id = ?').get(job.rootJobId);
+      const attempts = this.store.db.prepare('SELECT COUNT(*) AS count FROM coordinator_attempts a JOIN runtime_job_state j ON j.job_id = a.job_id WHERE j.root_job_id = ?').get(job.rootJobId).count;
+      const own = this.store.db.prepare('SELECT COUNT(*) AS count FROM coordinator_attempts WHERE job_id = ?').get(jobId).count;
+      if (!this.state.canStartGeneration(jobId).allowed || attempts >= root.max_steps || own >= job.maxSteps) this.#set(jobId, 'budget_exceeded', 'verified interrupted usage exhausted retry budget');
+      else {
+        this.store.appendHistory(jobId, `retry-user:${generation}`, { role: 'user', content: prompt, timestamp: Date.now() });
+        this.#set(jobId, 'ready');
+      }
+      return this.readJob(jobId);
+    }).immediate();
+  }
   #account(jobId, generation, message) {
     const usage = piUsage(message);
     const old = this.store.db.prepare('SELECT input_tokens, output_tokens FROM runtime_usage WHERE job_id = ? AND generation = ?').get(jobId, generation);
@@ -100,6 +169,7 @@ export class ExecutionCoordinator {
       if (!this.#current(jobId, generation)) return false;
       const allowed = this.#account(jobId, generation, entry.assistantMessage);
       this.store.persistTurn({ jobId, ...entry });
+      this.#markDraftCommitted(jobId, generation);
       if (this.readJob(jobId).role === 'main') return this.#commitMainBatch(jobId, entry, allowed);
       const target = this.#jobTarget(jobId);
       for (const call of entry.calls) this.reconciler.bind({ jobId, turnKey: entry.turnKey, callId: call.id,
@@ -190,6 +260,7 @@ export class ExecutionCoordinator {
         if (child.parentJobId !== parentJobId || child.rootJobId !== parent.rootJobId) throw new Error('child ownership contradiction');
         if (!child.cancelRequested && !this.active.has(child.jobId) && this.#hasUnknownAttempt(child.jobId)) {
           this.store.db.prepare("UPDATE runtime_job_state SET generation = generation + 1, status = 'ready' WHERE job_id = ? AND status = 'running'").run(child.jobId);
+          this.#archiveDraft(child.jobId, child.generation, 'interrupted');
           this.#set(child.jobId, 'needs_attention', 'interrupted model attempt; usage unknown');
           unknown = true; continue;
         }
@@ -284,6 +355,7 @@ export class ExecutionCoordinator {
     this.store.db.transaction(() => {
       if (!this.#current(jobId, generation)) return;
       if (['aborted', 'error'].includes(message.stopReason)) {
+        this.#archiveDraft(jobId, generation, 'interrupted');
         this.#set(jobId, 'needs_attention', 'provider ended without reliable final usage');
         return;
       }
@@ -298,6 +370,7 @@ export class ExecutionCoordinator {
       if (!hasTools) {
         const allowed = this.#account(jobId, generation, message);
         this.store.appendHistory(jobId, `assistant:${generation}`, message);
+        this.#markDraftCommitted(jobId, generation);
         this.#set(jobId, this.#pendingChildren(jobId).length ? 'needs_attention' : allowed ? 'completed' : 'budget_exceeded', this.#pendingChildren(jobId).length ? 'unresolved child ownership' : null);
       } else {
         const usage = this.store.db.prepare('SELECT 1 FROM runtime_usage WHERE job_id = ? AND generation = ?').get(jobId, generation);
@@ -344,12 +417,19 @@ export class ExecutionCoordinator {
         onAssistantTurn: ({ message }) => this.#finish(jobId, generation, message),
       }));
       this.active.set(jobId, session);
+      session.subscribe((event) => this.#observeDraft(jobId, generation, event));
       if (!this.#current(jobId, generation)) return this.readJob(jobId);
       session.agent.streamFunction = streamFunction;
       await session.agent.continue();
-      if (this.#current(jobId, generation) && this.state.readJob(jobId).status === 'running') this.#set(jobId, 'needs_attention', 'turn ended without durable finish');
+      if (this.#current(jobId, generation) && this.state.readJob(jobId).status === 'running') this.store.db.transaction(() => {
+        this.#archiveDraft(jobId, generation, 'interrupted');
+        this.#set(jobId, 'needs_attention', 'turn ended without durable finish');
+      }).immediate();
     } catch (error) {
-      if (this.#current(jobId, generation)) this.#set(jobId, 'needs_attention', error.message);
+      if (this.#current(jobId, generation)) this.store.db.transaction(() => {
+        this.#archiveDraft(jobId, generation, 'interrupted');
+        this.#set(jobId, 'needs_attention', error.message);
+      }).immediate();
       throw error;
     } finally { session?.dispose(); this.active.delete(jobId); }
     return this.readJob(jobId);
@@ -359,7 +439,12 @@ export class ExecutionCoordinator {
     const job = this.readJob(jobId);
     if (['completed', 'failed', 'budget_exceeded', 'cancelled'].includes(job.lifecycle)) return job;
     if (job.role === 'main' && this.#pendingChildren(jobId).length) return this.scanChildren(jobId);
-    if (job.lifecycle === 'needs_attention' && !job.cancelRequested && this.store.findIncompleteTurns(jobId).length === 0) return job;
+    if (job.lifecycle === 'needs_attention' && !job.cancelRequested && this.store.findIncompleteTurns(jobId).length === 0) {
+      this.store.db.transaction(() => {
+        for (const draft of this.drafts(jobId).filter((draft) => draft.status === 'streaming')) this.#archiveDraft(jobId, draft.generation, 'interrupted');
+      }).immediate();
+      return this.readJob(jobId);
+    }
     this.active.set(jobId, null);
     try {
       const generation = this.store.db.transaction(() => {
@@ -368,6 +453,7 @@ export class ExecutionCoordinator {
         // Fence and preserve its blocked decision in this same transaction so
         // a crash after recovery opens cannot erase model ambiguity.
         if (!job.cancelRequested && this.#hasUnknownAttempt(jobId)) {
+          for (const draft of this.drafts(jobId).filter((draft) => draft.status === 'streaming')) this.#archiveDraft(jobId, draft.generation, 'interrupted');
           this.#set(jobId, 'needs_attention', 'interrupted model attempt; usage unknown');
           return null;
         }
@@ -409,12 +495,14 @@ export class ExecutionCoordinator {
     this.store.db.transaction(() => {
       const job = this.readJob(jobId);
       if (['completed', 'failed', 'cancelled', 'budget_exceeded'].includes(job.lifecycle)) return;
+      this.#archiveDraft(jobId, job.generation, 'cancelled');
       this.store.db.prepare('UPDATE coordinator_jobs SET cancel_requested = 1 WHERE job_id = ?').run(jobId);
       this.store.db.prepare("UPDATE runtime_job_state SET generation = generation + 1, status = 'ready' WHERE job_id = ?").run(jobId);
       this.#set(jobId, this.store.findIncompleteTurns(jobId).length || this.#pendingChildren(jobId).length ? 'needs_attention' : 'cancelled', 'cancellation requested');
       for (const row of this.#pendingChildren(jobId)) {
         const child = this.readJob(row.child_job_id);
         if (['completed', 'failed', 'cancelled', 'budget_exceeded'].includes(child.lifecycle)) continue;
+        this.#archiveDraft(child.jobId, child.generation, 'cancelled');
         this.store.db.prepare('UPDATE coordinator_jobs SET cancel_requested = 1 WHERE job_id = ?').run(child.jobId);
         this.store.db.prepare("UPDATE runtime_job_state SET generation = generation + 1, status = 'ready' WHERE job_id = ?").run(child.jobId);
         this.#set(child.jobId, this.store.findIncompleteTurns(child.jobId).length ? 'needs_attention' : 'cancelled', 'parent cancellation requested');

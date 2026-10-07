@@ -72,6 +72,8 @@ Worker 数据目录有 OS 独占文件锁；worker_id 与 ledger_id 持久化 SQ
 
 P1 不开放 job 创建或工具调用；这正是 P1 出口要求。非空调用 ledger 的 P3 恢复语义、read/write/bash 与模型执行闭环属于后续阶段，不纳入此验收。
 
+最新本地运行：协议 3 项、主节点 11 项、Rust 4 项测试通过；TypeScript 检查、Rust 格式/构建、Vite 构建和生成文件复现检查通过。推送后仍须以当前 PR head 的 Linux/macOS CI 结果作为跨平台验收记录。
+
 ## 浏览器证据
 
 浏览器使用临时 HTTPS 预览和受控 worker peer，实际检查登录、在线/离线状态及刷新后的 session 恢复。截图不代表工具执行业务 E2E，也没有使用真实管理员凭据。

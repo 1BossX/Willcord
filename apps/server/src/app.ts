@@ -48,7 +48,11 @@ export async function createApp(
   await app.register(websocket, { options: { maxPayload: MAX_FRAME_BYTES } });
   const connections = new Map<
     string,
-    { epoch: number; socket: import("ws").WebSocket }
+    {
+      epoch: number;
+      socket: import("ws").WebSocket;
+      tokenDigest: string;
+    }
   >();
   let shuttingDown = false;
   const offline = (id: string, epoch: number) => {
@@ -180,16 +184,18 @@ export async function createApp(
     const token = (req.body as { token?: unknown } | null)?.token;
     if (typeof token !== "string")
       return reply.code(400).send({ error: "token" });
+    const tokenDigest = digest(token);
     const row = db
-      .prepare("SELECT worker_id FROM worker_tokens WHERE digest=?")
-      .get(digest(token)) as { worker_id: string } | undefined;
-    db.prepare("UPDATE worker_tokens SET revoked_at=? WHERE digest=?").run(
-      now(),
-      digest(token),
-    );
+      .prepare(
+        "SELECT worker_id FROM worker_tokens WHERE digest=? AND revoked_at IS NULL",
+      )
+      .get(tokenDigest) as { worker_id: string } | undefined;
+    db.prepare(
+      "UPDATE worker_tokens SET revoked_at=? WHERE digest=? AND revoked_at IS NULL",
+    ).run(now(), tokenDigest);
     if (row) {
       const c = connections.get(row.worker_id);
-      if (c) {
+      if (c?.tokenDigest === tokenDigest) {
         offline(row.worker_id, c.epoch);
         c.socket.close(1008, "token revoked");
         connections.delete(row.worker_id);
@@ -337,7 +343,11 @@ export async function createApp(
             })();
             registerHash = requestHash(f);
             const old = connections.get(id);
-            connections.set(id, { epoch, socket });
+            connections.set(id, {
+              epoch,
+              socket,
+              tokenDigest: workerTokenDigest,
+            });
             old?.socket.close(1008, "connection replaced");
             clearTimeout(registrationDeadline);
             socket.send(

@@ -1,0 +1,12 @@
+https://localhost:8443 {
+ tls internal
+ @server path /api/* /auth/* /ws/worker /health
+ handle @server {
+  reverse_proxy 127.0.0.1:3000
+ }
+ handle {
+  root * apps/web/dist
+  try_files {path} /index.html
+  file_server
+ }
+}

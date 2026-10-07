@@ -1,0 +1,230 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "WorkerFrame",
+  "oneOf": [
+    {
+      "title": "WorkerFrame",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol_version",
+        "type",
+        "worker_id",
+        "boot_id",
+        "ledger_id",
+        "workspaces"
+      ],
+      "properties": {
+        "protocol_version": {
+          "const": 1
+        },
+        "type": {
+          "const": "register"
+        },
+        "worker_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "boot_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "ledger_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "workspaces": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "workspace_id",
+              "config_version",
+              "path",
+              "repo_id",
+              "is_default"
+            ],
+            "properties": {
+              "workspace_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "config_version": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "repo_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              },
+              "is_default": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol_version",
+        "worker_id",
+        "connection_epoch",
+        "type",
+        "reconciliation_required"
+      ],
+      "properties": {
+        "protocol_version": {
+          "const": 1
+        },
+        "worker_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "connection_epoch": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "type": {
+          "const": "register_ack"
+        },
+        "reconciliation_required": {
+          "const": true
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol_version", "worker_id", "connection_epoch", "type"],
+      "properties": {
+        "protocol_version": {
+          "const": 1
+        },
+        "worker_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "connection_epoch": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "type": {
+          "const": "heartbeat"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol_version", "worker_id", "connection_epoch", "type"],
+      "properties": {
+        "protocol_version": {
+          "const": 1
+        },
+        "worker_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "connection_epoch": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "type": {
+          "const": "resume"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol_version",
+        "worker_id",
+        "connection_epoch",
+        "type",
+        "ledger_id",
+        "ready"
+      ],
+      "properties": {
+        "protocol_version": {
+          "const": 1
+        },
+        "worker_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "connection_epoch": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "type": {
+          "const": "reconcile"
+        },
+        "ledger_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "ready": {
+          "type": "boolean"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol_version",
+        "worker_id",
+        "connection_epoch",
+        "type",
+        "ack_type"
+      ],
+      "properties": {
+        "protocol_version": {
+          "const": 1
+        },
+        "worker_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "connection_epoch": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "type": {
+          "const": "ack"
+        },
+        "ack_type": {
+          "enum": ["resume", "reconcile"]
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,124 @@
+[
+  {
+    "name": "register",
+    "valid": true,
+    "frame": {
+      "protocol_version": 1,
+      "type": "register",
+      "worker_id": "worker-a",
+      "boot_id": "boot-a",
+      "ledger_id": "ledger-a",
+      "workspaces": [
+        {
+          "workspace_id": "repo",
+          "config_version": 1,
+          "path": "/tmp/repo",
+          "repo_id": "github.com/1BossX/WorkerPlane",
+          "is_default": true
+        }
+      ]
+    }
+  },
+  {
+    "name": "heartbeat",
+    "valid": true,
+    "frame": {
+      "protocol_version": 1,
+      "type": "heartbeat",
+      "worker_id": "worker-a",
+      "connection_epoch": 2
+    }
+  },
+  {
+    "name": "resume",
+    "valid": true,
+    "frame": {
+      "protocol_version": 1,
+      "type": "resume",
+      "worker_id": "worker-a",
+      "connection_epoch": 2
+    }
+  },
+  {
+    "name": "reconcile",
+    "valid": true,
+    "frame": {
+      "protocol_version": 1,
+      "type": "reconcile",
+      "worker_id": "worker-a",
+      "connection_epoch": 2,
+      "ledger_id": "ledger-a",
+      "ready": true
+    }
+  },
+  {
+    "name": "unsupported version",
+    "valid": false,
+    "frame": {
+      "protocol_version": 2,
+      "type": "register",
+      "worker_id": "worker-a",
+      "boot_id": "boot-a",
+      "ledger_id": "ledger-a",
+      "workspaces": [
+        {
+          "workspace_id": "repo",
+          "config_version": 1,
+          "path": "/tmp/repo",
+          "repo_id": "github.com/1BossX/WorkerPlane",
+          "is_default": true
+        }
+      ]
+    }
+  },
+  {
+    "name": "unknown field",
+    "valid": false,
+    "frame": {
+      "protocol_version": 1,
+      "type": "register",
+      "worker_id": "worker-a",
+      "boot_id": "boot-a",
+      "ledger_id": "ledger-a",
+      "workspaces": [
+        {
+          "workspace_id": "repo",
+          "config_version": 1,
+          "path": "/tmp/repo",
+          "repo_id": "github.com/1BossX/WorkerPlane",
+          "is_default": true
+        }
+      ],
+      "token": "forbidden"
+    }
+  },
+  {
+    "name": "missing ledger",
+    "valid": false,
+    "frame": {
+      "protocol_version": 1,
+      "type": "register",
+      "worker_id": "worker-a",
+      "boot_id": "boot-a",
+      "workspaces": [
+        {
+          "workspace_id": "repo",
+          "config_version": 1,
+          "path": "/tmp/repo",
+          "repo_id": "github.com/1BossX/WorkerPlane",
+          "is_default": true
+        }
+      ]
+    }
+  },
+  {
+    "name": "old epoch",
+    "valid": false,
+    "frame": {
+      "protocol_version": 1,
+      "type": "heartbeat",
+      "worker_id": "worker-a",
+      "connection_epoch": 0
+    }
+  }
+]

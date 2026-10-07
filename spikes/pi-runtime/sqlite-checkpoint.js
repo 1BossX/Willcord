@@ -75,6 +75,9 @@ export class SqliteCheckpointStore {
         insertCall.run(jobId, turnKey, call.id, callSeq, call.name, json(call.arguments ?? {}));
       });
 
+      this.db.prepare(`INSERT INTO runtime_history (job_id, entry_key, turn_key)
+        VALUES (?, ?, ?)`).run(jobId, `turn:${turnKey}`, turnKey);
+
       return { inserted: true, idempotent: false, fingerprint };
     }).immediate();
   }
@@ -93,6 +96,32 @@ export class SqliteCheckpointStore {
       committedAt: turn.committed_at,
       calls: this.#readCalls(jobId, turnKey),
     };
+  }
+
+  /** Commit user/base/non-tool messages before allowing Pi to consume them. */
+  appendHistory(jobId, entryKey, message) {
+    if (typeof jobId !== 'string' || !jobId || typeof entryKey !== 'string' || !entryKey || entryKey.startsWith('turn:') || !message || !['user', 'assistant'].includes(message.role)) {
+      throw new TypeError('history requires jobId, entryKey and a supported message');
+    }
+    if (message.role === 'assistant' && (!Array.isArray(message.content) || message.content.some((part) => part.type === 'toolCall'))) {
+      throw new TypeError('tool-call messages must use persistTurn');
+    }
+    return this.db.transaction(() => {
+      const existing = this.db.prepare('SELECT message_json FROM runtime_history WHERE job_id = ? AND entry_key = ?').get(jobId, entryKey);
+      if (existing) {
+        if (existing.message_json !== json(message)) throw new TurnConflictError(jobId, entryKey);
+        return false;
+      }
+      this.db.prepare('INSERT INTO runtime_history (job_id, entry_key, message_json) VALUES (?, ?, ?)').run(jobId, entryKey, json(message));
+      return true;
+    }).immediate();
+  }
+
+  readHistory(jobId) {
+    return this.db.prepare('SELECT entry_key, turn_key, message_json FROM runtime_history WHERE job_id = ? ORDER BY history_seq').all(jobId)
+      .map((row) => row.turn_key === null
+        ? { entryKey: row.entry_key, message: parse(row.message_json) }
+        : { entryKey: row.entry_key, turn: this.readTurn(jobId, row.turn_key) });
   }
 
   readAuthorizedCall(jobId, turnKey, callId) {
@@ -221,6 +250,18 @@ export class SqliteCheckpointStore {
         FOREIGN KEY (job_id, turn_key) REFERENCES runtime_turns(job_id, turn_key) ON DELETE CASCADE,
         CHECK ((status = 'completed' AND result_json IS NOT NULL AND completed_at IS NOT NULL)
             OR (status != 'completed' AND result_json IS NULL AND completed_at IS NULL))
+      );
+
+      CREATE TABLE IF NOT EXISTS runtime_history (
+        history_seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_id TEXT NOT NULL,
+        entry_key TEXT NOT NULL,
+        turn_key TEXT,
+        message_json TEXT,
+        UNIQUE (job_id, entry_key),
+        FOREIGN KEY (job_id, turn_key) REFERENCES runtime_turns(job_id, turn_key),
+        CHECK ((turn_key IS NULL AND message_json IS NOT NULL)
+          OR (turn_key IS NOT NULL AND message_json IS NULL))
       );
     `);
   }

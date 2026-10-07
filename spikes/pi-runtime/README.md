@@ -39,3 +39,28 @@ The SDK tests additionally verify Pi 1.0.4:
 - `session.abort()` propagates an AbortSignal to the provider stream and settles the run when the provider honors it.
 
 The app-side orchestration harness remains in-memory and process-local. Its `commitTurn` represents the required atomic production transaction. The separate SQLite spike adapters now cover call checkpoints, job/root budget counters, and durable parent-child waits, but they are not integrated into a production ExecutionCoordinator. P0 remains open: complete Pi/SQLite crash-window reconciliation, unresolved worker-ledger recovery, budget and wait integration, and proof that the two persistence stores remain consistent after crashes. Never treat Pi JSONL as the job ledger.
+
+SQLite transcript recovery is available as `recoverTranscript` in
+`transcript-recovery.js`. Record each user message with `appendHistory` before
+passing it to Pi; record non-tool assistant replies (including cancellation)
+with the same API. Entry keys are stable host IDs; the `turn:` prefix is reserved.
+Tool batches use `persistTurn`, which adds their history entry in the same
+transaction as every intent. Persist complete Pi `toolResult` messages through
+`recordResult`, including call ID, tool name, content, error flag and timestamp.
+Recovery validates identities and creates a fresh SessionManager projection;
+create the AgentSession only after recovery succeeds. Old JSONL branches have
+no execution authority. Automatic compaction is disabled in the Pi wrapper.
+
+Any committed or dispatched call without a result throws `RecoveryBlockedError`
+before a Pi session can continue. This PR neither dispatches pending calls nor
+reconciles a worker ledger. Aborted assistant history is retained; Pi requires
+a new durably recorded user prompt rather than `agent.continue()` from that
+assistant. Legacy checkpoints missing ordered user/base history block explicitly
+and require migration. The host still owns system prompt/configuration, tool
+result capture, exclusive scheduling, and generation fencing; this spike is not
+a production Coordinator.
+
+Projection success grants no job execution authorization. Before starting a
+model request, the Coordinator must check durable job lifecycle state; aborted,
+cancelled or terminal jobs remain stopped until an explicit authorized lifecycle
+transition. A new user message alone does not override that gate.

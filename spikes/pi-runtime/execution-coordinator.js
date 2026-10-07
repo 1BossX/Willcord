@@ -51,6 +51,11 @@ export class ExecutionCoordinator {
     const job = this.readJob(jobId);
     return job.generation === generation && !job.cancelRequested && ['generating', 'tools'].includes(job.lifecycle);
   }
+  #hasUnknownAttempt(jobId) {
+    return Boolean(this.store.db.prepare(`SELECT 1 FROM coordinator_attempts a
+      LEFT JOIN runtime_usage u ON u.job_id = a.job_id AND u.generation = a.generation
+      WHERE a.job_id = ? AND u.generation IS NULL LIMIT 1`).get(jobId));
+  }
   #account(jobId, generation, message) {
     const usage = piUsage(message);
     const old = this.store.db.prepare('SELECT input_tokens, output_tokens FROM runtime_usage WHERE job_id = ? AND generation = ?').get(jobId, generation);
@@ -171,6 +176,9 @@ export class ExecutionCoordinator {
     const generation = this.store.db.transaction(() => {
       const job = this.readJob(jobId);
       if (job.lifecycle !== 'ready' || job.cancelRequested || this.store.findIncompleteTurns(jobId).length) throw new Error('job is not ready');
+      if (this.#hasUnknownAttempt(jobId)) {
+        this.#set(jobId, 'needs_attention', 'interrupted model attempt; usage unknown'); return null;
+      }
       const root = this.store.db.prepare('SELECT max_steps FROM runtime_roots WHERE root_job_id = ?').get(job.rootJobId);
       const attempts = this.store.db.prepare(`SELECT COUNT(*) AS count FROM coordinator_attempts a JOIN runtime_job_state j ON j.job_id = a.job_id WHERE j.root_job_id = ?`).get(job.rootJobId).count;
       const ownAttempts = this.store.db.prepare('SELECT COUNT(*) AS count FROM coordinator_attempts WHERE job_id = ?').get(jobId).count;
@@ -212,9 +220,17 @@ export class ExecutionCoordinator {
     try {
       const generation = this.store.db.transaction(() => {
         this.store.db.prepare("UPDATE runtime_job_state SET generation = generation + 1, status = 'ready' WHERE job_id = ? AND status = 'running'").run(jobId);
+        // The missing usage row is durable evidence independent of lifecycle.
+        // Fence and preserve its blocked decision in this same transaction so
+        // a crash after recovery opens cannot erase model ambiguity.
+        if (!job.cancelRequested && this.#hasUnknownAttempt(jobId)) {
+          this.#set(jobId, 'needs_attention', 'interrupted model attempt; usage unknown');
+          return null;
+        }
         this.#set(jobId, 'tools');
         return this.state.readJob(jobId).generation;
       }).immediate();
+      if (generation === null) return this.readJob(jobId);
       for (const turn of this.store.findIncompleteTurns(jobId)) {
         for (const call of turn.calls.filter((call) => call.status !== 'completed')) {
           const outcome = this.reconciler.reconcile({ jobId, turnKey: turn.turnKey, callId: call.callId, ledger: this.ledger, verifiedIdentity: this.verifiedIdentity });

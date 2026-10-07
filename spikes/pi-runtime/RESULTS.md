@@ -122,7 +122,7 @@ Coordinator 承担。
 
 ## 2026-10-07 最小 Worker ExecutionCoordinator 增量
 
-`npm test`：55 项通过，0 失败。新增 worker-role Coordinator，使用实际 Pi SDK 与
+`npm test`：56 项通过，0 失败。新增 worker-role Coordinator，使用实际 Pi SDK 与
 SQLite；worker transport 为注入的本地假实现，无外部模型或 WSS 请求。
 Coordinator 与预算 adapter 共享检查点 **同一 SQLite connection**，工具批次的
 usage、原意图、可信目标绑定及 lifecycle 在同一事务中提交。
@@ -160,3 +160,9 @@ worker accepted 前都调用公开 validateToolArguments；非法或需要 coerc
 改变的原参数，在同可信账本证明从未接受后配对 notExecuted 结果，不执行副作用。
 新增真实 Pi 首合法/后非法批次 SIGKILL 恢复及 live coercion 测试；原参数与 hash
 保持不变，不将被转换的 payload 静默当作原执行内容。
+
+恢复自身崩溃补充：未知 model attempt 由 coordinator_attempts 与 runtime_usage
+缺失关联直接判定，在恢复 opening transaction 内与 generation fence 原子保存
+needs_attention。新增 model SIGKILL 后，再在恢复 opening transaction 已提交处
+SIGKILL 的双进程测试；第三次重开及连续恢复仍阻塞，后续模型请求 0 次。
+即使旧式 lifecycle 被写为 ready，runStep 仍以缺失 usage 证据阻止推理。

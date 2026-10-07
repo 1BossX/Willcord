@@ -254,3 +254,27 @@ test('live Pi coerced arguments are rejected before original-payload worker acce
   assert.deepEqual(call.arguments, { input: 123 });
   assert.equal(call.result.details.notExecuted, true);
 });
+
+test('SIGKILL after recovery opening transaction cannot erase durable unknown model attempt', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'worker-plane-recovery-open-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const modelCrash = spawnSync(process.execPath, [fileURLToPath(new URL('./coordinator-crash-fixture.js', import.meta.url)), root, 'model']);
+  assert.equal(modelCrash.signal, 'SIGKILL', modelCrash.stderr.toString());
+  const recoveryCrash = spawnSync(process.execPath, [fileURLToPath(new URL('./coordinator-recovery-crash-fixture.js', import.meta.url)), root]);
+  assert.equal(recoveryCrash.signal, 'SIGKILL', recoveryCrash.stderr.toString());
+  const f = await coordinatorFixture(root, { bootId: 'third-boot' });
+  t.after(() => f.close());
+  assert.equal(f.coordinator.readJob('job').lifecycle, 'needs_attention');
+  assert.equal(f.coordinator.readJob('job').generation, 2);
+  assert.equal((await f.coordinator.recover('job')).lifecycle, 'needs_attention');
+  assert.equal((await f.coordinator.recover('job')).lifecycle, 'needs_attention');
+  assert.equal(f.store.db.prepare('SELECT COUNT(*) AS n FROM coordinator_attempts').get().n, 1);
+  assert.equal(f.store.db.prepare('SELECT COUNT(*) AS n FROM runtime_usage').get().n, 0);
+  const c = core([response('must not run')]);
+  await assert.rejects(f.coordinator.runStep('job', c.streamSimple), /not ready/);
+  assert.equal(c.state.callCount, 0);
+  // Even a stale legacy lifecycle marker cannot hide the durable missing row.
+  f.store.db.prepare("UPDATE coordinator_jobs SET status = 'ready'").run();
+  assert.equal((await f.coordinator.runStep('job', c.streamSimple)).lifecycle, 'needs_attention');
+  assert.equal(c.state.callCount, 0);
+});

@@ -152,3 +152,8 @@ batch, including later unvalidated calls. Invalid arguments receive a paired
 not-executed result only after trusted absence proof. This spike also rejects
 coercion or prepareArguments transformations to keep executed payload identical
 to the original intent/hash; normalized execution-payload persistence is deferred.
+
+Missing final usage is derived from the durable attempt/usage row relationship,
+not a transient lifecycle marker. Recovery fences generation and records that
+blocked decision in the same opening transaction; runStep independently checks
+for an unresolved attempt even if a stale lifecycle says ready.

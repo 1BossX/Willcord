@@ -51,6 +51,8 @@ export async function createPiSession({
   });
 
   const activeNames = [...session.getActiveToolNames()].sort();
+  // SQLite owns exact history; a Pi-generated summary cannot replace it.
+  session.setAutoCompactionEnabled(false);
   if (JSON.stringify(activeNames) !== JSON.stringify(allowedNames)) {
     session.dispose();
     throw new Error(`Pi activated unexpected tools: ${activeNames.join(', ')}`);

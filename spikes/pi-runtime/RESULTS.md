@@ -63,3 +63,27 @@ SDK 只报告每个 assistant 响应的 usage；job/root 累计预算由主节�
 Pi 1.0.4 满足继续采用的接口条件：工具可完全收窄，执行前 hook 可拿到完整工具批次，会话 transcript 可持久化和恢复，推理取消可传递，父任务可以在一轮后交还控制权。没有发现阻止采用 Pi 的 SDK 缺口。
 
 P0 作为整体仍为 **进行中**。正式通过前需补齐真实 provider 取消/usage 验证、SQLite + Pi transcript 崩溃恢复设计与测试、累计 job/root 预算，以及可持久化父子等待。上述后续项横跨 P0 与 P3/P5 的实际实现，不应误报为当前已经验收。
+
+## 2026-10-07 SQLite → Pi transcript 恢复增量
+
+`npm test`：29 项通过，0 失败。新增 5 个独立 Node 子进程使用真实
+better-sqlite3 / Pi SessionManager 写入后 SIGKILL；恢复侧重新打开 SQLite，
+使用公开 Pi SDK 重建及重新打开 JSONL，并以 faux provider 验证实际 AgentSession。
+没有请求外部模型，未验证机器掉电、文件系统损坏或真实 worker RPC。
+
+| 注入窗口 | 预期与实际结果 |
+|---|---|
+| SQLite 意图已提交，JSONL 无 assistant | 阻塞；两个原 call ID 保留，不生成下一模型请求，不执行工具 |
+| JSONL 有 assistant，SQLite 无意图 | 丢弃 JSONL 意图，恢复 SQLite 原用户请求；新模型响应请求 1 次，工具执行 0 次 |
+| 两项结果提交，JSONL 未写结果 | 重建原 assistant 与原两项结果；Pi 继续请求 1 次，工具重放 0 次 |
+| 第一项完成，第二项 dispatched 未知 | 阻塞原第二项；恢复不请求模型或重放工具 |
+| 取消历史落盘 | 保留 aborted assistant；直接 continue 被 SDK 拒绝且请求 0 次；新持久用户消息后恢复推理 |
+
+另外验证历史幂等/冲突、多条用户与 assistant 顺序、缺失 legacy 基础历史阻塞、
+结果身份不匹配阻塞、参数内容不匹配阻塞，以及恢复 AgentSession 自动压缩已禁用。
+SQLite 事务同时记录工具批次与历史次序；JSONL 只是可重建投影，重试恢复从 SQLite
+重新创建文件。系统 prompt 和运行配置仍由 host 提供。
+
+本项收口的是历史投影和失败关闭规则。**已提交但未完成调用的安全派发、worker 账本
+对账和 Coordinator 集成仍未完成，P0 整体仍未通过。**旧检查点没有用户历史时不能
+从 JSONL 静默导入执行；必须明确迁移后再恢复。

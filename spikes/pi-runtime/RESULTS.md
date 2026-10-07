@@ -88,3 +88,34 @@ SQLite 事务同时记录工具批次与历史次序；JSONL 只是可重建投�
 本项收口的是历史投影和失败关闭规则。**已提交但未完成调用的安全派发、worker 账本
 对账和 Coordinator 集成仍未完成，P0 整体仍未通过。**旧检查点没有用户历史时不能
 从 JSONL 静默导入执行；必须明确迁移后再恢复。
+
+## 2026-10-07 Worker SQLite 账本对账增量
+
+`npm test`：39 项通过，0 失败。新增 worker SQLite adapter 与主节点持久请求绑定，
+明确返回 completed / observe / wait / dispatch_same_request / needs_attention。
+这组测试无远程连接、无模型请求；可信身份由测试 host 注入，不代表已实现网络认证。
+
+| 验证 | 预期与实际结果 |
+|---|---|
+| 主节点 dispatched、worker 尚未 accepted 后 SIGKILL | 同可信账本、下界以上缺失证明允许原 ID/hash 请求重传；后续调用仍等待 |
+| accepted 或 running 后 SIGKILL、worker 新 boot | needs_attention；不重启工具、不开放后续调用 |
+| 唯一 marker 副作用完成、结果尚未落库后 SIGKILL | needs_attention；文件只有一条原 call ID，禁止重放 |
+| 结果已提交、发送/主节点结果落库前 SIGKILL | 从 worker 导入原 Pi result；不重复 marker append；完成后才开放下一序号 |
+| 同 boot accepted/running | observe；worker 拒绝另一个活动调用；Pi transcript 恢复仍阻塞 |
+| 两项串行结果导入 | 恢复原两个 call ID 的完整 transcript |
+| 账本变化/不可用、缺失原绑定、请求 hash 或本地结果矛盾 | needs_attention，不推断安全执行 |
+| 结果明细回收 | 保留 job 下界与 call ID/hash tombstone，旧序号或跨 job 同 ID 不能复活 |
+
+五个独立 Node 子进程使用真实 SQLite WAL/FULL，在上述窗口 SIGKILL。
+副作用为临时目录文件追加；验证重启观察与结果恢复不会追加第二条 marker。
+该证据不是机器掉电持久性证明，也不证明任意外部命令恰好一次。
+
+主节点绑定持久化失败或缺失时拒绝对账；派发前必须落库绑定。已派发且原绑定丢失时，
+不能用当前 ledger 重新绑定。absence 决策仍需 worker accepted 事务重新核对活动槽；
+它不是直接执行授权。取消/终态 job gate 与 needs_attention 的业务持久化仍由未来
+Coordinator 承担。
+
+请求 hash 使用有限 JSON 值与排序 key 的 provisional spike-json-v1；测试固定 SHA-256
+样例与排序一致性，并拒绝 undefined、Infinity、稀疏/装饰数组。**未宣称 RFC8785
+合规或 Rust/JS 互通。** 生产数据目录锁、Rust worker/WSS、完整调度和预算/父子等待
+集成仍未完成，P0 整体仍未通过。

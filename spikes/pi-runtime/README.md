@@ -64,3 +64,40 @@ Projection success grants no job execution authorization. Before starting a
 model request, the Coordinator must check durable job lifecycle state; aborted,
 cancelled or terminal jobs remain stopped until an explicit authorized lifecycle
 transition. A new user message alone does not override that gate.
+
+`worker-ledger.js` adds a separate SQLite worker ledger and host-side
+`WorkerReconciler`. Persist `bind()` before any dispatch, supplying the target
+validated by the host (worker/ledger/workspace/version), original session and
+timeout. The binding is immutable and restart-safe. A checkpoint/binding gap
+fails closed during reconciliation; an already dispatched call without its
+original binding cannot acquire a new one. These APIs do not authenticate a
+remote worker: verified identity must come from a trusted host connection layer.
+
+`reconcile()` returns one explicit decision:
+
+- `completed`: import the cached matching Pi result into the local checkpoint.
+- `observe`: accepted/running in the same verified boot; continue observing.
+- `wait`: an earlier serial call is unresolved.
+- `dispatch_same_request`: the same verified ledger authoritatively has never
+  accepted this ID/sequence above its retired floor. This is a decision, not an
+  execution permit: call `ledger.accept()` in its immediate transaction before
+  marking running/starting a side effect. It rechecks identity, deduplication,
+  retained floor and the worker-wide unresolved slot.
+- `needs_attention`: identity loss/change, unknown old-boot execution, missing
+  binding, conflicting request/result or insufficient retained evidence.
+
+Missing detail at/below the retained floor is unknown, never a fresh dispatch.
+Retirement requires a host result commit/ack first, and retains per-call identity
+and hash tombstones even after detailed results are deleted. Same-boot repeated
+acceptance returns existing state; `start()` only consumes a fresh accepted
+transition once. A new boot cannot restart an accepted/running record. Reconcile
+never executes a tool or starts a model; incomplete history stays blocked by the
+existing transcript recovery gate.
+
+Request hash covers original job/turn/session/call/sequence, target workspace
+identity/version, tool arguments and timeout. Its sorted-key `spike-json-v1`
+algorithm is **provisional, not RFC 8785 conformant**; Rust/JS interoperability
+and normative RFC fixtures are still production work. Process/data-directory
+exclusive ownership, authenticated transport, lifecycle blocking persistence,
+RPC dispatch, result acknowledgments and full Coordinator scheduling are also
+not implemented by this spike.

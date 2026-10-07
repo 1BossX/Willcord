@@ -119,3 +119,37 @@ Coordinator 承担。
 样例与排序一致性，并拒绝 undefined、Infinity、稀疏/装饰数组。**未宣称 RFC8785
 合规或 Rust/JS 互通。** 生产数据目录锁、Rust worker/WSS、完整调度和预算/父子等待
 集成仍未完成，P0 整体仍未通过。
+
+## 2026-10-07 最小 Worker ExecutionCoordinator 增量
+
+`npm test`：53 项通过，0 失败。新增 worker-role Coordinator，使用实际 Pi SDK 与
+SQLite；worker transport 为注入的本地假实现，无外部模型或 WSS 请求。
+Coordinator 与预算 adapter 共享检查点 **同一 SQLite connection**，工具批次的
+usage、原意图、可信目标绑定及 lifecycle 在同一事务中提交。
+
+| 验证 | 预期与实际结果 |
+|---|---|
+| 实际 Pi 同轮两工具 | 顺序执行原 call IDs；重复 hook 只记一次 usage/step；下一轮由 Coordinator 显式启动 |
+| 绑定失败 | usage、整批意图、绑定全部回滚；Pi 捕获 hook 错误后仍持久 needs_attention；重复恢复不解封 |
+| 超 token ceiling | worker accepted 前拒绝整批，配对 not-executed 结果；工具执行 0 次，不能请求下一轮 |
+| root step/attempt ceiling | 最后合法轮次工具可执行；下一模型请求被 gate；模型 attempt 先持久化 |
+| 两工具之间共享预算耗尽 | 第一项完成；第二项无 worker accepted，配对拒绝结果；不继续推理 |
+| 取消后的迟到 provider 回复 | 原 generation 失效；新 usage/意图/工具/terminal commit 均为 0 |
+| 已运行工具期间取消 | 保留真实 worker 完成事实；恢复导入结果，下一未接受项配对取消；持久 cancelled，无继续模型请求 |
+| 恢复期间取消 | generation 递增；恢复不能覆盖为 ready；并发 recover/runStep 拒绝 |
+
+四个独立子进程实际创建 Pi session，并在模型请求开始、完整意图事务提交后、文件
+marker 副作用后及 worker 结果提交后 SIGKILL。重启分别得到：未知最终 usage 阻塞、
+按原意图执行一次、未知副作用阻塞、取回缓存原结果而不重复追加 marker。
+恢复保持原 token/step counters；仅明确安全恢复后发出下一模型请求，不重新生成
+已提交的工具 turn。未知模型 attempt 连续恢复仍为 needs_attention。
+
+usage 取 pinned Pi adapter 的 input + cacheRead + cacheWrite / output；测试以实际
+faux provider 返回的 message usage 核对计数，并用固定样例核对 cache 分项口径。
+该 provider 会根据实际 prompt 估算 tokens，所以未将手写 faux usage 当成真实回包。
+模型请求前另记 attempt 并按 job/root maxSteps 限制总请求次数。取消或网络中断后的
+最终 usage 可能未知；已有计数不回零，但本项不保证精确账单或严格货币成本 ceiling。
+
+**本 PR 只收口 worker 执行路径。**取消 lifecycle 已持久化，aborted provider 消息未
+投影到 SQLite 历史。Main delegate、持久父子等待及匹配 child 结果尚未接入；生产
+single-owner 锁、Rust/WSS、远程终止核验与规范 RFC8785 仍未实现。P0 整体仍未通过。

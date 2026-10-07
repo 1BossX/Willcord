@@ -4,6 +4,14 @@ import { WorkerReconciler } from './worker-ledger.js';
 import { recoverTranscript } from './transcript-recovery.js';
 import { validateToolArguments } from '@earendil-works/pi-ai';
 import { isDeepStrictEqual } from 'node:util';
+import { createHash } from 'node:crypto';
+import { Type } from 'typebox';
+
+const MAIN_TOOLS = [
+  { name: 'list_workers', parameters: Type.Object({}, { additionalProperties: false }) },
+  { name: 'delegate', parameters: Type.Object({ input: Type.String() }, { additionalProperties: false }) },
+  { name: 'get_job', parameters: Type.Object({ childJobId: Type.String() }, { additionalProperties: false }) },
+].map((tool) => ({ ...tool, label: tool.name, description: tool.name }));
 
 export function piUsage(message) {
   // Pi provider adapters separate uncached input from cache reads/writes.
@@ -14,8 +22,8 @@ export function piUsage(message) {
   return { inputTokens: input + cacheRead + cacheWrite, outputTokens: output };
 }
 
-/** Single-owner worker-role integration spike. Transport/identity is injected;
- * no remote authentication or parent/child orchestration is implemented here. */
+/** Single-owner Main/worker orchestration spike. Transport and identity are
+ * injected; production authentication and ownership locks remain deferred. */
 export class ExecutionCoordinator {
   constructor({ store, ledger, verifiedIdentity, trustedTarget, sessionId, sessionOptions, tools, execute, timeoutMs = 1000 }) {
     this.store = store;
@@ -25,31 +33,47 @@ export class ExecutionCoordinator {
     this.active = new Map();
     store.db.exec(`CREATE TABLE IF NOT EXISTS coordinator_jobs (
       job_id TEXT PRIMARY KEY REFERENCES runtime_job_state(job_id),
-      status TEXT NOT NULL CHECK(status IN ('ready','generating','tools','completed','cancelled','needs_attention','budget_exceeded')),
+      status TEXT NOT NULL CHECK(status IN ('ready','generating','tools','waiting_children','completed','failed','cancelled','needs_attention','budget_exceeded')),
       cancel_requested INTEGER NOT NULL DEFAULT 0, reason TEXT
     );
     CREATE TABLE IF NOT EXISTS coordinator_attempts (
       job_id TEXT NOT NULL, generation INTEGER NOT NULL, PRIMARY KEY(job_id, generation)
     );`);
+    this.#upgradeLifecycle();
+    store.db.exec(`CREATE TABLE IF NOT EXISTS coordinator_targets (job_id TEXT PRIMARY KEY REFERENCES runtime_job_state(job_id), target_json TEXT NOT NULL, session_id TEXT NOT NULL, timeout_ms INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS coordinator_roles (job_id TEXT PRIMARY KEY REFERENCES runtime_job_state(job_id), role TEXT NOT NULL CHECK(role IN ('main','worker')));
+      CREATE TABLE IF NOT EXISTS coordinator_delegations (parent_job_id TEXT NOT NULL REFERENCES runtime_job_state(job_id), turn_key TEXT NOT NULL, call_id TEXT NOT NULL, child_job_id TEXT NOT NULL UNIQUE REFERENCES runtime_job_state(job_id), projected INTEGER NOT NULL DEFAULT 0 CHECK(projected IN (0,1)), result_json TEXT, PRIMARY KEY(parent_job_id, call_id));`);
   }
-  createJob({ jobId, rootJobId = jobId, maxTokens, maxSteps, prompt }) {
+  #upgradeLifecycle() {
+    const schema = this.store.db.prepare("SELECT sql FROM sqlite_master WHERE name = 'coordinator_jobs'").get().sql;
+    if (schema.includes("'waiting_children'")) return;
     this.store.db.transaction(() => {
-      this.state.createJob({ jobId, rootJobId, maxTokens, maxSteps });
+      this.store.db.exec(`CREATE TABLE coordinator_jobs_v2 (job_id TEXT PRIMARY KEY REFERENCES runtime_job_state(job_id), status TEXT NOT NULL CHECK(status IN ('ready','generating','tools','waiting_children','completed','failed','cancelled','needs_attention','budget_exceeded')), cancel_requested INTEGER NOT NULL DEFAULT 0, reason TEXT);
+        INSERT INTO coordinator_jobs_v2 SELECT job_id,status,cancel_requested,reason FROM coordinator_jobs;
+        DROP TABLE coordinator_jobs; ALTER TABLE coordinator_jobs_v2 RENAME TO coordinator_jobs;`);
+    }).immediate();
+  }
+  createJob({ jobId, rootJobId = jobId, parentJobId = null, maxTokens, maxSteps, prompt, role = 'worker' }) {
+    this.store.db.transaction(() => {
+      if (!['main', 'worker'].includes(role)) throw new Error('unknown role');
+      this.state.createJob({ jobId, rootJobId, parentJobId, maxTokens, maxSteps });
       this.store.db.prepare("INSERT INTO coordinator_jobs(job_id,status) VALUES (?, 'ready')").run(jobId);
+      this.store.db.prepare('INSERT INTO coordinator_roles VALUES (?, ?)').run(jobId, role);
+      this.store.db.prepare('INSERT INTO coordinator_targets VALUES (?, ?, ?, ?)').run(jobId, JSON.stringify(this.trustedTarget), this.sessionId, this.timeoutMs);
       this.store.appendHistory(jobId, 'initial-user', { role: 'user', content: prompt, timestamp: Date.now() });
     }).immediate();
   }
   readJob(jobId) {
     const row = this.store.db.prepare('SELECT * FROM coordinator_jobs WHERE job_id = ?').get(jobId);
     if (!row) throw new Error('unknown coordinator job');
-    return { ...this.state.readJob(jobId), lifecycle: row.status, cancelRequested: Boolean(row.cancel_requested), reason: row.reason };
+    return { ...this.state.readJob(jobId), role: this.store.db.prepare('SELECT role FROM coordinator_roles WHERE job_id = ?').get(jobId)?.role ?? 'worker', lifecycle: row.status, cancelRequested: Boolean(row.cancel_requested), reason: row.reason };
   }
   #set(jobId, status, reason = null) {
     this.store.db.prepare('UPDATE coordinator_jobs SET status = ?, reason = ? WHERE job_id = ?').run(status, reason, jobId);
   }
   #current(jobId, generation) {
     const job = this.readJob(jobId);
-    return job.generation === generation && !job.cancelRequested && ['generating', 'tools'].includes(job.lifecycle);
+    return job.generation === generation && !job.cancelRequested && ['generating', 'tools', 'waiting_children'].includes(job.lifecycle);
   }
   #hasUnknownAttempt(jobId) {
     return Boolean(this.store.db.prepare(`SELECT 1 FROM coordinator_attempts a
@@ -76,8 +100,10 @@ export class ExecutionCoordinator {
       if (!this.#current(jobId, generation)) return false;
       const allowed = this.#account(jobId, generation, entry.assistantMessage);
       this.store.persistTurn({ jobId, ...entry });
+      if (this.readJob(jobId).role === 'main') return this.#commitMainBatch(jobId, entry, allowed);
+      const target = this.#jobTarget(jobId);
       for (const call of entry.calls) this.reconciler.bind({ jobId, turnKey: entry.turnKey, callId: call.id,
-        trustedTarget: this.trustedTarget, sessionId: this.sessionId, timeoutMs: this.timeoutMs });
+        trustedTarget: target.target, sessionId: target.sessionId, timeoutMs: target.timeoutMs });
       if (!allowed) {
         const turn = this.store.readTurn(jobId, entry.turnKey);
         for (const call of turn.calls) this.#notExecuted(jobId, turn, call, 'Budget exceeded before worker acceptance');
@@ -88,6 +114,109 @@ export class ExecutionCoordinator {
       return true;
     }).immediate();
   }
+  #jobTarget(jobId) {
+    const row = this.store.db.prepare('SELECT * FROM coordinator_targets WHERE job_id = ?').get(jobId);
+    if (row) return { target: JSON.parse(row.target_json), sessionId: row.session_id, timeoutMs: row.timeout_ms };
+    // Upgrade old in-flight worker jobs only from their immutable dispatch
+    // bindings, never from a newly configured target after restart.
+    const bindings = this.store.db.prepare('SELECT request_json FROM host_worker_bindings WHERE job_id = ?').all(jobId).map((row) => JSON.parse(row.request_json));
+    if (!bindings.length) throw new Error('legacy job missing original target snapshot');
+    const snapshots = bindings.map(({ workerId, ledgerId, workspaceId, workspaceVersion, sessionId, timeoutMs }) => ({ target: { workerId, ledgerId, workspaceId, workspaceVersion }, sessionId, timeoutMs }));
+    if (snapshots.some((item) => !isDeepStrictEqual(item, snapshots[0]))) throw new Error('legacy target contradiction');
+    this.store.db.prepare('INSERT INTO coordinator_targets VALUES (?, ?, ?, ?)').run(jobId, JSON.stringify(snapshots[0].target), snapshots[0].sessionId, snapshots[0].timeoutMs);
+    return snapshots[0];
+  }
+  failJob(jobId, reason) {
+    if (this.active.has(jobId)) throw new Error('cannot fail active job');
+    return this.store.db.transaction(() => {
+      const job = this.readJob(jobId);
+      if (job.lifecycle !== 'ready' || this.store.findIncompleteTurns(jobId).length || this.#pendingChildren(jobId).length) throw new Error('unresolved job cannot be marked failed');
+      this.store.db.prepare('UPDATE runtime_job_state SET generation = generation + 1 WHERE job_id = ?').run(jobId);
+      this.#set(jobId, 'failed', reason);
+      return this.readJob(jobId);
+    }).immediate();
+  }
+  #pendingChildren(parentJobId) {
+    return this.store.db.prepare('SELECT * FROM coordinator_delegations WHERE parent_job_id = ? AND projected = 0 ORDER BY rowid').all(parentJobId);
+  }
+  children(parentJobId) {
+    return this.store.db.prepare('SELECT child_job_id FROM coordinator_delegations WHERE parent_job_id = ? ORDER BY rowid').all(parentJobId).map((row) => this.readJob(row.child_job_id));
+  }
+  #mainResult(jobId, turnKey, call, value, isError = false) {
+    const result = { role: 'toolResult', toolCallId: call.id, toolName: call.name,
+      content: [{ type: 'text', text: JSON.stringify(value) }], details: value, isError, timestamp: Date.now() };
+    this.store.markDispatched(jobId, turnKey, call.id);
+    this.store.recordResult(jobId, turnKey, call.id, result);
+  }
+  #commitMainBatch(jobId, entry, allowed) {
+    const parent = this.readJob(jobId);
+    const turn = this.store.readTurn(jobId, entry.turnKey);
+    const target = this.#jobTarget(jobId);
+    for (const call of entry.calls) {
+      const stored = turn.calls.find((item) => item.callId === call.id);
+      if (stored.status === 'completed') continue;
+      try {
+        const tool = MAIN_TOOLS.find((tool) => tool.name === call.name);
+        if (!tool) throw new Error('unknown main tool');
+        const args = validateToolArguments(tool, call);
+        if (!isDeepStrictEqual(args, call.arguments)) throw new Error('main arguments require transformation');
+        if (!allowed) throw new Error('budget exceeded before local acceptance');
+      } catch (error) { this.#notExecuted(jobId, turn, stored, error.message); continue; }
+      if (call.name === 'delegate') {
+        const childId = `child:${createHash('sha256').update(JSON.stringify([jobId, call.id])).digest('hex')}`;
+        const old = this.store.db.prepare('SELECT * FROM coordinator_delegations WHERE parent_job_id = ? AND call_id = ?').get(jobId, call.id);
+        if (old) throw new Error('delegate identity reused across turns');
+        this.createJob({ jobId: childId, rootJobId: parent.rootJobId, parentJobId: jobId, maxTokens: parent.maxTokens, maxSteps: parent.maxSteps, prompt: call.arguments.input, role: 'worker' });
+        this.store.db.prepare('UPDATE coordinator_targets SET target_json = ?, session_id = ?, timeout_ms = ? WHERE job_id = ?').run(JSON.stringify(target.target), `session:${childId}`, target.timeoutMs, childId);
+        this.store.db.prepare('INSERT INTO coordinator_delegations(parent_job_id,turn_key,call_id,child_job_id) VALUES (?, ?, ?, ?)').run(jobId, entry.turnKey, call.id, childId);
+        this.#mainResult(jobId, entry.turnKey, call, { childJobId: childId, status: 'accepted' });
+      } else if (call.name === 'list_workers') this.#mainResult(jobId, entry.turnKey, call, { workers: [{ workerId: target.target.workerId, workspaceId: target.target.workspaceId }] });
+      else {
+        const owned = this.store.db.prepare('SELECT 1 FROM coordinator_delegations WHERE parent_job_id = ? AND child_job_id = ?').get(jobId, call.arguments.childJobId);
+        this.#mainResult(jobId, entry.turnKey, call, owned ? { job: this.readJob(call.arguments.childJobId) } : { error: 'child does not belong to parent' }, !owned);
+      }
+    }
+    this.#set(jobId, !allowed ? 'budget_exceeded' : this.#pendingChildren(jobId).length ? 'waiting_children' : 'tools');
+    return allowed;
+  }
+  scanChildren(parentJobId) {
+    if (this.active.has(parentJobId)) throw new Error('cannot scan active parent');
+    return this.store.db.transaction(() => {
+      const parent = this.readJob(parentJobId);
+      if (parent.role !== 'main') throw new Error('job is not a main parent');
+      let unknown = false;
+      for (const row of this.#pendingChildren(parentJobId)) {
+        const child = this.readJob(row.child_job_id);
+        if (child.parentJobId !== parentJobId || child.rootJobId !== parent.rootJobId) throw new Error('child ownership contradiction');
+        if (!child.cancelRequested && !this.active.has(child.jobId) && this.#hasUnknownAttempt(child.jobId)) {
+          this.store.db.prepare("UPDATE runtime_job_state SET generation = generation + 1, status = 'ready' WHERE job_id = ? AND status = 'running'").run(child.jobId);
+          this.#set(child.jobId, 'needs_attention', 'interrupted model attempt; usage unknown');
+          unknown = true; continue;
+        }
+        if (!['completed', 'failed', 'cancelled', 'budget_exceeded'].includes(child.lifecycle)) {
+          unknown ||= child.lifecycle === 'needs_attention'; continue;
+        }
+        const history = this.store.readHistory(child.jobId);
+        const final = history.filter((entry) => entry.message?.role === 'assistant').at(-1)?.message;
+        const result = { jobId: child.jobId, parentJobId, rootJobId: child.rootJobId, status: child.lifecycle,
+          output: final?.content ?? history.flatMap((entry) => entry.turn?.calls.map((call) => call.result) ?? []), reason: child.reason };
+        const serialized = JSON.stringify(result);
+        if (row.result_json !== null && row.result_json !== serialized) throw new Error('child result contradiction');
+        // Stable source timestamp, not scan time, makes replay idempotent.
+        const timestamp = final?.timestamp ?? history[0].message.timestamp;
+        this.store.appendHistory(parentJobId, `child-result:${child.jobId}`, { role: 'user', content: JSON.stringify({ type: 'child_result', ...result }), timestamp });
+        this.store.db.prepare('UPDATE coordinator_delegations SET projected = 1, result_json = ? WHERE parent_job_id = ? AND call_id = ?').run(serialized, parentJobId, row.call_id);
+      }
+      const pending = this.#pendingChildren(parentJobId);
+      const waitOnly = parent.lifecycle === 'waiting_children' || parent.lifecycle === 'needs_attention' && ['child requires attention', 'child cancellation unresolved', 'cancellation requested'].includes(parent.reason);
+      if (pending.length && (waitOnly || parent.cancelRequested)) this.#set(parentJobId, unknown || parent.cancelRequested ? 'needs_attention' : 'waiting_children', unknown ? 'child requires attention' : parent.cancelRequested ? 'child cancellation unresolved' : null);
+      else if (!pending.length && parent.cancelRequested) this.#set(parentJobId, 'cancelled');
+      else if (this.#hasUnknownAttempt(parentJobId)) this.#set(parentJobId, 'needs_attention', 'interrupted model attempt; usage unknown');
+      else if (!pending.length && waitOnly) this.#set(parentJobId, 'ready');
+      this.state.finishGeneration(parentJobId, parent.generation);
+      return this.readJob(parentJobId);
+    }).immediate();
+  }
   #findCall(jobId, callId) {
     const row = this.store.db.prepare('SELECT turn_key FROM runtime_calls WHERE job_id = ? AND call_id = ?').all(jobId, callId);
     if (row.length !== 1) throw new Error('ambiguous durable call');
@@ -96,6 +225,11 @@ export class ExecutionCoordinator {
   async #executeCall(jobId, generation, callId, signal) {
     if (!this.#current(jobId, generation)) throw new Error('stale generation cannot execute');
     const turnKey = this.#findCall(jobId, callId);
+    if (this.readJob(jobId).role === 'main') {
+      const cached = this.store.readAuthorizedCall(jobId, turnKey, callId);
+      if (cached.status !== 'completed') throw new Error('local main acceptance is not committed');
+      return { ...cached.result, terminate: true };
+    }
     const outcome = this.reconciler.reconcile({ jobId, turnKey, callId, verifiedIdentity: this.verifiedIdentity, ledger: this.ledger });
     if (outcome.action === 'completed') return outcome.result;
     if (outcome.action !== 'dispatch_same_request') {
@@ -154,10 +288,17 @@ export class ExecutionCoordinator {
         return;
       }
       const hasTools = message.content.some((part) => part.type === 'toolCall');
+      if (hasTools && this.readJob(jobId).role === 'main' && !this.store.db.prepare('SELECT 1 FROM runtime_usage WHERE job_id = ? AND generation = ?').get(jobId, generation)) {
+        // Pi skips beforeToolCall for an invalid current call. A final Main
+        // response still supplies usage and all local intents; accept/reject
+        // them atomically here, so an all-invalid batch has explicit results.
+        this.#commitBatch(jobId, generation, { turnKey: `main-final:${generation}`, assistantMessage: message, calls: message.content.filter((part) => part.type === 'toolCall') });
+        if (!this.#current(jobId, generation)) return;
+      }
       if (!hasTools) {
         const allowed = this.#account(jobId, generation, message);
         this.store.appendHistory(jobId, `assistant:${generation}`, message);
-        this.#set(jobId, allowed ? 'completed' : 'budget_exceeded');
+        this.#set(jobId, this.#pendingChildren(jobId).length ? 'needs_attention' : allowed ? 'completed' : 'budget_exceeded', this.#pendingChildren(jobId).length ? 'unresolved child ownership' : null);
       } else {
         const usage = this.store.db.prepare('SELECT 1 FROM runtime_usage WHERE job_id = ? AND generation = ?').get(jobId, generation);
         const durable = message.content.filter((part) => part.type === 'toolCall').every((part) => {
@@ -166,7 +307,7 @@ export class ExecutionCoordinator {
         });
         if (!usage || !durable) { this.#set(jobId, 'needs_attention', 'batch authorization did not commit'); return; }
         const incomplete = this.store.findIncompleteTurns(jobId);
-        this.#set(jobId, incomplete.length ? 'needs_attention' : 'ready', incomplete.length ? 'unresolved batch' : null);
+        this.#set(jobId, incomplete.length ? 'needs_attention' : this.#pendingChildren(jobId).length ? 'waiting_children' : 'ready', incomplete.length ? 'unresolved batch' : null);
       }
       this.state.finishGeneration(jobId, generation);
     }).immediate();
@@ -175,7 +316,7 @@ export class ExecutionCoordinator {
     if (this.active.has(jobId)) throw new Error('job already active');
     const generation = this.store.db.transaction(() => {
       const job = this.readJob(jobId);
-      if (job.lifecycle !== 'ready' || job.cancelRequested || this.store.findIncompleteTurns(jobId).length) throw new Error('job is not ready');
+      if (job.lifecycle !== 'ready' || job.cancelRequested || this.store.findIncompleteTurns(jobId).length || this.#pendingChildren(jobId).length) throw new Error('job is not ready');
       if (this.#hasUnknownAttempt(jobId)) {
         this.#set(jobId, 'needs_attention', 'interrupted model attempt; usage unknown'); return null;
       }
@@ -195,8 +336,10 @@ export class ExecutionCoordinator {
     let session;
     try {
       const projection = recoverTranscript({ store: this.store, jobId, cwd: this.sessionOptions.cwd, sessionDir: this.sessionOptions.sessionDir });
-      ({ session } = await createPiSession({ ...this.sessionOptions, role: 'worker', sessionManager: projection.sessionManager,
-        customTools: ROLE_TOOLS.worker.map((name) => ({ ...this.tools.find((tool) => tool.name === name), execute: (callId, _args, signal) => this.#executeCall(jobId, generation, callId, signal) })),
+      const role = this.readJob(jobId).role;
+      const declarations = role === 'main' ? MAIN_TOOLS : this.tools;
+      ({ session } = await createPiSession({ ...this.sessionOptions, role, sessionManager: projection.sessionManager,
+        customTools: ROLE_TOOLS[role].map((name) => ({ ...declarations.find((tool) => tool.name === name), execute: (callId, _args, signal) => this.#executeCall(jobId, generation, callId, signal) })),
         commitAssistantTurn: (entry) => this.#commitBatch(jobId, generation, entry),
         onAssistantTurn: ({ message }) => this.#finish(jobId, generation, message),
       }));
@@ -204,7 +347,7 @@ export class ExecutionCoordinator {
       if (!this.#current(jobId, generation)) return this.readJob(jobId);
       session.agent.streamFunction = streamFunction;
       await session.agent.continue();
-      if (this.#current(jobId, generation)) this.#set(jobId, 'needs_attention', 'turn ended without durable finish');
+      if (this.#current(jobId, generation) && this.state.readJob(jobId).status === 'running') this.#set(jobId, 'needs_attention', 'turn ended without durable finish');
     } catch (error) {
       if (this.#current(jobId, generation)) this.#set(jobId, 'needs_attention', error.message);
       throw error;
@@ -214,7 +357,8 @@ export class ExecutionCoordinator {
   async recover(jobId) {
     if (this.active.has(jobId)) throw new Error('cannot recover active job');
     const job = this.readJob(jobId);
-    if (['completed', 'budget_exceeded', 'cancelled'].includes(job.lifecycle)) return job;
+    if (['completed', 'failed', 'budget_exceeded', 'cancelled'].includes(job.lifecycle)) return job;
+    if (job.role === 'main' && this.#pendingChildren(jobId).length) return this.scanChildren(jobId);
     if (job.lifecycle === 'needs_attention' && !job.cancelRequested && this.store.findIncompleteTurns(jobId).length === 0) return job;
     this.active.set(jobId, null);
     try {
@@ -254,7 +398,9 @@ export class ExecutionCoordinator {
       const latest = this.readJob(jobId);
       if (this.store.findIncompleteTurns(jobId).length) this.#set(jobId, 'needs_attention', 'unresolved batch after recovery');
       else if (job.lifecycle === 'generating' && !latest.cancelRequested) this.#set(jobId, 'needs_attention', 'interrupted model attempt; usage unknown');
-      else if (latest.lifecycle !== 'budget_exceeded') this.#set(jobId, latest.cancelRequested ? 'cancelled' : 'ready');
+      else if (latest.lifecycle !== 'budget_exceeded') {
+        this.#set(jobId, latest.cancelRequested ? 'cancelled' : 'ready');
+      }
       return this.readJob(jobId);
     } finally { this.active.delete(jobId); }
   }
@@ -262,11 +408,19 @@ export class ExecutionCoordinator {
     const active = this.active.get(jobId);
     this.store.db.transaction(() => {
       const job = this.readJob(jobId);
-      if (['completed', 'cancelled'].includes(job.lifecycle)) return;
+      if (['completed', 'failed', 'cancelled', 'budget_exceeded'].includes(job.lifecycle)) return;
       this.store.db.prepare('UPDATE coordinator_jobs SET cancel_requested = 1 WHERE job_id = ?').run(jobId);
       this.store.db.prepare("UPDATE runtime_job_state SET generation = generation + 1, status = 'ready' WHERE job_id = ?").run(jobId);
-      this.#set(jobId, this.store.findIncompleteTurns(jobId).length ? 'needs_attention' : 'cancelled', 'cancellation requested');
+      this.#set(jobId, this.store.findIncompleteTurns(jobId).length || this.#pendingChildren(jobId).length ? 'needs_attention' : 'cancelled', 'cancellation requested');
+      for (const row of this.#pendingChildren(jobId)) {
+        const child = this.readJob(row.child_job_id);
+        if (['completed', 'failed', 'cancelled', 'budget_exceeded'].includes(child.lifecycle)) continue;
+        this.store.db.prepare('UPDATE coordinator_jobs SET cancel_requested = 1 WHERE job_id = ?').run(child.jobId);
+        this.store.db.prepare("UPDATE runtime_job_state SET generation = generation + 1, status = 'ready' WHERE job_id = ?").run(child.jobId);
+        this.#set(child.jobId, this.store.findIncompleteTurns(child.jobId).length ? 'needs_attention' : 'cancelled', 'parent cancellation requested');
+      }
     }).immediate();
+    for (const delegation of this.#pendingChildren(jobId)) await this.cancel(delegation.child_job_id);
     await active?.abort();
     // If a session is active, its late results cannot update host state. A later
     // recover() may import factual cached worker completion before cancellation.

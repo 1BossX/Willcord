@@ -166,3 +166,34 @@ worker accepted 前都调用公开 validateToolArguments；非法或需要 coerc
 needs_attention。新增 model SIGKILL 后，再在恢复 opening transaction 已提交处
 SIGKILL 的双进程测试；第三次重开及连续恢复仍阻塞，后续模型请求 0 次。
 即使旧式 lifecycle 被写为 ready，runStep 仍以缺失 usage 证据阻止推理。
+
+## 2026-10-07 Main / child delegation Coordinator 增量
+
+`npm test`：71 项通过，0 失败；`git diff --check` 通过。实际 Pi Main 工具名单为
+list_workers / delegate / get_job，child 为独立 worker role。工具与模型均为本地
+注入/faux provider，无外部请求或真实 WSS。
+
+| 验证 | 预期与实际结果 |
+|---|---|
+| 同轮两个 delegate 与本地工具 | 按提交顺序原子接受全部有效 child；重复 hooks 不新增 child、不重复计 usage；Main 请求 1 次后 waiting_children，无 worker slot |
+| 独立 child | host 派生稳定 child ID / parent / root；session 不同于 parent 且彼此不同；自己的原请求/history；目标、版本、session、timeout 在接受时固定 |
+| child 完成扫描 | 同 SQLite snapshot 读终态/history；逐个匹配 owned child，稳定 key / 源 timestamp 幂等投影；所有 child 已解决后 parent 才 ready |
+| invalid delegate / 越权 get_job | 显式错误结果、无非法 child；不能伪造 parent/root 或读取其他 parent 的 child |
+| 首项全非法、SDK 无 pre-tool hook | final response 原子保存实际 usage、原意图与 notExecuted 结果，不丢弃花费证据 |
+| child 工具错误 / 显式 terminal failure | 普通工具错误保留下一轮修复机会；host failJob 记录明确 failed outcome，并投影给 parent，不自动派生依赖 |
+| shared root budget | parent 与两个 child 累积计数；重启保持；root ceiling 阻止 parent 新模型请求 |
+| parent cancel | 同一事务标记/隔离所有 pending child；未知执行不假称取消完成；真实结果恢复后才能最终 cancelled |
+| 未知 child model usage | 从持久 attempt/usage 识别并 fence；parent 连续恢复仍阻塞，后续模型请求 0 次 |
+| 原 PR4 SQLite 文件升级 | CHECK schema 事务迁移；原在途 intent、usage、绑定保持，并可按原意图恢复 |
+
+新增独立 Pi 子进程 SIGKILL：delegate acceptance 提交后、child terminal 提交后而
+扫描前、projection 事务中、projection 提交后、parent cancellation 事务提交后以及
+child model 请求开始。验证 children 不重复创建、结果不重复追加、未决 parent 不
+推理，且取消传播崩溃时所有 sibling 已被持久隔离。projection 中途 crash 回滚整个
+事务，重启重扫得到相同两项结果；projection 提交后 crash 不重复写 history。
+
+Scanner 不依赖事件投递成功，直接读取同库 child state/history；terminal assistant
+history 与 child lifecycle 原子提交，parent 结果投影与等待解除也原子提交。工作仍为
+single-owner、单一配置目标的 spike。没有 full DAG/FIFO/worker registry/Rust/WSS，
+没有生产锁、远程终止核验或规范 RFC8785 互通；aborted provider transcript history
+仍未接入，未知 usage 无法精确计费。**P0 整体仍未宣称通过。**

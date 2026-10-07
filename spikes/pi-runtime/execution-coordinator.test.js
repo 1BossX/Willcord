@@ -44,7 +44,7 @@ test('actual Pi batch atomically accounts cached usage once, binds and executes 
 
 test('binding failure rolls back usage and entire intent transaction', async (t) => {
   const f = await fixture(t);
-  f.coordinator.trustedTarget = { ...f.coordinator.trustedTarget, workspaceVersion: null };
+  f.coordinator.reconciler.bind = () => { throw new Error('injected binding persistence failure'); };
   const c = core([response([fauxToolCall('write', {}, { id: 'rollback' })])]);
   await f.coordinator.runStep('job', c.streamSimple);
   assert.equal(f.coordinator.readJob('job').lifecycle, 'needs_attention');

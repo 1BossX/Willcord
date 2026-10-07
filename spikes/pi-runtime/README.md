@@ -157,3 +157,45 @@ Missing final usage is derived from the durable attempt/usage row relationship,
 not a transient lifecycle marker. Recovery fences generation and records that
 blocked decision in the same opening transaction; runStep independently checks
 for an unresolved attempt even if a stale lifecycle says ready.
+
+Main/child integration is now available through `createJob({ role: 'main', ... })`.
+Main exposes only `list_workers`, `delegate` and `get_job`. A delegate accepts
+only an input string; host-derived IDs fix its parent/root ownership. One complete
+Main batch transaction records actual usage, all original intents, serial local
+results, every child job and the parent's `waiting_children` lifecycle. Multiple
+delegates in one turn are retained. Invalid delegates get explicit not-executed
+results without creating children; all-invalid responses are committed from the
+final Pi response even though Pi skips their pre-tool hooks.
+
+Each child receives a distinct stable `session:${childId}`, its own ordered
+history, and an acceptance-time target/workspace/version/timeout snapshot.
+Children reuse the root budget, and later Coordinator configuration cannot
+rebind them. Main returns cached acceptance results and ends the Pi run without
+polling or consuming a worker slot. Local `get_job` reads only owned children,
+and local calls observe the submitted order inside the transaction.
+
+Run child worker jobs explicitly, then call `scanChildren(parentId)` (or parent
+`recover`). The scanner reads terminal child state/history in one SQLite snapshot,
+projects a stable source result into parent user history once, and clears the
+wait only when every child is resolved. It has no unreliable event dependency;
+crashes before or after projection commit converge to the same history. Failed
+child outcomes are explicit: trusted host `failJob()` marks a resolved ready job
+failed. Ordinary worker tool errors remain repairable and do not automatically
+make a child terminal. No dependent jobs are automatically launched.
+
+Parent cancellation atomically marks and fences every pending child before
+waiting for aborts. Unknown accepted/running execution holds both cancellation
+and success; factual completion can later resolve it. Restart scanners derive
+inactive child model ambiguity from durable attempts/usage. Unrelated parent
+`needs_attention` and budget blocks are retained. Parent model generation and
+terminal completion both refuse unresolved children.
+
+The lifecycle CHECK schema is upgraded transactionally for existing PR4 files.
+Old in-flight worker targets are reconstructed only from immutable prior host
+bindings; legacy jobs without such evidence fail closed instead of adopting a
+new configured target. This spike routes to **one configured trusted worker**.
+It does not implement a worker registry, FIFO scheduling, a full dependency DAG,
+Rust/WSS, production ownership locks or remote process cleanup. Durable cancelled
+lifecycle is integrated, but aborted provider messages are still not projected
+to SQLite history. RFC8785 interoperability and exact interrupted-provider costs
+also remain open; P0 is not declared complete.

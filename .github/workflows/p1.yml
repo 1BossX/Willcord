@@ -1,0 +1,28 @@
+name: P1 foundations
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  verify:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.12.0'
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm protocol:generate
+      - run: git diff --exit-code -- packages/protocol/src/generated.ts worker/src/generated.rs
+      - run: cargo test --locked --manifest-path worker/Cargo.toml
+      - run: cargo build --locked --manifest-path worker/Cargo.toml
+      - run: pnpm check
+      - run: pnpm test
+      - run: pnpm build
+      - run: git diff --check

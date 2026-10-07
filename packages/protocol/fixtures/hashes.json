@@ -1,0 +1,34 @@
+[
+  {
+    "request": {
+      "call_id": "call-1",
+      "call_seq": 1,
+      "job_id": "job-1",
+      "session_id": "session-1",
+      "worker_id": "worker-a",
+      "workspace_id": "repo",
+      "workspace_version": 1,
+      "tool": {
+        "name": "write",
+        "arguments": {
+          "path": "说明.txt",
+          "content": "hello\n"
+        }
+      },
+      "timeout_ms": 600000
+    },
+    "sha256": "6f6ffaa178092d63c8c7e1b094b72f16aace776d543e3fa097ec76977b9e131e"
+  },
+  {
+    "request": {
+      "z": 0,
+      "a": 1e-7,
+      "text": "é😀",
+      "nested": {
+        "b": true,
+        "a": null
+      }
+    },
+    "sha256": "4f26638d537cc563e468459f8eeba4b8c8ff3025571f2ac135bd93eda02ed0d4"
+  }
+]

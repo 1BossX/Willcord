@@ -17,7 +17,7 @@
 | Workspace 映射 | P2 联调前 | 每台机器的 workspace_id、cwd、repo_id、remote、默认 workspace | 待提供 |
 | 域名与证书 | P7 上线前 | 若使用自有域名，提供 DNS 控制权；否则选择其他 TLS 终结方式 | 待决定 |
 | 主机与持久存储 | P7 上线前 | 单台常驻 Linux 主机；SQLite、账本、日志和备份有持久磁盘与空间预算 | 待准备 |
-| 管理员凭据配置方式 | P1 部署联调前 | 选择初始密码注入或首次启动设置流程；密码本身不发到聊天 | 待决定 |
+| 管理员凭据配置方式 | P1 部署联调前 | 已实现 INITIAL_ADMIN_PASSWORD 首次启动环境注入；密码本身不发到聊天 | 已提供配置方式，部署联调待验证 |
 
 ## 可立即开始的工作
 
@@ -26,8 +26,8 @@
 - [x] P0 Pi SDK spike：固定 Pi SDK 1.0.4；faux-provider 验证工具隔离、执行前完整调用 checkpoint seam、串行调用、transcript 恢复、取消信号、预算 gate 和委派等待 seam。
 - [x] P0 SQLite checkpoint adapter：整轮/工具意图事务提交、幂等重试、调用序号、派发/结果状态约束；已从真实 Pi hook 集成测试，SQLite 重开后保留待对账调用。
 - [x] P0 八条验收：实际 Pi/SQLite 历史投影、账本对账、worker/Main Coordinator、预算、父子等待、取消历史重载和明确中断重试；见 spike 结果矩阵。受控本地传输验证不代表生产 WSS/Rust 已实现。
-- [ ] 初始化 TypeScript/Rust workspace、CI 与协议 Schema。
-- [ ] 写入数据库初始 migration 与部署模板。
+- [x] 初始化 TypeScript/Rust workspace、双平台 CI 与首版身份/连接协议 Schema；完整协议矩阵尚未验收。
+- [x] 写入初始及升级 migration 与 Caddy 开发入口；发布服务模板留给 P7。
 
 P0 不需要真实 worker、域名或线上主机。用户已选择 OpenRouter + `deepseek/deepseek-v4.1-flash`，并在 `~/.zshrc` 配置 `OPENROUTER_KEY`。普通沙盒网络无法解析外部 DNS；提升网络权限后 `registry.npmjs.org` 与 `openrouter.ai` 均可连接，锁定依赖安装成功。2026-10-07 已完成真实模型 usage、Pi AgentSession 到 OpenRouter 的取消验证，以及 SQLite job/root 预算与父子等待 adapter 的持久化验证；已接入 single-owner spike Coordinator 并完成 P0 八条受控验收；生产调度、协议与身份仍属 P1–P7。密钥不得写入仓库或聊天。
 

@@ -1,0 +1,69 @@
+:root {
+  font-family: system-ui, sans-serif;
+  color: #142c36;
+  background: #f2f6f5;
+}
+* {
+  box-sizing: border-box;
+}
+main {
+  max-width: 880px;
+  margin: 72px auto;
+  padding: 24px;
+}
+header span {
+  letter-spacing: 0.16em;
+  font-size: 12px;
+  color: #357768;
+}
+h1 {
+  font-size: 38px;
+  margin: 12px 0;
+}
+header p {
+  color: #53676d;
+  margin-bottom: 40px;
+}
+form,
+article {
+  background: white;
+  border: 1px solid #dbe5e2;
+  border-radius: 12px;
+  padding: 28px;
+}
+form {
+  max-width: 420px;
+  display: grid;
+  gap: 16px;
+}
+input {
+  font: inherit;
+  padding: 12px;
+  border: 1px solid #a9bcb6;
+  border-radius: 6px;
+}
+button {
+  font: inherit;
+  background: #146650;
+  color: white;
+  border: 0;
+  border-radius: 6px;
+  padding: 12px;
+  cursor: pointer;
+}
+section {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+article h2 {
+  margin-top: 0;
+}
+small {
+  color: #607571;
+}
+button:focus-visible,
+input:focus-visible {
+  outline: 3px solid #4a9d87;
+  outline-offset: 3px;
+}

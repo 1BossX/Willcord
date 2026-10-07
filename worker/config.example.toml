@@ -1,0 +1,9 @@
+worker_id = "worker-a"
+data_dir = "/tmp/worker-plane-a"
+url = "wss://localhost:8443/ws/worker"
+[[workspaces]]
+workspace_id = "project"
+config_version = 1
+path = "/absolute/project/path"
+repo_id = "github.com/1BossX/WorkerPlane"
+is_default = true

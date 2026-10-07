@@ -1,0 +1,21 @@
+{
+  "name": "@worker-plane/protocol",
+  "private": true,
+  "type": "module",
+  "exports": "./dist/src/index.js",
+  "scripts": {
+    "build": "tsc && cp schema.json dist/schema.json",
+    "check": "tsc --noEmit",
+    "test": "node --import tsx --test test/*.test.ts"
+  },
+  "dependencies": {
+    "ajv": "8.17.1",
+    "canonicalize": "2.1.0"
+  },
+  "devDependencies": {
+    "json-schema-to-typescript": "15.0.4",
+    "typescript": "5.9.3",
+    "tsx": "4.20.6",
+    "@types/node": "24.7.2"
+  }
+}

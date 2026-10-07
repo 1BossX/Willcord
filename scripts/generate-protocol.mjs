@@ -33,7 +33,9 @@ const fieldType = (s) =>
             : "String";
 const workspace = schema.oneOf[0].properties.workspaces.items;
 let rust =
-  "// Generated from schema.json. Do not edit.\nuse serde::{Serialize, Deserialize};\n";
+  "// Generated from schema.json. Do not edit.\npub const MAX_FRAME_BYTES: usize = " +
+  schema["x-max-frame-bytes"] +
+  ";\nuse serde::{Serialize, Deserialize};\n";
 for (const [name, props] of [
   ["Workspace", workspace.properties],
   ...schema.oneOf.map((s) => [
@@ -45,7 +47,7 @@ for (const [name, props] of [
   ]),
 ]) {
   rust +=
-    "#[derive(Debug, Serialize, Deserialize)]\n#[serde(deny_unknown_fields)]\npub struct " +
+    "#[derive(Clone, Debug, Serialize, Deserialize)]\n#[serde(deny_unknown_fields)]\npub struct " +
     name +
     " {\n";
   for (const [key, value] of Object.entries(props))

@@ -1,6 +1,7 @@
 // Generated from schema.json. Do not edit.
+pub const MAX_FRAME_BYTES: usize = 65536;
 use serde::{Deserialize, Serialize};
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Workspace {
     pub workspace_id: String,
@@ -9,7 +10,7 @@ pub struct Workspace {
     pub repo_id: String,
     pub is_default: bool,
 }
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Register {
     pub protocol_version: u64,
@@ -20,7 +21,7 @@ pub struct Register {
     pub ledger_id: String,
     pub workspaces: Vec<Workspace>,
 }
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RegisterAck {
     pub protocol_version: u64,
@@ -30,7 +31,7 @@ pub struct RegisterAck {
     pub kind: String,
     pub reconciliation_required: bool,
 }
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Heartbeat {
     pub protocol_version: u64,
@@ -39,7 +40,7 @@ pub struct Heartbeat {
     #[serde(rename = "type")]
     pub kind: String,
 }
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Resume {
     pub protocol_version: u64,
@@ -48,7 +49,7 @@ pub struct Resume {
     #[serde(rename = "type")]
     pub kind: String,
 }
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Reconcile {
     pub protocol_version: u64,
@@ -59,7 +60,7 @@ pub struct Reconcile {
     pub ledger_id: String,
     pub ready: bool,
 }
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Ack {
     pub protocol_version: u64,

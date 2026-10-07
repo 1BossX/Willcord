@@ -6,6 +6,6 @@
 
 ## 当前状态
 
-P0 Pi runtime spike 的八条验收已在受控环境通过，证据见 [P0 结果](spikes/pi-runtime/RESULTS.md#p0-最终验收矩阵2026-10-07)。当前实现是实际 Pi SDK + SQLite 的 single-owner spike；当前已开始 P1 工程、协议、存储与身份开发，尚未具备生产工具执行能力。
+P0 Pi runtime spike 的八条验收已在受控环境通过，证据见 [P0 结果](spikes/pi-runtime/RESULTS.md#p0-最终验收矩阵2026-10-07)。
 
-P1 工程与身份基础已开始实施：pnpm workspace、Fastify/SQLite、React 登录与机器状态、Rust WSS 身份与连接。构建方式、已验证证据与剩余验收见 [P1 开发记录](docs/p1-development.md)。P1 全量验收尚未完成，任务执行未开放。
+P1 工程、协议、存储与身份实施涵盖 pnpm workspace、Fastify/SQLite、认证/CSRF、React worker 状态、Rust worker WSS 注册、epoch/心跳/对账，以及安全执行槽与 workspace 映射保护。P1 不开放模型生成的命令执行。构建方式和验收证据见 [P1 开发记录](docs/p1-development.md)。

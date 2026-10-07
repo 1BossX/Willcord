@@ -1,5 +1,16 @@
 [
   {
+    "name": "register acknowledgement",
+    "valid": true,
+    "frame": {
+      "protocol_version": 1,
+      "type": "register_ack",
+      "worker_id": "worker-a",
+      "connection_epoch": 2,
+      "reconciliation_required": true
+    }
+  },
+  {
     "name": "register",
     "valid": true,
     "frame": {
@@ -17,6 +28,28 @@
           "is_default": true
         }
       ]
+    }
+  },
+  {
+    "name": "resume acknowledgement",
+    "valid": true,
+    "frame": {
+      "protocol_version": 1,
+      "worker_id": "worker-a",
+      "connection_epoch": 2,
+      "type": "ack",
+      "ack_type": "resume"
+    }
+  },
+  {
+    "name": "reconcile acknowledgement",
+    "valid": true,
+    "frame": {
+      "protocol_version": 1,
+      "worker_id": "worker-a",
+      "connection_epoch": 2,
+      "type": "ack",
+      "ack_type": "reconcile"
     }
   },
   {
@@ -119,6 +152,17 @@
       "type": "heartbeat",
       "worker_id": "worker-a",
       "connection_epoch": 0
+    }
+  },
+  {
+    "name": "unknown acknowledgement",
+    "valid": false,
+    "frame": {
+      "protocol_version": 1,
+      "worker_id": "worker-a",
+      "connection_epoch": 2,
+      "type": "ack",
+      "ack_type": "tool_result"
     }
   }
 ]

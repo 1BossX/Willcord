@@ -83,7 +83,11 @@ test(
       ext,
     ]);
     const db = openDatabase(join(dir, "main.sqlite"));
-    const tokens = { a: "controlled-wss-token-a", b: "controlled-wss-token-b" };
+    const tokens = {
+      a: "controlled-wss-token-a",
+      b: "controlled-wss-token-b",
+      c: "controlled-wss-token-c",
+    };
     for (const [id, token] of Object.entries(tokens))
       db.prepare("INSERT INTO worker_tokens VALUES (?,?,NULL)").run(
         createHash("sha256").update(token).digest("hex"),
@@ -113,7 +117,17 @@ test(
       upstream.on("error", () => socket.destroy());
       upstream.on("open", () =>
         gateway.handleUpgrade(req, socket, head, (client) => {
-          client.on("message", (data) => upstream.send(data.toString()));
+          let injectedOversizedFrame = false;
+          client.on("message", (data) => {
+            upstream.send(data.toString());
+            if (
+              req.headers.authorization === "Bearer controlled-wss-token-c" &&
+              !injectedOversizedFrame
+            ) {
+              injectedOversizedFrame = true;
+              client.send(" ".repeat(65537));
+            }
+          });
           upstream.on("message", (data) => client.send(data.toString()));
           client.on("close", () => upstream.close());
           upstream.on("close", (code, reason) => client.close(code, reason));
@@ -125,7 +139,7 @@ test(
     await once(proxy, "listening");
     const port = (proxy.address() as { port: number }).port;
     const children: ReturnType<typeof spawn>[] = [];
-    const start = (id: "a" | "b") => {
+    const start = (id: "a" | "b" | "c") => {
       const config = join(dir, `${id}.toml`);
       writeFileSync(
         config,
@@ -160,6 +174,10 @@ test(
           ).n === 2
         );
       });
+      const oversizedFrame = start("c");
+      await once(oversizedFrame.child, "exit");
+      assert.notEqual(oversizedFrame.child.exitCode, 0);
+      assert.match(oversizedFrame.stderr(), /MessageTooLong/);
       const before = db
         .prepare("SELECT * FROM workers WHERE worker_id='a'")
         .get() as {

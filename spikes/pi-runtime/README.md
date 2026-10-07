@@ -59,3 +59,8 @@ assistant. Legacy checkpoints missing ordered user/base history block explicitly
 and require migration. The host still owns system prompt/configuration, tool
 result capture, exclusive scheduling, and generation fencing; this spike is not
 a production Coordinator.
+
+Projection success grants no job execution authorization. Before starting a
+model request, the Coordinator must check durable job lifecycle state; aborted,
+cancelled or terminal jobs remain stopped until an explicit authorized lifecycle
+transition. A new user message alone does not override that gate.

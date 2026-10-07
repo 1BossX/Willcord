@@ -26,7 +26,7 @@
 - [x] P0 Pi SDK spike：固定 Pi SDK 1.0.4；faux-provider 验证工具隔离、执行前完整调用 checkpoint seam、串行调用、transcript 恢复、取消信号、预算 gate 和委派等待 seam。
 - [x] P0 SQLite checkpoint adapter：整轮/工具意图事务提交、幂等重试、调用序号、派发/结果状态约束；已从真实 Pi hook 集成测试，SQLite 重开后保留待对账调用。
 - [x] P0 八条验收：实际 Pi/SQLite 历史投影、账本对账、worker/Main Coordinator、预算、父子等待、取消历史重载和明确中断重试；见 spike 结果矩阵。受控本地传输验证不代表生产 WSS/Rust 已实现。
-- [x] 初始化 TypeScript/Rust workspace、双平台 CI 与首版身份/连接协议 Schema；完整协议矩阵尚未验收。
+- [x] P1 TypeScript/Rust workspace、双平台 CI、身份/连接协议 Schema、token 与数据库迁移；剩余阶段的工具执行和故障恢复仍按 P2+ 门槛验收。
 - [x] 写入初始及升级 migration 与 Caddy 开发入口；发布服务模板留给 P7。
 
 P0 不需要真实 worker、域名或线上主机。用户已选择 OpenRouter + `deepseek/deepseek-v4.1-flash`，并在 `~/.zshrc` 配置 `OPENROUTER_KEY`。普通沙盒网络无法解析外部 DNS；提升网络权限后 `registry.npmjs.org` 与 `openrouter.ai` 均可连接，锁定依赖安装成功。2026-10-07 已完成真实模型 usage、Pi AgentSession 到 OpenRouter 的取消验证，以及 SQLite job/root 预算与父子等待 adapter 的持久化验证；已接入 single-owner spike Coordinator 并完成 P0 八条受控验收；生产调度、协议与身份仍属 P1–P7。密钥不得写入仓库或聊天。

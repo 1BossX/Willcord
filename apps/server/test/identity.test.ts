@@ -35,6 +35,7 @@ test("real SQLite migration, reopen, authentication and CSRF boundaries", async 
       ["GET", "/api/history"],
       ["GET", "/api/logs"],
       ["GET", "/api/events"],
+      ["GET", "/api/workers/a/workspaces"],
     ] as const)
       assert.equal((await app.inject({ method, url })).statusCode, 401);
     assert.equal(
@@ -56,6 +57,7 @@ test("real SQLite migration, reopen, authentication and CSRF boundaries", async 
     assert.equal(login.statusCode, 200);
     const cookie = login.headers["set-cookie"]!.toString().split(";")[0];
     const csrf = login.json().csrf;
+    const sessionToken = cookie.slice("session=".length);
     assert.match(login.headers["set-cookie"]!.toString(), /Secure/);
     assert.match(login.headers["set-cookie"]!.toString(), /HttpOnly/);
     assert.equal(
@@ -68,6 +70,92 @@ test("real SQLite migration, reopen, authentication and CSRF boundaries", async 
         })
       ).statusCode,
       403,
+    );
+    assert.equal(
+      (
+        await app.inject({
+          method: "POST",
+          url: "/api/worker-tokens",
+          headers: {
+            cookie,
+            origin: "https://attacker.example",
+            "x-csrf-token": csrf,
+          },
+          payload: { worker_id: "a" },
+        })
+      ).statusCode,
+      403,
+    );
+    assert.equal(
+      (
+        await app.inject({
+          method: "POST",
+          url: "/api/worker-tokens",
+          headers: {
+            cookie,
+            origin: "https://localhost:8443",
+            "x-csrf-token": "incorrect",
+          },
+          payload: { worker_id: "a" },
+        })
+      ).statusCode,
+      403,
+    );
+    assert.equal(
+      (
+        await app.inject({
+          url: "/ws/worker",
+          headers: { authorization: "Bearer " + sessionToken },
+        })
+      ).statusCode,
+      401,
+    );
+    db.prepare(
+      "INSERT INTO workers VALUES ('a','boot-a','ledger-a',1,1,1,0,?)",
+    ).run(Date.now());
+    db.prepare("INSERT INTO worker_slots(worker_id) VALUES ('a')").run();
+    db.prepare("INSERT INTO workspaces VALUES (?,?,?,?,?,?)").run(
+      "a",
+      "repo-a",
+      1,
+      "/tmp/a",
+      "github.com/example/a",
+      1,
+    );
+    const singleWorkspace = await app.inject({
+      url: "/api/workers/a/workspaces",
+      headers: { cookie },
+    });
+    assert.equal(singleWorkspace.statusCode, 200);
+    assert.equal(singleWorkspace.json().workspace.workspace_id, "repo-a");
+    db.prepare("INSERT INTO workspaces VALUES (?,?,?,?,?,?)").run(
+      "a",
+      "repo-b",
+      2,
+      "/tmp/b",
+      "github.com/example/b",
+      0,
+    );
+    const noSelection = await app.inject({
+      url: "/api/workers/a/workspaces",
+      headers: { cookie },
+    });
+    assert.equal(noSelection.statusCode, 409);
+    assert.equal(noSelection.json().error, "workspace_selection_required");
+    const selected = await app.inject({
+      url: "/api/workers/a/workspaces?workspace_id=repo-b",
+      headers: { cookie },
+    });
+    assert.equal(selected.statusCode, 200);
+    assert.equal(selected.json().workspace.path, "/tmp/b");
+    assert.equal(
+      (
+        await app.inject({
+          url: "/api/workers/a/workspaces?workspace_id=missing",
+          headers: { cookie },
+        })
+      ).statusCode,
+      404,
     );
     const response = await app.inject({
       method: "POST",
@@ -109,6 +197,29 @@ test("real SQLite migration, reopen, authentication and CSRF boundaries", async 
       (await app.inject({ url: "/api/workers", headers: { cookie } }))
         .statusCode,
       401,
+    );
+    const logLines: string[] = [];
+    const loggingApp = await createApp(db, "https://localhost:8443", {
+      logStream: { write: (line) => logLines.push(line) },
+    });
+    loggingApp.log.info(
+      {
+        req: {
+          headers: {
+            authorization: "Bearer test-secret-auth",
+            cookie: "session=test-secret-cookie",
+          },
+          body: { password: "test-secret-password" },
+        },
+      },
+      "redaction probe",
+    );
+    await loggingApp.close();
+    const logged = logLines.join("");
+    assert.match(logged, /redaction probe/);
+    assert.doesNotMatch(
+      logged,
+      /test-secret-auth|test-secret-cookie|test-secret-password/,
     );
   } finally {
     await app.close();

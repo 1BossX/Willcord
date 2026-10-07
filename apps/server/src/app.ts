@@ -1,18 +1,29 @@
 import Fastify from "fastify";
+import type { FastifyLoggerOptions } from "fastify";
 import cookie from "@fastify/cookie";
 import websocket from "@fastify/websocket";
 import rateLimit from "@fastify/rate-limit";
 import argon2 from "argon2";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type Database from "better-sqlite3";
-import { parseFrame, MAX_FRAME_BYTES } from "@worker-plane/protocol";
+import {
+  parseFrame,
+  requestHash,
+  stringifyFrame,
+  MAX_FRAME_BYTES,
+} from "@worker-plane/protocol";
+import type { WorkerFrame } from "@worker-plane/protocol";
 const digest = (value: string) =>
   createHash("sha256").update(value).digest("hex");
 const secret = () => randomBytes(32).toString("base64url");
 export async function createApp(
   db: Database.Database,
   origin: string,
-  options: { now?: () => number; logging?: boolean } = {},
+  options: {
+    now?: () => number;
+    logging?: boolean;
+    logStream?: FastifyLoggerOptions["stream"];
+  } = {},
 ) {
   const now = options.now ?? Date.now;
   if (new URL(origin).protocol !== "https:")
@@ -28,6 +39,7 @@ export async function createApp(
               "req.body.password",
               'res.headers["set-cookie"]',
             ],
+            ...(options.logStream ? { stream: options.logStream } : {}),
           },
     bodyLimit: 65536,
   });
@@ -123,6 +135,36 @@ export async function createApp(
   app.get("/api/workers", async () =>
     db.prepare("SELECT * FROM workers ORDER BY worker_id").all(),
   );
+  app.get<{
+    Params: { worker_id: string };
+    Querystring: { workspace_id?: string };
+  }>("/api/workers/:worker_id/workspaces", async (req, reply) => {
+    const workspaces = db
+      .prepare(
+        "SELECT worker_id,workspace_id,config_version,path,repo_id,is_default FROM workspaces WHERE worker_id=? ORDER BY workspace_id",
+      )
+      .all(req.params.worker_id) as Array<{
+      worker_id: string;
+      workspace_id: string;
+      config_version: number;
+      path: string;
+      repo_id: string;
+      is_default: number;
+    }>;
+    if (workspaces.length === 0)
+      return reply.code(404).send({ error: "worker_or_workspace_not_found" });
+    if (req.query.workspace_id !== undefined) {
+      const workspace = workspaces.find(
+        (item) => item.workspace_id === req.query.workspace_id,
+      );
+      return workspace
+        ? { workspace }
+        : reply.code(404).send({ error: "workspace_not_found" });
+    }
+    if (workspaces.length > 1)
+      return reply.code(409).send({ error: "workspace_selection_required" });
+    return { workspace: workspaces[0] };
+  });
   app.post("/api/worker-tokens", async (req, reply) => {
     const id = (req.body as { worker_id?: unknown } | null)?.worker_id;
     if (typeof id !== "string" || !id.length || id.length > 128)
@@ -160,21 +202,31 @@ export async function createApp(
     {
       preValidation: async (req, reply) => {
         const auth = req.headers.authorization;
-        const row = auth?.startsWith("Bearer ")
+        const tokenDigest = auth?.startsWith("Bearer ")
+          ? digest(auth.slice(7))
+          : undefined;
+        const row = tokenDigest
           ? (db
               .prepare(
                 "SELECT worker_id FROM worker_tokens WHERE digest=? AND revoked_at IS NULL",
               )
-              .get(digest(auth.slice(7))) as { worker_id: string } | undefined)
+              .get(tokenDigest) as { worker_id: string } | undefined)
           : undefined;
         if (!row) return reply.code(401).send({ error: "unauthorized" });
-        (req as typeof req & { workerId: string }).workerId = row.worker_id;
+        Object.assign(req, {
+          workerId: row.worker_id,
+          workerTokenDigest: tokenDigest,
+        });
       },
       websocket: true,
     },
     (socket, req) => {
-      const id = (req as typeof req & { workerId: string }).workerId;
+      const { workerId: id, workerTokenDigest } = req as typeof req & {
+        workerId: string;
+        workerTokenDigest: string;
+      };
       let epoch = 0;
+      let registerHash: string | undefined;
       const registrationDeadline = setTimeout(
         () => socket.close(1008, "register timeout"),
         10000,
@@ -182,10 +234,34 @@ export async function createApp(
       socket.on("message", (raw, isBinary) => {
         try {
           if (isBinary) throw new Error("binary_frame");
-        const f = parseFrame(raw.toString());
+          const f = parseFrame(raw.toString());
           if (f.worker_id !== id) throw new Error("identity");
           if (f.type === "register") {
-            if (epoch) throw new Error("duplicate_register");
+            if (epoch) {
+              if (
+                connections.get(id)?.socket !== socket ||
+                requestHash(f) !== registerHash
+              )
+                throw new Error("conflicting_register");
+              socket.send(
+                stringifyFrame({
+                  protocol_version: 1,
+                  type: "register_ack",
+                  worker_id: id,
+                  connection_epoch: epoch,
+                  reconciliation_required: true,
+                } as WorkerFrame),
+              );
+              return;
+            }
+            if (
+              !db
+                .prepare(
+                  "SELECT 1 FROM worker_tokens WHERE digest=? AND worker_id=? AND revoked_at IS NULL",
+                )
+                .get(workerTokenDigest, id)
+            )
+              throw new Error("token_revoked");
             const ids = new Set(f.workspaces.map((w) => w.workspace_id));
             if (
               ids.size !== f.workspaces.length ||
@@ -193,15 +269,57 @@ export async function createApp(
             )
               throw new Error("workspaces");
             epoch = db.transaction(() => {
+              const slot = db
+                .prepare(
+                  "SELECT active_job_id FROM worker_slots WHERE worker_id=?",
+                )
+                .get(id) as { active_job_id: string | null } | undefined;
+              const currentWorkspaces = db
+                .prepare(
+                  "SELECT workspace_id,config_version,path,repo_id,is_default FROM workspaces WHERE worker_id=? ORDER BY workspace_id",
+                )
+                .all(id) as Array<{
+                workspace_id: string;
+                config_version: number;
+                path: string;
+                repo_id: string;
+                is_default: number;
+              }>;
+              const nextWorkspaces = [...f.workspaces]
+                .sort((a, b) => a.workspace_id.localeCompare(b.workspace_id))
+                .map((workspace) => ({
+                  identity: [
+                    workspace.workspace_id,
+                    workspace.config_version,
+                    workspace.path,
+                    workspace.repo_id,
+                    Number(workspace.is_default),
+                  ],
+                }));
+              const currentIdentities = currentWorkspaces.map((workspace) => [
+                workspace.workspace_id,
+                workspace.config_version,
+                workspace.path,
+                workspace.repo_id,
+                workspace.is_default,
+              ]);
+              const workspaceMapChanged =
+                JSON.stringify(currentIdentities) !==
+                JSON.stringify(nextWorkspaces.map(({ identity }) => identity));
+              if (workspaceMapChanged && slot?.active_job_id != null)
+                throw new Error("workspace_change_with_active_job");
               db.prepare(
                 `INSERT INTO workers VALUES (?,?,?,1,1,0,0,?) ON CONFLICT(worker_id) DO UPDATE SET boot_id=excluded.boot_id,connection_epoch=workers.connection_epoch+1,online=1,reconciled=0,last_seen=excluded.last_seen,blocked=CASE WHEN workers.ledger_id<>excluded.ledger_id THEN 1 ELSE workers.blocked END`,
               ).run(id, f.boot_id, f.ledger_id, now());
               db.prepare(
                 "INSERT OR IGNORE INTO worker_slots(worker_id) VALUES (?)",
               ).run(id);
-              db.prepare("DELETE FROM workspaces WHERE worker_id=?").run(id);
+              if (workspaceMapChanged)
+                db.prepare("DELETE FROM workspaces WHERE worker_id=?").run(id);
               for (const w of f.workspaces)
-                db.prepare("INSERT INTO workspaces VALUES (?,?,?,?,?,?)").run(
+                db.prepare(
+                  "INSERT OR IGNORE INTO workspaces VALUES (?,?,?,?,?,?)",
+                ).run(
                   id,
                   w.workspace_id,
                   w.config_version,
@@ -217,18 +335,19 @@ export async function createApp(
                   .get(id) as { connection_epoch: number }
               ).connection_epoch;
             })();
+            registerHash = requestHash(f);
             const old = connections.get(id);
             connections.set(id, { epoch, socket });
             old?.socket.close(1008, "connection replaced");
             clearTimeout(registrationDeadline);
             socket.send(
-              JSON.stringify({
+              stringifyFrame({
                 protocol_version: 1,
                 type: "register_ack",
                 worker_id: id,
                 connection_epoch: epoch,
                 reconciliation_required: true,
-              }),
+              } as WorkerFrame),
             );
             return;
           }
@@ -244,13 +363,13 @@ export async function createApp(
             ).run(now(), id, epoch);
           else if (f.type === "resume")
             socket.send(
-              JSON.stringify({
+              stringifyFrame({
                 protocol_version: 1,
                 type: "ack",
                 worker_id: id,
                 connection_epoch: epoch,
                 ack_type: "resume",
-              }),
+              } as WorkerFrame),
             );
           else if (f.type === "reconcile") {
             const worker = db
@@ -274,13 +393,13 @@ export async function createApp(
               "UPDATE workers SET reconciled=1 WHERE worker_id=? AND connection_epoch=?",
             ).run(id, epoch);
             socket.send(
-              JSON.stringify({
+              stringifyFrame({
                 protocol_version: 1,
                 type: "ack",
                 worker_id: id,
                 connection_epoch: epoch,
                 ack_type: "reconcile",
-              }),
+              } as WorkerFrame),
             );
           } else throw new Error("unexpected_frame");
         } catch {

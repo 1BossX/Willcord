@@ -421,9 +421,15 @@ export class ExecutionCoordinator {
       if (!this.#current(jobId, generation)) return this.readJob(jobId);
       session.agent.streamFunction = streamFunction;
       await session.agent.continue();
-      if (this.#current(jobId, generation) && this.state.readJob(jobId).status === 'running') this.#set(jobId, 'needs_attention', 'turn ended without durable finish');
+      if (this.#current(jobId, generation) && this.state.readJob(jobId).status === 'running') this.store.db.transaction(() => {
+        this.#archiveDraft(jobId, generation, 'interrupted');
+        this.#set(jobId, 'needs_attention', 'turn ended without durable finish');
+      }).immediate();
     } catch (error) {
-      if (this.#current(jobId, generation)) this.#set(jobId, 'needs_attention', error.message);
+      if (this.#current(jobId, generation)) this.store.db.transaction(() => {
+        this.#archiveDraft(jobId, generation, 'interrupted');
+        this.#set(jobId, 'needs_attention', error.message);
+      }).immediate();
       throw error;
     } finally { session?.dispose(); this.active.delete(jobId); }
     return this.readJob(jobId);
@@ -433,7 +439,12 @@ export class ExecutionCoordinator {
     const job = this.readJob(jobId);
     if (['completed', 'failed', 'budget_exceeded', 'cancelled'].includes(job.lifecycle)) return job;
     if (job.role === 'main' && this.#pendingChildren(jobId).length) return this.scanChildren(jobId);
-    if (job.lifecycle === 'needs_attention' && !job.cancelRequested && this.store.findIncompleteTurns(jobId).length === 0) return job;
+    if (job.lifecycle === 'needs_attention' && !job.cancelRequested && this.store.findIncompleteTurns(jobId).length === 0) {
+      this.store.db.transaction(() => {
+        for (const draft of this.drafts(jobId).filter((draft) => draft.status === 'streaming')) this.#archiveDraft(jobId, draft.generation, 'interrupted');
+      }).immediate();
+      return this.readJob(jobId);
+    }
     this.active.set(jobId, null);
     try {
       const generation = this.store.db.transaction(() => {

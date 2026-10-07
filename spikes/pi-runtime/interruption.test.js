@@ -115,6 +115,44 @@ test('already interrupted archival remains immutable when task cancellation foll
   assert.deepEqual(f.coordinator.drafts('job')[0], before); assert.deepEqual(f.store.readHistory('job'), history);
 });
 
+test('final commit failure archives live Pi draft atomically with blocked lifecycle', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'worker-plane-thrown-draft-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const f = await coordinatorFixture(root); t.after(() => f.close());
+  f.coordinator.createJob({ jobId: 'job', maxTokens: 100000, maxSteps: 10, prompt: 'request' });
+  const append = f.store.appendHistory.bind(f.store);
+  f.store.appendHistory = (...args) => {
+    if (args[1] === 'assistant:1') throw new Error('injected final commit failure');
+    return append(...args);
+  };
+  const c = core([fauxAssistantMessage('uncommitted final response')]);
+  // Pi may convert a finish hook exception into its own error response.
+  await f.coordinator.runStep('job', c.streamSimple);
+  assert.equal(f.coordinator.readJob('job').lifecycle, 'needs_attention');
+  assert.equal(f.coordinator.drafts('job')[0].status, 'interrupted');
+  assert.equal(f.store.readHistory('job').at(-1).message.stopReason, 'aborted');
+  const before = f.store.readHistory('job');
+  await f.coordinator.recover('job'); await f.coordinator.recover('job');
+  assert.deepEqual(f.store.readHistory('job'), before);
+});
+
+test('blocked authorization recovery archives streaming snapshot before early return', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'worker-plane-blocked-draft-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const f = await coordinatorFixture(root); t.after(() => f.close());
+  f.coordinator.createJob({ jobId: 'job', maxTokens: 100000, maxSteps: 10, prompt: 'request' });
+  f.coordinator.reconciler.bind = () => { throw new Error('injected binding failure'); };
+  const c = core([fauxAssistantMessage([fauxToolCall('write', {}, { id: 'rejected-draft' })], { stopReason: 'toolUse' })]);
+  await f.coordinator.runStep('job', c.streamSimple);
+  assert.equal(f.coordinator.readJob('job').lifecycle, 'needs_attention');
+  assert.equal((await f.coordinator.recover('job')).lifecycle, 'needs_attention');
+  assert.equal(f.coordinator.drafts('job')[0].status, 'interrupted');
+  assert.ok(f.store.readHistory('job').at(-1).message.content.every((part) => part.type !== 'toolCall'));
+  const projection = recoverTranscript({ store: f.store, jobId: 'job', cwd: root, sessionDir: join(root, 'blocked-reload') });
+  assert.equal(SessionManager.open(projection.sessionManager.getSessionFile()).buildSessionContext().messages.at(-1).stopReason, 'aborted');
+  assert.equal(f.store.db.prepare('SELECT COUNT(*) AS n FROM runtime_calls').get().n, 0);
+});
+
 test('cancelled committed batch reopens with factual result and never-executed pairing', async (t) => {
   const root = mkdtempSync(join(tmpdir(), 'worker-plane-cancel-reopen-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));

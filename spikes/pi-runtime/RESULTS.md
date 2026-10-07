@@ -201,7 +201,7 @@ single-owner、单一配置目标的 spike。没有 full DAG/FIFO/worker registr
 
 ## P0 最终验收矩阵（2026-10-07）
 
-验证命令：`cd spikes/pi-runtime && npm test`，78 项通过，0 失败。固定 Pi SDK
+验证命令：`cd spikes/pi-runtime && npm test`，80 项通过，0 失败。固定 Pi SDK
 1.0.4，实际 AgentSession/SessionManager、SQLite WAL/FULL 与独立 SIGKILL 子进程；
 模型响应使用 faux provider，本轮没有调用外部模型。真实 OpenRouter 取消/usage 的
 既有证据日期为 2026-10-07（见上文）；provider 验证代码本轮未改变，未重复外部请求。
@@ -229,3 +229,5 @@ single-owner、单一配置目标的 spike。没有 full DAG/FIFO/worker registr
 锁、认证/协议、FIFO/DAG、多 worker 注册、Rust/WSS、远程进程终止核验与 RFC8785
 互通仍按 P1–P7 实施，不能以此 spike 代替其验收。历史增量中的“P0 未通过”是对应
 提交时的记录，以此矩阵作为当前结论。
+
+Bugbot 收口复核补充：final commit 异常、无 durable finish 出口，以及已进入 needs_attention 的恢复提前返回，都会归档 streaming 草稿；归档与阻塞状态同事务，重复恢复不追加记录。新增实际 Pi final commit failure / binding failure reload 回归。

@@ -244,6 +244,12 @@ Worker token 绑定 worker_id，Authorization header 认证 WSS。连接替换�
 
 注册补充 ledger_id、workspace 配置版本；register_ack 明确 epoch 与 reconciliation_required。对账完成前 worker 保持不可调度。
 
+WorkerGateway 使用专用 `/ws/worker` 入口，升级时校验绑定 worker_id 的 token。Worker 连接与浏览器 REST/SSE 的认证和广播集合分开：worker 不能调用用户接口或订阅其他 worker/session 的事件；浏览器不直接访问 worker。身份由服务端校验后绑定，不能信任帧中自报的 worker_id。
+
+连接所有权由 connection_epoch 表达，执行所有权由数据库 worker_slots 表达。心跳超时或连接替换只失效旧连接的新派发权限，不证明旧调用停止，不释放在途执行槽。旧连接的结果只可作为待对账证据，必须核对 job/call、请求 hash 和账本身份后幂等归并，不能恢复旧连接调度权限。
+
+MVP 仅实现 WSS。注册、ACK、resume/reconcile 和 fence（拒绝旧代次新调用）规则定义在协议契约中，不依赖 socket 对象或连接存活作为业务事实。未来增加其他传输时必须复用这些规则；本期不增加 long polling 或独立 lease 服务。
+
 ### 10.2 请求 hash 与水位
 
 按 RFC 8785 规范化 JSON 后计算 SHA-256，两端用固定样例验证。hash 覆盖 call_id、call_seq、job/session、worker/workspace、workspace 版本、工具内容和超时，不包含 connection_epoch 或传输时间。

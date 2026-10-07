@@ -199,3 +199,15 @@ Rust/WSS, production ownership locks or remote process cleanup. Durable cancelle
 lifecycle is integrated, but aborted provider messages are still not projected
 to SQLite history. RFC8785 interoperability and exact interrupted-provider costs
 also remain open; P0 is not declared complete.
+
+
+P0 closure adds generation-fenced `drafts(jobId)` (bounded 64 KiB snapshots,
+explicit truncation) and immutable interrupted/cancelled archival. Uncommitted
+tool blocks remain audit-only; aborted history can reload without authorizing
+those calls. Cancellation remains terminal. `resolveInterrupted` is a trusted
+host API for needs_attention attempts: provide verified usage, source/reference
+evidence and a new user prompt. It rejects unresolved execution/children,
+conflicting evidence and exhausted job/root budgets. Counters and model attempts
+never reset; absent evidence keeps automatic recovery blocked. This API is not a
+model tool or proof of provider billing. See the final RESULTS matrix for the
+current P0 conclusion; earlier paragraphs describe prior incremental states.

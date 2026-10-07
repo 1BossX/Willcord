@@ -140,6 +140,21 @@ export class SqliteRuntimeStateStore {
     }).immediate();
   }
 
+  /** Trusted host resolution for an interrupted attempt's verified final usage.
+   * The Coordinator owns proof/audit/lifecycle guards and the outer transaction. */
+  recordVerifiedInterruptedUsage(jobId, generation, { inputTokens, outputTokens }) {
+    this.#validateLimit(inputTokens, 'inputTokens');
+    this.#validateLimit(outputTokens, 'outputTokens');
+    return this.db.transaction(() => {
+      const job = this.#readJob(jobId);
+      if (!Number.isSafeInteger(generation) || generation < 1 || generation > job.generation) throw new RuntimeStateError('invalid interrupted generation');
+      this.db.prepare('INSERT INTO runtime_usage VALUES (?, ?, ?, ?)').run(jobId, generation, inputTokens, outputTokens);
+      this.db.prepare('UPDATE runtime_job_state SET input_tokens = input_tokens + ?, output_tokens = output_tokens + ?, steps = steps + 1 WHERE job_id = ?').run(inputTokens, outputTokens, jobId);
+      this.db.prepare('UPDATE runtime_roots SET input_tokens = input_tokens + ?, output_tokens = output_tokens + ?, steps = steps + 1 WHERE root_job_id = ?').run(inputTokens, outputTokens, job.rootJobId);
+      return this.#readJob(jobId);
+    }).immediate();
+  }
+
   waitForChild(parentJobId, childJobId) {
     return this.db.transaction(() => {
       const parent = this.#readJob(parentJobId);

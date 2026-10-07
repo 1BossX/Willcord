@@ -27,8 +27,12 @@ export function recoverTranscript({ store, jobId, cwd, sessionDir }) {
 
   const messages = history.flatMap((entry) => {
     if (entry.message) return [entry.message];
-    const intents = entry.turn.assistantMessage.content?.filter((part) => part.type === 'toolCall');
-    if (!Array.isArray(intents) || intents.length !== entry.turn.calls.length || intents.some((intent, i) => {
+    const content = entry.turn.assistantMessage.content;
+    if (!Array.isArray(content) || content.some((part) => !part || typeof part !== 'object' || Array.isArray(part))) {
+      throw new RecoveryBlockedError([], 'assistant content must be an array of message blocks');
+    }
+    const intents = content.filter((part) => part.type === 'toolCall');
+    if (intents.length !== entry.turn.calls.length || intents.some((intent, i) => {
       const call = entry.turn.calls[i];
       return intent.id !== call.callId || intent.name !== call.name || !isDeepStrictEqual(intent.arguments ?? {}, call.arguments);
     })) throw new RecoveryBlockedError([], 'assistant batch does not match durable calls');

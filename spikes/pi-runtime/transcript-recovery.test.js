@@ -102,3 +102,19 @@ test('corrupt result identities and assistant intents refuse recovery', (t) => {
   store.db.prepare('UPDATE runtime_calls SET arguments_json = ?').run('{}');
   assert.throws(recover, /batch does not match/);
 });
+
+test('persisted legacy or malformed assistant content fails with RecoveryBlockedError', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'worker-plane-legacy-content-'));
+  const store = new SqliteCheckpointStore(join(root, 'state.sqlite'));
+  t.after(() => { store.close(); rmSync(root, { recursive: true, force: true }); });
+  for (const [index, content] of ['legacy string content', null, [null], ['invalid block'], [[]]].entries()) {
+    const jobId = `job-${index}`;
+    store.appendHistory(jobId, 'request', { role: 'user', content: 'request', timestamp: 1 });
+    store.persistTurn({ jobId, turnKey: 'legacy', assistantMessage: { role: 'assistant', content }, calls: [] });
+    assert.throws(() => recoverTranscript({ store, jobId, cwd: root, sessionDir: join(root, 'sessions') }), (error) => {
+      assert.ok(error instanceof RecoveryBlockedError);
+      assert.match(error.message, /assistant content must be an array/);
+      return true;
+    });
+  }
+});

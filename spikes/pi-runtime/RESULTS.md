@@ -66,7 +66,7 @@ P0 作为整体仍为 **进行中**。正式通过前需补齐真实 provider �
 
 ## 2026-10-07 SQLite → Pi transcript 恢复增量
 
-`npm test`：29 项通过，0 失败。新增 5 个独立 Node 子进程使用真实
+`npm test`：30 项通过，0 失败。新增 5 个独立 Node 子进程使用真实
 better-sqlite3 / Pi SessionManager 写入后 SIGKILL；恢复侧重新打开 SQLite，
 使用公开 Pi SDK 重建及重新打开 JSONL，并以 faux provider 验证实际 AgentSession。
 没有请求外部模型，未验证机器掉电、文件系统损坏或真实 worker RPC。
@@ -80,7 +80,8 @@ better-sqlite3 / Pi SessionManager 写入后 SIGKILL；恢复侧重新打开 SQL
 | 取消历史落盘 | 保留 aborted assistant；直接 continue 被 SDK 拒绝且请求 0 次；新持久用户消息后恢复推理 |
 
 另外验证历史幂等/冲突、多条用户与 assistant 顺序、缺失 legacy 基础历史阻塞、
-结果身份不匹配阻塞、参数内容不匹配阻塞，以及恢复 AgentSession 自动压缩已禁用。
+结果身份不匹配阻塞、参数内容不匹配阻塞、旧式字符串或损坏的 assistant content
+以 RecoveryBlockedError 阻塞，以及恢复 AgentSession 自动压缩已禁用。
 SQLite 事务同时记录工具批次与历史次序；JSONL 只是可重建投影，重试恢复从 SQLite
 重新创建文件。系统 prompt 和运行配置仍由 host 提供。
 

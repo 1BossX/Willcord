@@ -1,0 +1,12 @@
+import { appendFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { SqliteWorkerLedger } from './worker-ledger.js';
+const [root, mode, encodedRequest] = process.argv.slice(2);
+const request = JSON.parse(encodedRequest);
+const ledger = new SqliteWorkerLedger(join(root, 'worker.sqlite'), { workerId: 'worker', bootId: 'first-boot' });
+if (mode === 'before_accept') process.kill(process.pid, 'SIGKILL');
+ledger.accept(request);
+if (mode !== 'accepted') ledger.start(request);
+if (['effect', 'completed'].includes(mode)) appendFileSync(join(root, 'effects.log'), `${request.callId}\n`);
+if (mode === 'completed') ledger.complete(request, { role: 'toolResult', toolCallId: request.callId, toolName: request.toolName, content: [{ type: 'text', text: 'original cached result' }], isError: false, timestamp: 2 });
+process.kill(process.pid, 'SIGKILL');

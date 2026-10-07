@@ -2,6 +2,8 @@ import { createPiSession, ROLE_TOOLS } from './pi-runtime.js';
 import { SqliteRuntimeStateStore } from './sqlite-runtime-state.js';
 import { WorkerReconciler } from './worker-ledger.js';
 import { recoverTranscript } from './transcript-recovery.js';
+import { validateToolArguments } from '@earendil-works/pi-ai';
+import { isDeepStrictEqual } from 'node:util';
 
 export function piUsage(message) {
   // Pi provider adapters separate uncached input from cache reads/writes.
@@ -94,6 +96,22 @@ export class ExecutionCoordinator {
     if (outcome.action !== 'dispatch_same_request') {
       this.#set(jobId, 'needs_attention', outcome.reason ?? outcome.action);
       throw new Error('call requires reconciliation');
+    }
+    try {
+      const tool = this.tools.find((tool) => tool.name === outcome.request.toolName);
+      if (!tool) throw new Error('tool is not in the worker allowlist');
+      const original = outcome.request.arguments;
+      const prepared = tool.prepareArguments ? tool.prepareArguments(structuredClone(original)) : original;
+      const validated = validateToolArguments(tool, { type: 'toolCall', id: callId, name: tool.name, arguments: prepared });
+      // Execution and its dedup hash must describe identical arguments. This
+      // spike rejects coercion/preparation instead of silently dispatching a
+      // different payload from the authoritative assistant intent.
+      if (!isDeepStrictEqual(validated, original)) throw new Error('schema requires argument transformation');
+    } catch (error) {
+      const turn = this.store.readTurn(jobId, turnKey);
+      const call = turn.calls.find((call) => call.callId === callId);
+      this.store.db.transaction(() => this.#notExecuted(jobId, turn, call, `Invalid original tool arguments: ${error.message}`)).immediate();
+      return this.store.readAuthorizedCall(jobId, turnKey, callId).result;
     }
     const job = this.state.readJob(jobId);
     const root = this.store.db.prepare('SELECT * FROM runtime_roots WHERE root_job_id = ?').get(job.rootJobId);

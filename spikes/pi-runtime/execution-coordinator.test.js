@@ -221,3 +221,36 @@ test('restart recovery preserves budget-exceeded lifecycle after safely rejectin
   await assert.rejects(f.coordinator.runStep('job', c.streamSimple), /not ready/);
   assert.equal(c.state.callCount, 0);
 });
+
+test('actual Pi first valid hook persists later invalid intent but recovery never executes malformed arguments', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'worker-plane-invalid-recovery-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const child = spawnSync(process.execPath, [fileURLToPath(new URL('./coordinator-crash-fixture.js', import.meta.url)), root, 'invalid_intent']);
+  assert.equal(child.signal, 'SIGKILL', child.stderr.toString());
+  const effects = [];
+  const f = await coordinatorFixture(root, { bootId: 'new-boot', execute: async (request) => { effects.push(request.callId); return { content: [] }; } });
+  t.after(() => f.close());
+  const committed = f.store.readHistory('job').find((entry) => entry.turn).turn;
+  assert.equal(committed.calls.length, 2, 'first valid SDK hook committed whole original batch');
+  assert.deepEqual(committed.calls[1].arguments, { input: { invalid: true } });
+  assert.equal((await f.coordinator.recover('job')).lifecycle, 'ready');
+  assert.deepEqual(effects, ['original-call']);
+  const rejected = f.store.readAuthorizedCall('job', committed.turnKey, 'invalid-later-call');
+  assert.equal(rejected.status, 'completed');
+  assert.equal(rejected.result.isError, true);
+  assert.equal(rejected.result.details.notExecuted, true);
+  assert.match(rejected.result.content[0].text, /Invalid original tool arguments/);
+  assert.equal(f.ledger.db.prepare('SELECT COUNT(*) AS n FROM worker_calls').get().n, 1);
+});
+
+test('live Pi coerced arguments are rejected before original-payload worker acceptance', async (t) => {
+  let effects = 0;
+  const f = await fixture(t, { execute: async () => { effects++; return { content: [] }; } });
+  const c = core([response([fauxToolCall('read', { input: 123 }, { id: 'coerced' })])]);
+  await f.coordinator.runStep('job', c.streamSimple);
+  assert.equal(effects, 0);
+  assert.equal(f.ledger.db.prepare('SELECT COUNT(*) AS n FROM worker_calls').get().n, 0);
+  const call = f.store.readHistory('job').find((entry) => entry.turn).turn.calls[0];
+  assert.deepEqual(call.arguments, { input: 123 });
+  assert.equal(call.result.details.notExecuted, true);
+});

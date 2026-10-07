@@ -122,7 +122,7 @@ Coordinator 承担。
 
 ## 2026-10-07 最小 Worker ExecutionCoordinator 增量
 
-`npm test`：53 项通过，0 失败。新增 worker-role Coordinator，使用实际 Pi SDK 与
+`npm test`：55 项通过，0 失败。新增 worker-role Coordinator，使用实际 Pi SDK 与
 SQLite；worker transport 为注入的本地假实现，无外部模型或 WSS 请求。
 Coordinator 与预算 adapter 共享检查点 **同一 SQLite connection**，工具批次的
 usage、原意图、可信目标绑定及 lifecycle 在同一事务中提交。
@@ -153,3 +153,10 @@ faux provider 返回的 message usage 核对计数，并用固定样例核对 ca
 **本 PR 只收口 worker 执行路径。**取消 lifecycle 已持久化，aborted provider 消息未
 投影到 SQLite 历史。Main delegate、持久父子等待及匹配 child 结果尚未接入；生产
 single-owner 锁、Rust/WSS、远程终止核验与规范 RFC8785 仍未实现。P0 整体仍未通过。
+
+工具参数恢复补充：Pi SDK 先校验当前调用，再运行 beforeToolCall；首个合法调用
+的 hook 仍持久化整批，因此后续未校验意图可能已提交。Coordinator 在 live/recovery
+worker accepted 前都调用公开 validateToolArguments；非法或需要 coercion/preparation
+改变的原参数，在同可信账本证明从未接受后配对 notExecuted 结果，不执行副作用。
+新增真实 Pi 首合法/后非法批次 SIGKILL 恢复及 live coercion 测试；原参数与 hash
+保持不变，不将被转换的 payload 静默当作原执行内容。

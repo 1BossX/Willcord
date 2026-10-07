@@ -144,3 +144,11 @@ budgets. It does not integrate `delegate`, durable parent/child waits or matchin
 child completion into the Coordinator yet. Those remain the next P0 integration
 PR. Production ownership locks, remote cancellation/cleanup, Rust/WSS and
 RFC8785 request interoperability remain deferred.
+
+Before accepting either a live or recovered call, the Coordinator validates its
+original stored arguments with the same public Pi `validateToolArguments` API.
+Pi validates each current call before its hook, but a hook commits the whole
+batch, including later unvalidated calls. Invalid arguments receive a paired
+not-executed result only after trusted absence proof. This spike also rejects
+coercion or prepareArguments transformations to keep executed payload identical
+to the original intent/hash; normalized execution-payload persistence is deferred.

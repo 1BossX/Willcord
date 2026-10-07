@@ -310,6 +310,93 @@ test(
 );
 
 test(
+  "retrying an old token revocation leaves the replacement token connection online",
+  { timeout: 5000 },
+  async () => {
+    const db = openDatabase(":memory:");
+    const oldToken = "old-worker-token";
+    const newToken = "new-worker-token";
+    db.prepare("INSERT INTO worker_tokens VALUES (?,?,NULL)").run(
+      digest(oldToken),
+      "a",
+    );
+    db.prepare("INSERT INTO worker_tokens VALUES (?,?,NULL)").run(
+      digest(newToken),
+      "a",
+    );
+    db.prepare("INSERT INTO auth_sessions VALUES (?,?,?)").run(
+      digest("admin-session"),
+      "csrf-token",
+      Date.now() + 60000,
+    );
+    const app = await createApp(db, "https://localhost:8443", {
+      logging: false,
+    });
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const port = (app.server.address() as { port: number }).port;
+    const socket = new WebSocket("ws://127.0.0.1:" + port + "/ws/worker", {
+      headers: { authorization: "Bearer " + newToken },
+    });
+    try {
+      await once(socket, "open");
+      let message = once(socket, "message");
+      socket.send(JSON.stringify(register));
+      assert.equal(
+        JSON.parse((await message)[0].toString()).connection_epoch,
+        1,
+      );
+      message = once(socket, "message");
+      socket.send(
+        JSON.stringify({
+          protocol_version: 1,
+          type: "reconcile",
+          worker_id: "a",
+          connection_epoch: 1,
+          ledger_id: "ledger-a",
+          ready: true,
+        }),
+      );
+      await message;
+      const revoke = async (workerToken: string) =>
+        app.inject({
+          method: "POST",
+          url: "/api/worker-tokens/revoke",
+          headers: {
+            cookie: "session=admin-session",
+            origin: "https://localhost:8443",
+            "x-csrf-token": "csrf-token",
+          },
+          payload: { token: workerToken },
+        });
+      assert.equal((await revoke(oldToken)).statusCode, 200);
+      assert.equal((await revoke(oldToken)).statusCode, 200);
+      assert.equal(socket.readyState, WebSocket.OPEN);
+      assert.equal(
+        (
+          db.prepare("SELECT online,reconciled FROM workers").get() as {
+            online: number;
+            reconciled: number;
+          }
+        ).online,
+        1,
+      );
+      const closed = once(socket, "close");
+      assert.equal((await revoke(newToken)).statusCode, 200);
+      await closed;
+      assert.equal(
+        (db.prepare("SELECT online FROM workers").get() as { online: number })
+          .online,
+        0,
+      );
+    } finally {
+      socket.terminate();
+      await app.close();
+      db.close();
+    }
+  },
+);
+
+test(
   "workspace identity cannot change while a worker slot is occupied",
   { timeout: 5000 },
   async () => {

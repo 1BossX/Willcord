@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test"
+    "test": "node --test",
+    "verify:openrouter": "node ./openrouter-p0.js"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "1.0.4",

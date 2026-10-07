@@ -8,6 +8,18 @@ Run from this directory with:
 npm test
 ```
 
+The live provider cancellation check makes one billable request and requires an
+OpenRouter key in `OPENROUTER_API_KEY`:
+
+```sh
+npm run verify:openrouter
+```
+
+It uses a temporary Pi credential store, aborts after the first real response
+chunk, and removes the temporary directory when it exits. The final usage frame
+is unavailable after cancellation, so the request's cancellation cost is not
+known.
+
 The app-side harness exercises these control-plane assumptions:
 
 - Main and worker roles receive distinct tool allowlists; rejected tools cannot reach the executor.
@@ -26,4 +38,4 @@ The SDK tests additionally verify Pi 1.0.4:
 - An accepted delegate tool result with `terminate: true` ends the parent run until the host resumes it.
 - `session.abort()` propagates an AbortSignal to the provider stream and settles the run when the provider honors it.
 
-The store in the app-side harness remains in-memory and process-local. Its `commitTurn` represents the required atomic production transaction. P0 remains open: test real-provider cancellation, cumulative token/step enforcement, complete crash/restart recovery with a production persistence adapter, and whether application checkpointing remains consistent with Pi SessionManager writes across crash windows. Never treat Pi JSONL as the job ledger.
+The app-side orchestration harness remains in-memory and process-local. Its `commitTurn` represents the required atomic production transaction. The separate SQLite spike adapters now cover call checkpoints, job/root budget counters, and durable parent-child waits, but they are not integrated into a production ExecutionCoordinator. P0 remains open: complete Pi/SQLite crash-window reconciliation, unresolved worker-ledger recovery, budget and wait integration, and proof that the two persistence stores remain consistent after crashes. Never treat Pi JSONL as the job ledger.

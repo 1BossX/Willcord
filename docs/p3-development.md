@@ -192,11 +192,12 @@ Migration `004_p3_recovery.sql` 给 `runtime_calls` 增加 `completed_at`，用�
 
 - **重复帧**：结果或 ACK 随连接丢失后，重连时 worker 在 `worker_ready` 之后主动重发未确认的结果，主节点同时重发等待中的调用，worker 再返回一次缓存结果。主节点因此可能收到两次相同结果、发出两次 ACK。重复结果只重新 ACK，副作用和工具消息都只有一次，终态不倒退。
 - **主节点 SIGKILL 后的锁**：`main.lock` 不会自动过期，重启会以 `EEXIST` 失败，需要运维确认旧进程已退出后删除该目录。测试按此操作。
+- **worker 丢失 SIGINT（已修复）**：CI 中 `p3-recovery` 在 ubuntu 上偶发卡满 120 s，P3-B 分支上已出现过。原因是 worker 每轮会话循环新建 `ctrl_c()` 监听，信号在处理帧、分块传输或握手期间到达时没有监听者，直接丢失，worker 不退出。现在进程启动时注册一次 SIGINT 监听并保存信号，会话在任何等待点都会被取消。`worker-ledger.test.ts` 用停在分块传输中的 worker 复现：修复前 SIGINT 后不退出，修复后立即以 0 退出。测试工具的 `stopWorker` 增加 10 s 上限，信号被忽略时报错而不是挂住。
 - **ledger 丢失**：worker 用新 ledger_id 注册时被置为 blocked，对账以 `reconcile_blocked` 被拒，worker 按退避持续重连但始终不能对账。主节点保留原 ledger_id，在途调用不重发也不判定为未执行，执行槽保留。人工处置属于 P4。
 
 ### 总验收
 
-验收环境：macOS arm64，Node 22.22.3，Rust 1.93.1，本机临时 CA，worker 与主节点均在本机。未在 venus-local 远端复验。命令：`cargo build --locked --manifest-path worker/Cargo.toml` 后执行 `PATH=/opt/homebrew/bin:$PATH pnpm test`（server 38 项、protocol 3 项全部通过）；`cargo test --locked`（含 `--features fault-injection`）12 项通过。job ID 为下面这次运行的记录，测试每次运行通过 `t.diagnostic` 输出新的 job ID。
+验收环境：macOS arm64，Node 22.22.3，Rust 1.93.1，本机临时 CA，worker 与主节点均在本机。未在 venus-local 远端复验。命令：`cargo build --locked --manifest-path worker/Cargo.toml` 后执行 `PATH=/opt/homebrew/bin:$PATH pnpm test`（server 39 项、protocol 3 项全部通过）；`cargo test --locked`（含 `--features fault-injection`）12 项通过。job ID 为下面这次运行的记录，测试每次运行通过 `t.diagnostic` 输出新的 job ID。
 
 **故障程序：worker 四个崩溃窗口**（`p3-faults.test.ts`，call `crash-1` / `done-1`）
 

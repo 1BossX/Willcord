@@ -178,3 +178,112 @@ pub struct WorkerReady {
     pub connection_epoch: u64,
     pub ready: bool,
 }
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CancelCall {
+    pub protocol_version: u64,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub worker_id: String,
+    pub connection_epoch: u64,
+    pub job_id: String,
+    pub call_id: String,
+    pub call_seq: u64,
+    pub request_hash: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CancelAck {
+    pub protocol_version: u64,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub worker_id: String,
+    pub connection_epoch: u64,
+    pub job_id: String,
+    pub call_id: String,
+    pub request_hash: String,
+    pub state: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolLog {
+    pub protocol_version: u64,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub worker_id: String,
+    pub connection_epoch: u64,
+    pub job_id: String,
+    pub call_id: String,
+    pub stream: String,
+    pub seq: u64,
+    pub offset: u64,
+    pub data: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LogFetch {
+    pub protocol_version: u64,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub worker_id: String,
+    pub connection_epoch: u64,
+    pub job_id: String,
+    pub call_id: String,
+    pub request_hash: String,
+    pub stream: String,
+    pub from_seq: u64,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LogStatus {
+    pub protocol_version: u64,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub worker_id: String,
+    pub connection_epoch: u64,
+    pub job_id: String,
+    pub call_id: String,
+    pub stream: String,
+    pub chunks: u64,
+    pub state: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LogAck {
+    pub protocol_version: u64,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub worker_id: String,
+    pub connection_epoch: u64,
+    pub job_id: String,
+    pub call_id: String,
+    pub request_hash: String,
+    pub stream: String,
+    pub chunks: u64,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResolveCall {
+    pub protocol_version: u64,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub worker_id: String,
+    pub connection_epoch: u64,
+    pub job_id: String,
+    pub call_id: String,
+    pub call_seq: u64,
+    pub request_hash: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResolveAck {
+    pub protocol_version: u64,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub worker_id: String,
+    pub connection_epoch: u64,
+    pub job_id: String,
+    pub call_id: String,
+    pub request_hash: String,
+    pub state: String,
+}

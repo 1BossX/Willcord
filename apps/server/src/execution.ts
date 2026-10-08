@@ -17,9 +17,30 @@ export type ScriptStep = { tool: "read" | "write" | "bash"; arguments: Record<st
 
 const hash = (v: unknown) => createHash("sha256").update(JSON.stringify(v)).digest("hex");
 const TOOL_RESULT_TIMEOUT_MS = 1_800_000;
+/** Beyond a bash time limit: the worker's TERM grace (at most 30 s) and stop confirmation. */
+const STOP_MARGIN_MS = 60_000;
+/** Output of one stream the model sees; the rest stays in the call log. */
+export const MODEL_STREAM_BYTES = 64 * 1024;
+const LOG_CHUNK_BYTES = 16 * 1024;
+const DEFAULT_LOG_CAPACITY_BYTES = 1024 ** 3;
+const STREAMS = ["stdout", "stderr"] as const;
+type Stream = (typeof STREAMS)[number];
+type LogSummary = Record<Stream, { bytes_total: number; bytes_logged: number; chunks: number }> & { truncated: boolean };
+type ResultFrame = Extract<WorkerFrame, { type: "tool_result" }>;
 const MAX_MODEL_TURNS = 20;
 const TERMINAL = new Set(["succeeded", "failed", "cancelled"]);
 const key = (jobId: string, callId: string) => `${jobId}\u0000${callId}`;
+
+/** A bash result whose output the worker stored as chunks. */
+const loggedOutput = (result: any): LogSummary | undefined =>
+  result && typeof result === "object" && result.logs && typeof result.logs.stdout?.chunks === "number" && typeof result.logs.stderr?.chunks === "number" ? result.logs : undefined;
+
+/** The worker's own record, without the output this node assembled from chunks. */
+const workerRecord = (record: ToolRecord): ToolRecord => {
+  if (!record.result || typeof record.result !== "object" || !("output" in record.result)) return record;
+  const { output: _output, ...result } = record.result;
+  return { ok: record.ok, result };
+};
 
 /** Pi-visible output of a worker result. Live execution and SQLite recovery must agree. */
 export function toolOutput(record: ToolRecord) {
@@ -36,8 +57,14 @@ export class ExecutionCoordinator {
     readonly connections: Map<string, Connection>,
     readonly now = Date.now,
     readonly runJob?: (job: any) => Promise<void>,
-    readonly options: { dataDir?: string; fakeScript?: (job: any) => ScriptStep[]; toolResultTimeoutMs?: number } = {},
+    readonly options: { dataDir?: string; fakeScript?: (job: any) => ScriptStep[]; toolResultTimeoutMs?: number; logCapacityBytes?: number } = {},
   ) {}
+
+  /** Results that wait for the head of their output before they commit. */
+  private readonly held = new Map<string, ResultFrame>();
+  /** One log_fetch in flight per stream, keyed job/call/stream, valued by worker. */
+  private readonly fetching = new Map<string, string>();
+  private storedLogBytes?: number;
 
   close() {
     this.closed = true;
@@ -125,7 +152,7 @@ export class ExecutionCoordinator {
     })();
     let settle!: Pick<Pending, "resolve" | "reject">;
     const promise = new Promise<ToolRecord>((resolve, reject) => (settle = { resolve, reject }));
-    const timer = setTimeout(() => { const current = this.call(jobId, callId); if (current) this.markUnknown(current, "tool_result_timeout", { call_id: callId }); }, this.options.toolResultTimeoutMs ?? TOOL_RESULT_TIMEOUT_MS);
+    const timer = setTimeout(() => { const current = this.call(jobId, callId); if (current) this.markUnknown(current, "tool_result_timeout", { call_id: callId }); }, this.options.toolResultTimeoutMs ?? resultTimeoutMs(row));
     timer.unref();
     const p: Pending = { workerId: row.worker_id, jobId, callId, promise, timer, ...settle };
     this.pending.set(key(jobId, callId), p);
@@ -139,6 +166,8 @@ export class ExecutionCoordinator {
   }
 
   receive(frame: WorkerFrame) {
+    if (frame.type === "tool_log") return this.receiveLog(frame);
+    if (frame.type === "log_status") return this.receiveLogStatus(frame);
     if (frame.type !== "tool_result" && frame.type !== "tool_rejected") return;
     const row = this.call(frame.job_id, frame.call_id);
     if (!row || row.worker_id !== frame.worker_id || row.request_hash !== frame.request_hash) {
@@ -151,7 +180,7 @@ export class ExecutionCoordinator {
     }
     const record: ToolRecord = { ok: frame.ok, result: frame.result };
     if (row.status === "completed") {
-      if (isDeepStrictEqual(JSON.parse(row.result_json!), record)) this.ack(row);
+      if (isDeepStrictEqual(workerRecord(JSON.parse(row.result_json!)), record)) this.ack(row);
       else this.attention(row.worker_id, row.job_id, "result_contradiction", frame);
       return;
     }
@@ -159,6 +188,29 @@ export class ExecutionCoordinator {
       this.attention(row.worker_id, row.job_id, `result_for_${row.status}_call`, frame);
       return;
     }
+    this.commitResult(row, frame);
+  }
+
+  /**
+   * Commit a result once the head of its output is here. The model sees the
+   * same assembled text live and after recovery, because it is committed.
+   */
+  private commitResult(row: CallRow, frame: ResultFrame) {
+    const logs = loggedOutput(frame.result);
+    const k = key(row.job_id, row.call_id);
+    if (logs) {
+      this.recordLogSummary(row, logs);
+      let missing = false;
+      for (const stream of STREAMS) {
+        const from = this.headMissing(row, stream, logs);
+        if (from === undefined) continue;
+        missing = true;
+        this.fetchLog(row, stream, from);
+      }
+      if (missing) { this.held.set(k, frame); return; }
+    }
+    this.held.delete(k);
+    const record: ToolRecord = logs ? { ok: frame.ok, result: { ...frame.result, output: this.assemble(row, logs) } } : { ok: frame.ok, result: frame.result };
     this.db.transaction(() => {
       this.db.prepare("UPDATE runtime_calls SET status='completed',result_json=?,completed_at=? WHERE job_id=? AND call_id=? AND status='dispatched'").run(JSON.stringify(record), this.now(), row.job_id, row.call_id);
       this.db.prepare("UPDATE tool_calls SET state='finished',result_json=? WHERE call_id=?").run(JSON.stringify(record), row.call_id);
@@ -166,8 +218,132 @@ export class ExecutionCoordinator {
     })();
     mainFault("after_result_commit");
     this.ack(row);
-    const p = this.pending.get(key(row.job_id, row.call_id));
-    if (p) { clearTimeout(p.timer); this.pending.delete(key(row.job_id, row.call_id)); p.resolve(record); }
+    if (logs) this.fetchRest(row);
+    const p = this.pending.get(k);
+    if (p) { clearTimeout(p.timer); this.pending.delete(k); p.resolve(record); }
+  }
+
+  private logBytes() {
+    this.storedLogBytes ??= (this.db.prepare("SELECT COALESCE(SUM(length(data)),0) n FROM call_logs").get() as { n: number }).n;
+    return this.storedLogBytes;
+  }
+
+  /** Store a chunk. Output beyond the model's view is dropped, visibly, once this node is full. */
+  private receiveLog(frame: Extract<WorkerFrame, { type: "tool_log" }>) {
+    const row = this.call(frame.job_id, frame.call_id);
+    // Output is evidence, never authority: a chunk nobody asked for is ignored.
+    if (!row || row.worker_id !== frame.worker_id || row.tool_name !== "bash") return;
+    const data = Buffer.from(frame.data, "base64");
+    if (data.length > LOG_CHUNK_BYTES) return;
+    this.db.prepare("INSERT OR IGNORE INTO call_log_state(job_id,call_id,stream,state) VALUES(?,?,?,'streaming')").run(row.job_id, row.call_id, frame.stream);
+    if (frame.offset >= MODEL_STREAM_BYTES && this.logBytes() + data.length > (this.options.logCapacityBytes ?? DEFAULT_LOG_CAPACITY_BYTES)) {
+      this.db.prepare("UPDATE call_log_state SET main_truncated=1 WHERE job_id=? AND call_id=? AND stream=?").run(row.job_id, row.call_id, frame.stream);
+      return;
+    }
+    const inserted = this.db.prepare("INSERT OR IGNORE INTO call_logs VALUES(?,?,?,?,?,?)").run(row.job_id, row.call_id, frame.stream, frame.seq, frame.offset, data).changes;
+    if (inserted) this.storedLogBytes = this.logBytes() + data.length;
+    this.retryHeld(row);
+  }
+
+  private receiveLogStatus(frame: Extract<WorkerFrame, { type: "log_status" }>) {
+    const row = this.call(frame.job_id, frame.call_id);
+    if (!row || row.worker_id !== frame.worker_id || row.tool_name !== "bash") return;
+    if (frame.state === "expired") {
+      this.fetching.delete(`${key(row.job_id, row.call_id)}\u0000${frame.stream}`);
+      // The worker no longer has it: whatever is missing stays a visible gap.
+      this.db.prepare("UPDATE call_log_state SET state='expired' WHERE job_id=? AND call_id=? AND stream=? AND state<>'complete'").run(row.job_id, row.call_id, frame.stream);
+      this.retryHeld(row);
+      return;
+    }
+    this.fetching.delete(`${key(row.job_id, row.call_id)}\u0000${frame.stream}`);
+    if (frame.state === "running") return;
+    this.retryHeld(row);
+    if (this.call(row.job_id, row.call_id)?.status === "completed") this.fetchRest(row, [frame.stream]);
+  }
+
+  private retryHeld(row: CallRow) {
+    const frame = this.held.get(key(row.job_id, row.call_id));
+    const current = frame && this.call(row.job_id, row.call_id);
+    if (current?.status === "dispatched") this.commitResult(current, frame!);
+  }
+
+  private recordLogSummary(row: CallRow, logs: LogSummary) {
+    for (const stream of STREAMS)
+      this.db.prepare(`INSERT INTO call_log_state(job_id,call_id,stream,chunks,bytes_total,worker_truncated,state) VALUES(?,?,?,?,?,?,'streaming')
+        ON CONFLICT(job_id,call_id,stream) DO UPDATE SET chunks=excluded.chunks,bytes_total=excluded.bytes_total,worker_truncated=excluded.worker_truncated`)
+        .run(row.job_id, row.call_id, stream, logs[stream].chunks, logs[stream].bytes_total, Number(logs.truncated));
+  }
+
+  private chunks(row: CallRow, stream: Stream) {
+    return this.db.prepare("SELECT seq,offset,data FROM call_logs WHERE job_id=? AND call_id=? AND stream=? ORDER BY seq").all(row.job_id, row.call_id, stream) as Array<{ seq: number; offset: number; data: Buffer }>;
+  }
+
+  /** First chunk the model's view still lacks, or undefined when the head is complete or gone for good. */
+  private headMissing(row: CallRow, stream: Stream, logs: LogSummary) {
+    const state = this.db.prepare("SELECT state FROM call_log_state WHERE job_id=? AND call_id=? AND stream=?").get(row.job_id, row.call_id, stream) as { state: string } | undefined;
+    if (state?.state === "expired") return undefined;
+    const need = Math.min(MODEL_STREAM_BYTES, logs[stream].bytes_logged);
+    let next = 0, covered = 0;
+    for (const chunk of this.chunks(row, stream)) {
+      if (covered >= need) break;
+      if (chunk.seq !== next || chunk.offset !== covered) return next;
+      covered += chunk.data.length; next++;
+    }
+    return covered >= need || next >= logs[stream].chunks ? undefined : next;
+  }
+
+  /** The model's view: the first 64 KiB of each stream, with what was left out stated. */
+  private assemble(row: CallRow, logs: LogSummary) {
+    const output: Record<string, unknown> = {};
+    for (const stream of STREAMS) {
+      const parts: Buffer[] = [];
+      let covered = 0;
+      for (const chunk of this.chunks(row, stream)) {
+        if (chunk.offset !== covered || covered >= MODEL_STREAM_BYTES) break;
+        parts.push(chunk.data); covered += chunk.data.length;
+      }
+      const shown = Buffer.concat(parts).subarray(0, MODEL_STREAM_BYTES);
+      const total = logs[stream].bytes_total;
+      output[stream] = { text: shown.toString("utf8"), bytes_shown: shown.length, bytes_total: total, truncated: shown.length < total, gap: shown.length < Math.min(MODEL_STREAM_BYTES, logs[stream].bytes_logged) };
+    }
+    return output;
+  }
+
+  private fetchLog(row: CallRow, stream: Stream, fromSeq: number) {
+    const conn = this.connection(row.worker_id);
+    const k = `${key(row.job_id, row.call_id)}\u0000${stream}`;
+    if (!conn || this.fetching.has(k)) return;
+    this.fetching.set(k, row.worker_id);
+    conn.socket.send(JSON.stringify({ protocol_version: 1, type: "log_fetch", worker_id: row.worker_id, connection_epoch: conn.epoch, job_id: row.job_id, call_id: row.call_id, request_hash: row.request_hash, stream, from_seq: fromSeq }));
+  }
+
+  /**
+   * Complete the stored log of a committed call, then release it on the worker.
+   * Acknowledging is separate from the result ACK, so the worker keeps output
+   * until this node holds it or has decided, visibly, not to keep it.
+   */
+  private fetchRest(row: CallRow, streams: readonly Stream[] = STREAMS) {
+    for (const stream of streams) {
+      const state = this.db.prepare("SELECT chunks,state,main_truncated FROM call_log_state WHERE job_id=? AND call_id=? AND stream=?").get(row.job_id, row.call_id, stream) as { chunks: number | null; state: string; main_truncated: number } | undefined;
+      if (!state || state.chunks === null || state.state !== "streaming") continue;
+      const held = this.chunks(row, stream).map((c) => c.seq);
+      let next = 0;
+      for (const seq of held) { if (seq !== next) break; next++; }
+      if (next >= state.chunks || state.main_truncated) {
+        this.db.prepare("UPDATE call_log_state SET state='complete' WHERE job_id=? AND call_id=? AND stream=?").run(row.job_id, row.call_id, stream);
+        const conn = this.connection(row.worker_id);
+        conn?.socket.send(JSON.stringify({ protocol_version: 1, type: "log_ack", worker_id: row.worker_id, connection_epoch: conn.epoch, job_id: row.job_id, call_id: row.call_id, request_hash: row.request_hash, stream, chunks: state.chunks }));
+      } else this.fetchLog(row, stream, next);
+    }
+  }
+
+  /** Stored output of a call for the operator, in pages of chunks. */
+  readLog(jobId: string, callId: string, stream: Stream, fromSeq: number, limit = 64) {
+    const state = this.db.prepare("SELECT chunks,bytes_total,worker_truncated,main_truncated,state FROM call_log_state WHERE job_id=? AND call_id=? AND stream=?").get(jobId, callId, stream);
+    if (!state) return undefined;
+    const chunks = (this.db.prepare("SELECT seq,offset,data FROM call_logs WHERE job_id=? AND call_id=? AND stream=? AND seq>=? ORDER BY seq LIMIT ?").all(jobId, callId, stream, fromSeq, limit) as Array<{ seq: number; offset: number; data: Buffer }>)
+      .map((c) => ({ seq: c.seq, offset: c.offset, data: c.data.toString("base64") }));
+    return { ...state, items: chunks };
   }
 
   /**
@@ -202,6 +378,14 @@ export class ExecutionCoordinator {
   /** After the worker is ready: repeat lost ACKs, re-send waiting calls, resume the queue. */
   resumeWorker(workerId: string, reacks: CallRow[] = []) {
     for (const row of reacks) this.ack(row);
+    // Fetches sent on an earlier connection will never be answered.
+    for (const [k, owner] of this.fetching) if (owner === workerId) this.fetching.delete(k);
+    // Output still being completed when the connection went away.
+    const incomplete = this.db.prepare("SELECT DISTINCT s.job_id,s.call_id FROM call_log_state s JOIN jobs j USING(job_id) WHERE j.worker_id=? AND s.state='streaming'").all(workerId) as Array<{ job_id: string; call_id: string }>;
+    for (const { job_id, call_id } of incomplete) {
+      const row = this.call(job_id, call_id);
+      if (row?.status === "completed") this.fetchRest(row);
+    }
     for (const p of this.pending.values()) if (p.workerId === workerId) this.deliver(p);
     void this.pump(workerId);
   }
@@ -326,7 +510,7 @@ export class ExecutionCoordinator {
     const tools = [
       { name: "read", label: "read", description: "Read bounded UTF-8 text from the fixed remote workspace.", parameters: typebox.Type.Object({ path: typebox.Type.String(), offset: typebox.Type.Optional(typebox.Type.Integer({ minimum: 0 })), limit: typebox.Type.Optional(typebox.Type.Integer({ minimum: 1, maximum: 16384 })) }), execute: async (id: string) => this.piTool(job, id) },
       { name: "write", label: "write", description: "Atomically write a UTF-8 file in the fixed remote workspace. expected_hash is the current SHA-256 or 'missing'.", parameters: typebox.Type.Object({ path: typebox.Type.String(), content: typebox.Type.String(), expected_hash: typebox.Type.String() }), execute: async (id: string) => this.piTool(job, id) },
-      { name: "bash", label: "bash", description: "Run a non-interactive command in the fixed remote workspace.", parameters: typebox.Type.Object({ command: typebox.Type.String() }), execute: async (id: string) => this.piTool(job, id) },
+      { name: "bash", label: "bash", description: "Run a non-interactive command in the fixed remote workspace. It is stopped after timeout_secs (default 600, at most 1800). The first 64 KiB of each output stream is returned.", parameters: typebox.Type.Object({ command: typebox.Type.String(), timeout_secs: typebox.Type.Optional(typebox.Type.Integer({ minimum: 1, maximum: 1800 })) }), execute: async (id: string) => this.piTool(job, id) },
     ];
     const mod = await import("./pi-runtime.js");
     const manager = pi.SessionManager.create(job.path, sessionDir);
@@ -409,6 +593,14 @@ function p2Script(job: any): ScriptStep[] {
 }
 
 export function newJobId() { return randomUUID(); }
+
+/** How long a dispatched call may go without a result before it is unknown. */
+function resultTimeoutMs(row: CallRow) {
+  if (row.tool_name !== "bash") return TOOL_RESULT_TIMEOUT_MS;
+  const requested = JSON.parse(row.arguments_json).timeout_secs;
+  const secs = Number.isInteger(requested) && requested >= 1 && requested <= 1800 ? requested : 600;
+  return secs * 1000 + STOP_MARGIN_MS;
+}
 
 /** A session stays usable only while its worker still registers the exact workspace it bound. */
 export function workspaceCurrent(db: Database.Database, sessionId: string) {

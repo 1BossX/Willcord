@@ -1,6 +1,11 @@
 worker_id = "worker-a"
 data_dir = "/tmp/worker-plane-a"
 url = "wss://localhost:8443/ws/worker"
+# Optional limits (defaults shown).
+# kill_grace_secs = 10                # TERM -> KILL on cancel or timeout; at most 30
+# max_tool_timeout_secs = 1800        # bash timeout_secs above this is refused
+# log_disk_budget_bytes = 2147483648  # stored output; new calls refused above it
+# min_free_bytes = 1073741824         # new calls refused below this free space
 [[workspaces]]
 workspace_id = "project"
 config_version = 1

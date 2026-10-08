@@ -56,7 +56,7 @@ export async function startScenario(options: {
     startMain, stopMain, one, all, until,
     /** Lines in the workspace marker file equal to `tag`: the side-effect count. */
     count: (tag: string) => existsSync(marker) ? readFileSync(marker, "utf8").split("\n").filter((l) => l === tag).length : 0,
-    startWorker: (extra: { binary?: string; env?: Record<string, string>; configVersion?: number } = {}) =>
+    startWorker: (extra: { binary?: string; env?: Record<string, string>; configVersion?: number; extraConfig?: string } = {}) =>
       (worker = startWorker({ dir, id: "w", url: proxy.url, ca: certs.ca, token: workerToken, workspace, ...extra })),
     stopWorker: async (signal: NodeJS.Signals = "SIGKILL") => { if (worker) await stopWorker(worker, signal); worker = undefined; },
     ready: () => until(() => { const w = one("SELECT online,reconciled FROM workers WHERE worker_id='w'"); return w?.online === 1 && w?.reconciled === 1; }),

@@ -3,34 +3,9 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { WebSocket } from "ws";
 import { requestHash } from "@worker-plane/protocol";
+import { Peer } from "./support/peer.js";
 import { createCertificates, startTlsEndpoint, startWorker, stopWorker, waitFor, type WorkerProcess } from "./support/worker-harness.js";
-
-/** Scripted main node: the test decides every frame the worker receives. */
-class Peer {
-  private frames: any[] = [];
-  private waiter?: () => void;
-  constructor(readonly socket: WebSocket) {
-    socket.on("message", (data) => {
-      const frame = JSON.parse(data.toString());
-      if (frame.type === "heartbeat") return;
-      this.frames.push(frame);
-      this.waiter?.();
-    });
-  }
-  async next(type: string, timeoutMs = 15000) {
-    const deadline = Date.now() + timeoutMs;
-    while (!this.frames.length) {
-      if (Date.now() > deadline) throw new Error(`timed out waiting for ${type}`);
-      await new Promise<void>((r) => { this.waiter = r; setTimeout(r, 50); });
-    }
-    const frame = this.frames.shift();
-    assert.equal(frame.type, type, JSON.stringify(frame));
-    return frame;
-  }
-  send(frame: object) { this.socket.send(JSON.stringify({ protocol_version: 1, ...frame })); }
-}
 
 test("real Rust worker ledger: lost ACKs, network loss, crash windows and tombstones never repeat side effects", { timeout: 90000 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), "worker-plane-ledger-"));

@@ -48,7 +48,15 @@ export type WorkerFrame =
   | ToolAck
   | ToolAccepted
   | ToolRejected
-  | WorkerReady;
+  | WorkerReady
+  | CancelCall
+  | CancelAck
+  | ToolLog
+  | LogFetch
+  | LogStatus
+  | LogAck
+  | ResolveCall
+  | ResolveAck;
 
 export interface WorkerFrame1 {
   protocol_version: 1;
@@ -157,7 +165,7 @@ export interface ToolRejected {
   job_id: string;
   call_id: string;
   request_hash: string;
-  reason: "conflict" | "unknown" | "retired" | "busy";
+  reason: "conflict" | "unknown" | "retired" | "busy" | "disk_full" | "invalid" | "cancelled";
 }
 export interface WorkerReady {
   protocol_version: 1;
@@ -165,4 +173,107 @@ export interface WorkerReady {
   worker_id: string;
   connection_epoch: number;
   ready: boolean;
+}
+/**
+ * Idempotent stop request. A call the ledger never accepted is fenced so it can never start.
+ */
+export interface CancelCall {
+  protocol_version: 1;
+  type: "cancel_call";
+  worker_id: string;
+  connection_epoch: number;
+  job_id: string;
+  call_id: string;
+  call_seq: number;
+  request_hash: string;
+}
+/**
+ * Receipt only: termination is proven by the later tool_result. fenced proves the ledger never accepted the call.
+ */
+export interface CancelAck {
+  protocol_version: 1;
+  type: "cancel_ack";
+  worker_id: string;
+  connection_epoch: number;
+  job_id: string;
+  call_id: string;
+  request_hash: string;
+  state: "running" | "completed" | "fenced" | "unknown" | "conflict";
+}
+/**
+ * One stored output chunk, base64 of at most 16 KiB. Chunks are numbered from 0 per stream.
+ */
+export interface ToolLog {
+  protocol_version: 1;
+  type: "tool_log";
+  worker_id: string;
+  connection_epoch: number;
+  job_id: string;
+  call_id: string;
+  stream: "stdout" | "stderr";
+  seq: number;
+  offset: number;
+  data: string;
+}
+export interface LogFetch {
+  protocol_version: 1;
+  type: "log_fetch";
+  worker_id: string;
+  connection_epoch: number;
+  job_id: string;
+  call_id: string;
+  request_hash: string;
+  stream: "stdout" | "stderr";
+  from_seq: number;
+}
+/**
+ * Ends a log_fetch reply; chunks is the number of chunks stored for the stream.
+ */
+export interface LogStatus {
+  protocol_version: 1;
+  type: "log_status";
+  worker_id: string;
+  connection_epoch: number;
+  job_id: string;
+  call_id: string;
+  stream: "stdout" | "stderr";
+  chunks: number;
+  state: "complete" | "more" | "running" | "expired";
+}
+/**
+ * The main node holds every chunk it keeps of the stream. Independent of tool_ack.
+ */
+export interface LogAck {
+  protocol_version: 1;
+  type: "log_ack";
+  worker_id: string;
+  connection_epoch: number;
+  job_id: string;
+  call_id: string;
+  request_hash: string;
+  stream: "stdout" | "stderr";
+  chunks: number;
+}
+/**
+ * An operator settled an unknown call; the worker keeps a tombstone so it never runs.
+ */
+export interface ResolveCall {
+  protocol_version: 1;
+  type: "resolve_call";
+  worker_id: string;
+  connection_epoch: number;
+  job_id: string;
+  call_id: string;
+  call_seq: number;
+  request_hash: string;
+}
+export interface ResolveAck {
+  protocol_version: 1;
+  type: "resolve_ack";
+  worker_id: string;
+  connection_epoch: number;
+  job_id: string;
+  call_id: string;
+  request_hash: string;
+  state: "resolved" | "not_unknown";
 }

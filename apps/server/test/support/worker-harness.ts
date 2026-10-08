@@ -48,13 +48,14 @@ export async function startTlsEndpoint(certs: ReturnType<typeof createCertificat
 
 export type WorkerProcess = { child: ChildProcess; stderr: () => string; exited: Promise<unknown> };
 
-export function startWorker(options: { dir: string; id: string; url: string; ca: string; token: string; workspace: string; binary?: string; env?: Record<string, string>; retentionSecs?: number; configVersion?: number }): WorkerProcess {
+export function startWorker(options: { dir: string; id: string; url: string; ca: string; token: string; workspace: string; binary?: string; env?: Record<string, string>; retentionSecs?: number; configVersion?: number; extraConfig?: string }): WorkerProcess {
   const config = join(options.dir, `${options.id}.toml`);
   mkdirSync(options.workspace, { recursive: true });
   writeFileSync(
     config,
     `worker_id = "${options.id}"\ndata_dir = "${options.dir}/${options.id}-data"\nurl = "${options.url}"\n` +
       (options.retentionSecs === undefined ? "" : `result_retention_secs = ${options.retentionSecs}\n`) +
+      (options.extraConfig ?? "") +
       `[[workspaces]]\nworkspace_id = "repo"\nconfig_version = ${options.configVersion ?? 1}\npath = "${options.workspace}"\nrepo_id = "github.com/1BossX/WorkerPlane"\nis_default = true\n`,
   );
   const child = spawn(options.binary ?? join(repoRoot, "worker/target/debug/worker-plane-worker"), [config], {

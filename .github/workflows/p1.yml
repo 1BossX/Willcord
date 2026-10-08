@@ -32,6 +32,9 @@ jobs:
       - run: cargo test --locked --manifest-path worker/Cargo.toml
       - run: cargo test --locked --manifest-path worker/Cargo.toml --features fault-injection
       - run: cargo build --locked --manifest-path worker/Cargo.toml
+      # The P3-C fault tests use this binary; building it here keeps the
+      # cold compile from competing with the timed end-to-end tests.
+      - run: cargo build --locked --manifest-path worker/Cargo.toml --features fault-injection --target-dir worker/target/fault
       - run: pnpm check
       - run: pnpm test
       - run: pnpm build

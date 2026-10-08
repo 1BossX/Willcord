@@ -145,3 +145,18 @@ test("P3 a committed request that no longer rebuilds blocks the worker without c
  assert.match(one("SELECT evidence FROM attention_actions").evidence,/committed_request_unrebuildable/);
  coordinator.close();db.close();
 });
+
+test("P3 an inference from a superseded run commits neither a tool turn nor a final answer",async()=>{
+ const {db,coordinator,one}=fixture();
+ db.prepare("UPDATE jobs SET runtime_generation=2").run();
+ const stale={job_id:"j",session_id:"s",worker_id:"venus",workspace_id:"primary",workspace_version:1,runtime_generation:1};
+ const call={id:"late",name:"bash",arguments:{command:"echo late"}};
+ const turn=(coordinator as any).commitTurn(stale,"turn-late",{role:"assistant",content:[{type:"toolCall",...call}]},[call]);
+ const final=(coordinator as any).commitFinal(stale,{role:"assistant",content:[{type:"text",text:"late answer"}]});
+ assert.equal(turn,false);assert.equal(final,false);
+ assert.equal(one("SELECT count(*) n FROM runtime_turns").n,0);
+ assert.equal(one("SELECT count(*) n FROM runtime_calls").n,0);
+ assert.equal(one("SELECT count(*) n FROM messages").n,0);
+ assert.equal(one("SELECT state FROM jobs").state,"running");
+ coordinator.close();db.close();
+});

@@ -5,7 +5,8 @@ import websocket from "@fastify/websocket";
 import rateLimit from "@fastify/rate-limit";
 import argon2 from "argon2";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { ExecutionCoordinator, newJobId, type ScriptStep } from "./execution.js";
+import { ExecutionCoordinator, newJobId, workspaceCurrent, type ScriptStep } from "./execution.js";
+import { mainFault } from "./fault.js";
 import type Database from "better-sqlite3";
 import {
   parseFrame,
@@ -27,6 +28,8 @@ export async function createApp(
     runJob?: (job:unknown)=>Promise<void>;
     dataDir?: string;
     fakeScript?: (job: any) => ScriptStep[];
+    toolResultTimeoutMs?: number;
+    waitSweepMs?: number;
   } = {},
 ) {
   const now = options.now ?? Date.now;
@@ -58,7 +61,7 @@ export async function createApp(
       tokenDigest: string;
     }
   >();
-  const coordinator = new ExecutionCoordinator(db, connections, now, options.runJob as ((job:any)=>Promise<void>)|undefined, { dataDir: options.dataDir, fakeScript: options.fakeScript });
+  const coordinator = new ExecutionCoordinator(db, connections, now, options.runJob as ((job:any)=>Promise<void>)|undefined, { dataDir: options.dataDir, fakeScript: options.fakeScript, toolResultTimeoutMs: options.toolResultTimeoutMs });
   let shuttingDown = false;
   const offline = (id: string, epoch: number) => {
     if (shuttingDown) return;
@@ -178,6 +181,7 @@ export async function createApp(
     if(typeof body?.client_request_id!=="string"||!body.client_request_id||body.client_request_id.length>128||typeof body.message!=="string"||!body.message.trim()||body.message.length>32000) return reply.code(400).send({error:"invalid_message"});
     const session=db.prepare("SELECT * FROM sessions WHERE session_id=?").get(req.params.session_id) as any;
     if(!session) return reply.code(404).send({error:"session_not_found"});
+    if(!workspaceCurrent(db,session.session_id)) return reply.code(409).send({error:"workspace_version_changed"});
     const requestHash=digest(JSON.stringify({message:body.message}));
     const waitMs=Number(process.env.WORKER_WAIT_MS??86400000);
     const outcome=db.transaction(()=>{
@@ -469,6 +473,7 @@ export async function createApp(
             coordinator.receive(f);
           } else if (f.type === "tool_accepted") {
             // Acceptance only proves the worker ledger owns the call; the result decides.
+            mainFault("after_dispatch");
           } else throw new Error("unexpected_frame");
         } catch {
           if (epoch) offline(id, epoch);
@@ -497,7 +502,7 @@ export async function createApp(
   timer.unref();
   const expiryTimer=setInterval(()=>{
     db.prepare("UPDATE jobs SET state='failed' WHERE state='waiting_worker' AND wait_until IS NOT NULL AND wait_until<?").run(now());
-  },60000);
+  },options.waitSweepMs??60000);
   expiryTimer.unref();
   app.addHook("onClose", async () => {
     coordinator.close();

@@ -197,8 +197,9 @@ export class ExecutionCoordinator {
     return promise;
   }
 
+  /** An ACK starts nothing, so a blocked worker may receive it too. */
   private ack(row: CallRow) {
-    const conn = this.connection(row.worker_id);
+    const conn = this.controlConnection(row.worker_id);
     conn?.socket.send(JSON.stringify({ protocol_version: 1, type: "tool_ack", worker_id: row.worker_id, connection_epoch: conn.epoch, job_id: row.job_id, call_id: row.call_id, request_hash: row.request_hash, ack_through: row.call_seq }));
   }
 
@@ -226,6 +227,8 @@ export class ExecutionCoordinator {
       else this.attention(row.worker_id, row.job_id, "result_contradiction", frame);
       return;
     }
+    // The operator's resolution stands; the ACK lets the worker retire its record.
+    if (row.status === "resolved") { this.ack(row); return; }
     if (row.status !== "dispatched") {
       this.attention(row.worker_id, row.job_id, `result_for_${row.status}_call`, frame);
       return;
@@ -452,6 +455,9 @@ export class ExecutionCoordinator {
         else this.attention(workerId, matches ? row.job_id : null, "worker_reports_unknown_execution", entry);
       } else if (!matches) {
         this.attention(workerId, row ? row.job_id : null, "ledger_contradiction", entry);
+      } else if (row.status === "resolved" && entry.status === "completed") {
+        // The call finished after all; the resolution stands and the worker may retire it.
+        reacks.push(row);
       } else if (row.status !== "completed" && row.status !== "dispatched") {
         this.attention(workerId, row.job_id, `ledger_reports_${row.status}_call`, entry);
       } else if (entry.status === "completed") {
@@ -507,7 +513,7 @@ export class ExecutionCoordinator {
         }
         const job = this.db.prepare("SELECT job_id,session_id,wait_until FROM jobs WHERE worker_id=? AND state IN ('queued','waiting_worker') ORDER BY queue_seq LIMIT 1").get(workerId) as any;
         if (!job) return;
-        if (job.wait_until && job.wait_until < this.now()) { this.db.prepare("UPDATE jobs SET state='failed' WHERE job_id=?").run(job.job_id); continue; }
+        if (job.wait_until && job.wait_until < this.now()) { this.db.prepare("UPDATE jobs SET state='failed',end_reason='worker_wait_expired' WHERE job_id=?").run(job.job_id); continue; }
         if (!workspaceCurrent(this.db, job.session_id)) { this.failStaleWorkspace(job.job_id, job.session_id); continue; }
         const claimed = this.db.transaction(() => {
           if (this.db.prepare("UPDATE worker_slots SET active_job_id=? WHERE worker_id=? AND active_job_id IS NULL").run(job.job_id, workerId).changes !== 1) return false;

@@ -274,3 +274,17 @@ test("P4 a turn over the tool-call budget is committed but none of its calls is 
  assert.equal(sent.length,0);
  coordinator.close();db.close();
 });
+
+test("P4 a resolved call the worker later reports as completed is ACKed, not a new contradiction",async()=>{
+ const {db,sent,coordinator,commit,result,one}=fixture();
+ const h1=commit("c1",1,"bash",{command:"x"});
+ db.prepare("UPDATE runtime_calls SET status='resolved',result_json='{}',resolve_acked=0").run();
+ db.prepare("UPDATE workers SET blocked=1,unblock_pending=1").run();
+ const reacks=coordinator.reconcile("venus",[{job_id:"j",call_id:"c1",call_seq:1,request_hash:h1,status:"completed",boot_id:"boot"}]);
+ assert.deepEqual(reacks.map((r)=>r.call_id),["c1"]);
+ result("c1",h1,{exit_code:0});
+ assert.equal(sent.at(-1).type,"tool_ack");
+ assert.equal(one("SELECT status FROM runtime_calls").status,"resolved");
+ assert.deepEqual(one("SELECT unblock_pending,(SELECT count(*) FROM attention_actions) n FROM workers"),{unblock_pending:1,n:0});
+ coordinator.close();db.close();
+});

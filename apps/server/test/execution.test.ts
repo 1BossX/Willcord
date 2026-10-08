@@ -131,3 +131,17 @@ test("P3 a run that ends with an unresolved call keeps the slot and needs attent
  assert.equal(one("SELECT blocked FROM workers").blocked,1);
  coordinator.close();db.close();
 });
+
+test("P3 a committed request that no longer rebuilds blocks the worker without closing its connection",async()=>{
+ const {db,sent,coordinator,commit,one}=fixture();
+ commit("c1",1,"bash",{command:"echo once"});
+ db.prepare("UPDATE runtime_calls SET arguments_json=? WHERE call_id='c1'").run(JSON.stringify({command:"echo tampered"}));
+ await assert.rejects(coordinator.dispatch("j","c1"),/committed_request_unrebuildable/);
+ assert.doesNotThrow(()=>coordinator.resumeWorker("venus"));
+ assert.equal(sent.length,0,"nothing is sent for a request that does not match its commit");
+ assert.equal(one("SELECT status FROM runtime_calls WHERE call_id='c1'").status,"unknown");
+ assert.equal(one("SELECT state FROM jobs").state,"needs_attention");
+ assert.equal(one("SELECT blocked FROM workers").blocked,1);
+ assert.match(one("SELECT evidence FROM attention_actions").evidence,/committed_request_unrebuildable/);
+ coordinator.close();db.close();
+});

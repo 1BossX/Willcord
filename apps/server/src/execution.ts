@@ -99,7 +99,10 @@ export class ExecutionCoordinator {
   private deliver(p: Pending) {
     const conn = this.connection(p.workerId);
     const row = this.call(p.jobId, p.callId);
-    if (conn && row?.status === "dispatched") this.sendCall(conn, row);
+    if (!conn || row?.status !== "dispatched") return;
+    // A request that no longer rebuilds from its commit is a local
+    // contradiction, not a protocol error: block, keep the connection.
+    try { this.sendCall(conn, row); } catch (error) { this.markUnknown(row, "committed_request_unrebuildable", { call_id: row.call_id, error: String(error) }); }
   }
 
   /**

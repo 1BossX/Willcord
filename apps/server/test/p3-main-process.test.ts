@@ -88,7 +88,9 @@ for (const point of ["before_dispatch", "after_dispatch", "after_result_commit"]
       assert.equal(s.one("SELECT count(*) n FROM messages WHERE job_id=? AND content_json LIKE '%\"role\":\"tool\"%'", job).n, 1, "one tool message");
       assert.equal(s.one("SELECT count(*) n FROM messages WHERE job_id=? AND content_json LIKE '%\"role\":\"assistant\"%'", job).n, 1, "one final answer");
       assert.equal(s.one("SELECT blocked FROM workers").blocked, 0);
-      assert.equal(s.one("SELECT active_job_id FROM worker_slots").active_job_id, null);
+      // The slot is released right after the job settles, but a tick later than
+      // the state flip; wait for it instead of racing the coordinator.
+      await s.until(() => s.one("SELECT active_job_id FROM worker_slots").active_job_id === null);
       if (point === "after_result_commit")
         assert.ok(s.proxy.frames.filter((f) => f.type === "tool_ack" && f.call_id === "crash-1").length >= 1, "the lost ACK was sent after restart");
 

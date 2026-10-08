@@ -24,7 +24,7 @@ test("real SQLite migration, reopen, authentication and CSRF boundaries", async 
         n: number;
       }
     ).n,
-    5,
+    6,
   );
   const app = await createApp(db, "https://localhost:8443", { logging: false });
   try {
@@ -111,7 +111,7 @@ test("real SQLite migration, reopen, authentication and CSRF boundaries", async 
       401,
     );
     db.prepare(
-      "INSERT INTO workers VALUES ('a','boot-a','ledger-a',1,1,1,0,?)",
+      "INSERT INTO workers(worker_id,boot_id,ledger_id,connection_epoch,online,reconciled,blocked,last_seen) VALUES ('a','boot-a','ledger-a',1,1,1,0,?)",
     ).run(Date.now());
     db.prepare("INSERT INTO worker_slots(worker_id) VALUES ('a')").run();
     db.prepare("INSERT INTO workspaces VALUES (?,?,?,?,?,?)").run(
@@ -254,7 +254,7 @@ test("migration 001 database upgrades without discarding identity or active slot
         n: number;
       }
     ).n,
-    5,
+    6,
   );
   assert.deepEqual(
     db.prepare("SELECT connection_epoch,online,reconciled FROM workers").get(),

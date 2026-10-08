@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { marked } from "marked";
 import { ApiError, request } from "./api";
+import { AttentionPanel, BudgetRows, CancelButton, LogViewer, RetryButton, type JobControl } from "./control";
 import "./style.css";
 
 type Worker = {
@@ -27,7 +28,7 @@ type Session = {
   path: string;
   created_at: number;
 };
-type Job = {
+type Job = JobControl & {
   job_id: string;
   state: string;
   input_text: string;
@@ -477,7 +478,8 @@ function MarkdownMessage({ value }: { value: string }) {
   return <MarkdownBlocks tokens={tokens} />;
 }
 
-function ToolCard({ value }: { value: Content }) {
+function ToolCard({ value, jobId }: { value: Content; jobId: string }) {
+  const [showLog, setShowLog] = useState(false);
   const result = (
     value.content &&
     typeof value.content === "object" &&
@@ -603,6 +605,11 @@ function ToolCard({ value }: { value: Content }) {
             <code>{result.sha256}</code>
           </details>
         )}
+        {tool === "bash" && result.output && value.call_id && (
+          showLog
+            ? <LogViewer jobId={jobId} callId={value.call_id} />
+            : <button type="button" className="secondary-button" onClick={() => setShowLog(true)}>查看完整日志</button>
+        )}
         {value.call_id && <span className="call-id">调用 {value.call_id}</span>}
       </div>
     </details>
@@ -610,7 +617,7 @@ function ToolCard({ value }: { value: Content }) {
 }
 function ChatMessage({ message }: { message: Message }) {
   const value = parseMessage(message);
-  if (value.role === "tool") return <ToolCard value={value} />;
+  if (value.role === "tool") return <ToolCard value={value} jobId={message.job_id} />;
   return (
     <div
       className={`chat-message ${value.role === "user" ? "from-user" : "from-agent"}`}
@@ -685,6 +692,8 @@ function App() {
   const [navOpen, setNavOpen] = useState(false),
     [tasksOpen, setTasksOpen] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
+  /** The side-effect warning of a retry, shown on the job it created. */
+  const [retryNotice, setRetryNotice] = useState<{ jobId: string; text: string } | null>(null);
   const lastSession = useRef<string | null>(null);
   const restored = useRef(false),
     dialog = useRef<HTMLDialogElement>(null),
@@ -1545,6 +1554,12 @@ function App() {
                   aria-label="任务消息"
                   value={text}
                   onChange={(event) => setText(event.target.value)}
+                  onKeyDown={(event) => {
+                    // Enter sends; Shift+Enter adds a line. Never interrupt IME composition.
+                    if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
+                    event.preventDefault();
+                    event.currentTarget.form?.requestSubmit();
+                  }}
                   placeholder={
                     sessionId
                       ? "描述任务，或继续这个会话…"
@@ -1696,6 +1711,7 @@ function App() {
                   次
                 </dd>
               </div>
+              <BudgetRows job={selectedJob} now={Date.now()} />
               {selectedJob.state === "waiting_worker" &&
                 selectedJob.wait_until && (
                   <div>
@@ -1708,10 +1724,15 @@ function App() {
               <summary>任务标识</summary>
               <code>{selectedJob.job_id}</code>
             </details>
-            {selectedJob.state === "needs_attention" && (
-              <p className="attention-note">
-                尚未确认执行结束，不能视为已完成。人工核对入口尚未开放。
-              </p>
+            {(selectedJob.state === "needs_attention" || Boolean(activeWorker?.blocked)) && (
+              <AttentionPanel
+                job={selectedJob}
+                workerId={selectedJob.worker_id}
+                workerBlocked={Boolean(activeWorker?.blocked)}
+                refreshKey={refreshKey}
+                onDone={() => setRefreshKey((value) => value + 1)}
+                onError={report}
+              />
             )}
             {selectedJobToolFailures.length > 0 && (
               <div className="inspector-command-failures" role="status">
@@ -1724,11 +1745,17 @@ function App() {
                 ))}
               </div>
             )}
-            {activeStates.has(selectedJob.state) && (
-              <p className="inspector-note">
-                取消操作尚未开放。请等待任务的真实执行结果。
-              </p>
+            {retryNotice?.jobId === selectedJob.job_id && (
+              <p className="attention-note">{retryNotice.text}</p>
             )}
+            <div className="job-actions">
+              <CancelButton job={selectedJob} onDone={() => setRefreshKey((value) => value + 1)} onError={report} />
+              <RetryButton
+                job={selectedJob}
+                onDone={(jobId, notice) => { setRetryNotice({ jobId, text: notice }); setSelectedJobId(jobId); setRefreshKey((value) => value + 1); }}
+                onError={report}
+              />
+            </div>
           </div>
         )}
         <div className="task-panel-footer">

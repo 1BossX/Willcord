@@ -29,17 +29,23 @@ const fieldType = (s) =>
         : s.type === "boolean"
           ? "bool"
           : s.type === "array"
-            ? "Vec<Workspace>"
+            ? `Vec<${s.items.title ?? "Workspace"}>`
             : s.type === "object"
               ? "Value"
             : "String";
 const workspace = schema.oneOf[0].properties.workspaces.items;
+const nested = schema.oneOf.flatMap((frame) =>
+  Object.values(frame.properties)
+    .filter((p) => p.type === "array" && p.items.title)
+    .map((p) => [p.items.title, p.items.properties]),
+);
 let rust =
   "// Generated from schema.json. Do not edit.\npub const MAX_FRAME_BYTES: usize = " +
   schema["x-max-frame-bytes"] +
   ";\nuse serde::{Serialize, Deserialize};\nuse serde_json::Value;\n";
 for (const [name, props] of [
   ["Workspace", workspace.properties],
+  ...nested,
   ...schema.oneOf.map((s) => [
     s.properties.type.const
       .split("_")

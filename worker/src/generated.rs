@@ -13,6 +13,16 @@ pub struct Workspace {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct CallReport {
+    pub job_id: String,
+    pub call_id: String,
+    pub call_seq: u64,
+    pub request_hash: String,
+    pub status: String,
+    pub boot_id: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Register {
     pub protocol_version: u64,
     #[serde(rename = "type")]
@@ -60,6 +70,7 @@ pub struct Reconcile {
     pub kind: String,
     pub ledger_id: String,
     pub ready: bool,
+    pub calls: Vec<CallReport>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -129,6 +140,33 @@ pub struct ToolAck {
     pub job_id: String,
     pub call_id: String,
     pub request_hash: String,
+    pub ack_through: u64,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolAccepted {
+    pub protocol_version: u64,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub worker_id: String,
+    pub connection_epoch: u64,
+    pub job_id: String,
+    pub call_id: String,
+    pub request_hash: String,
+    pub boot_id: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolRejected {
+    pub protocol_version: u64,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub worker_id: String,
+    pub connection_epoch: u64,
+    pub job_id: String,
+    pub call_id: String,
+    pub request_hash: String,
+    pub reason: String,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

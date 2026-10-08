@@ -38,3 +38,28 @@ test("P2 dispatch binds a persisted intent, commits a matching result, then ACKs
  assert.deepEqual(await large,{bytes:content.length});
  db.close();
 });
+
+test("P3 result ACK carries the committed floor and a ledger rejection blocks instead of retrying",async()=>{
+ const db=openDatabase(":memory:");
+ db.prepare("INSERT INTO workers VALUES('venus','boot','ledger',2,1,1,0,?)").run(Date.now());
+ db.prepare("INSERT INTO worker_slots(worker_id) VALUES('venus')").run();
+ db.prepare("INSERT INTO sessions(session_id,kind,worker_id,workspace_id,workspace_version,repo_id,path) VALUES('s','worker','venus','primary',1,'github.com/acme/repo','/tmp')").run();
+ db.prepare("INSERT INTO jobs(job_id,session_id,client_request_id,request_hash,input_text,worker_id,queue_seq,state,created_at) VALUES('j','s','r','h','run','venus',1,'running',?)").run(Date.now());
+ const sent:string[]=[];const socket={readyState:1,send:(v:string)=>sent.push(v)};
+ const coordinator=new ExecutionCoordinator(db,new Map([["venus",{epoch:2,socket,tokenDigest:"token"}]]));
+ const session={workspace_id:"primary",workspace_version:1},args={command:"true"};
+ const first=coordinator.dispatch("venus","j",session,"bash",args,"c1");
+ const call=JSON.parse(sent[0]);
+ coordinator.receive({protocol_version:1,type:"tool_result",worker_id:"venus",connection_epoch:2,job_id:"j",call_id:"c1",request_hash:call.request_hash,ok:true,result:{exit_code:0}});
+ await first;
+ const ack=JSON.parse(sent[1]);assert.equal(ack.type,"tool_ack");assert.equal(ack.ack_through,1);
+ const second=coordinator.dispatch("venus","j",session,"bash",args,"c2");
+ const rejectedCall=JSON.parse(sent[2]);assert.equal(rejectedCall.call_seq,2);
+ coordinator.receive({protocol_version:1,type:"tool_rejected",worker_id:"venus",connection_epoch:2,job_id:"j",call_id:"c2",request_hash:rejectedCall.request_hash,reason:"unknown"});
+ await assert.rejects(second,/tool_rejected:unknown/);
+ assert.equal(sent.length,3,"a rejected call is never re-sent");
+ assert.equal((db.prepare("SELECT status FROM runtime_calls WHERE call_id='c2'").get() as any).status,"unknown");
+ assert.equal((db.prepare("SELECT state FROM jobs WHERE job_id='j'").get() as any).state,"needs_attention");
+ assert.equal((db.prepare("SELECT blocked FROM workers WHERE worker_id='venus'").get() as any).blocked,1);
+ db.close();
+});

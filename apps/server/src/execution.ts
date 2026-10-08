@@ -27,6 +27,18 @@ export class ExecutionCoordinator {
         if(job) this.db.prepare("INSERT INTO messages(message_id,session_id,job_id,seq,content_json) SELECT ?,?,?,COALESCE(MAX(seq),0)+1,? FROM messages WHERE session_id=?").run(randomUUID(),job.session_id,frame.job_id,JSON.stringify({role:"tool",call_id:frame.call_id,tool:call!.tool_name,arguments:JSON.parse(call!.arguments_json),content:frame.result,ok:frame.ok}),job.session_id);
       })();
       pending.resolve(frame);
+    } else if (frame.type === "tool_rejected") {
+      // The worker ledger cannot prove this call is safe to run: never retry it.
+      const call = this.db.prepare("SELECT request_hash,job_id FROM runtime_calls WHERE call_id=?").get(frame.call_id) as {request_hash:string;job_id:string}|undefined;
+      if (!call || call.request_hash !== frame.request_hash || call.job_id !== frame.job_id) return;
+      this.db.transaction(() => {
+        this.db.prepare("UPDATE runtime_calls SET status='unknown' WHERE call_id=? AND status<>'completed'").run(frame.call_id);
+        this.db.prepare("UPDATE tool_calls SET state='unknown' WHERE call_id=? AND state<>'finished'").run(frame.call_id);
+        this.db.prepare("UPDATE jobs SET state='needs_attention' WHERE job_id=?").run(frame.job_id);
+        this.db.prepare("UPDATE workers SET blocked=1 WHERE worker_id=?").run(frame.worker_id);
+      })();
+      const pending = this.pending.get(frame.call_id);
+      if (pending) { clearTimeout(pending.timer); this.pending.delete(frame.call_id); pending.reject(new Error(`tool_rejected:${frame.reason}`)); }
     }
   }
 
@@ -67,7 +79,7 @@ export class ExecutionCoordinator {
         }
       } else conn.socket.send(JSON.stringify({protocol_version:1,type:"tool_call",worker_id:workerId,connection_epoch:conn.epoch,job_id:jobId,call_id:callId,call_seq:sequence,workspace_id:session.workspace_id,config_version:session.workspace_version,request_hash:digest,tool:name,arguments:wireArgs}));
     });
-    conn.socket.send(JSON.stringify({protocol_version:1,type:"tool_ack",worker_id:workerId,connection_epoch:conn.epoch,job_id:jobId,call_id:callId,request_hash:digest}));
+    conn.socket.send(JSON.stringify({protocol_version:1,type:"tool_ack",worker_id:workerId,connection_epoch:conn.epoch,job_id:jobId,call_id:callId,request_hash:digest,ack_through:sequence}));
     if (!result.ok) throw new Error(JSON.stringify(result.result));
     return result.result;
   }

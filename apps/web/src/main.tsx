@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { marked } from "marked";
 import { ApiError, request } from "./api";
 import "./style.css";
 
@@ -225,6 +226,23 @@ function parseMessage(message: Message): Content {
     return { role: "assistant", content: message.content_json };
   }
 }
+function toolFailure(value: Content) {
+  const result =
+    value.content &&
+    typeof value.content === "object" &&
+    !Array.isArray(value.content)
+      ? (value.content as ToolContent)
+      : {};
+  if (value.role !== "tool") return "";
+  if (value.ok === false || result.error) return result.error ?? "工具执行失败";
+  if (
+    (value.tool === "bash" || result.exit_code !== undefined) &&
+    typeof result.exit_code === "number" &&
+    result.exit_code !== 0
+  )
+    return `命令退出码 ${result.exit_code}`;
+  return "";
+}
 function messageText(content: Content) {
   if (typeof content.content === "string") return content.content;
   if (Array.isArray(content.content))
@@ -233,6 +251,230 @@ function messageText(content: Content) {
       .map((block) => block.text ?? "")
       .join("\n");
   return "";
+}
+
+type MarkdownToken = {
+  type: string;
+  raw?: string;
+  text?: string;
+  lang?: string;
+  href?: string;
+  title?: string;
+  depth?: number;
+  ordered?: boolean;
+  start?: number;
+  checked?: boolean;
+  task?: boolean;
+  align?: ("left" | "center" | "right" | null)[];
+  tokens?: MarkdownToken[];
+  items?: MarkdownToken[];
+  header?: MarkdownToken[];
+  rows?: MarkdownToken[][];
+};
+
+function safeLink(href: string | undefined) {
+  if (!href) return "";
+  try {
+    const url = new URL(href, window.location.href);
+    return ["http:", "https:", "mailto:"].includes(url.protocol) ? href : "";
+  } catch {
+    return "";
+  }
+}
+
+function InlineMarkdown({ tokens = [] }: { tokens?: MarkdownToken[] }) {
+  return (
+    <>
+      {tokens.map((token, index) => {
+        const key = `${token.type}-${index}`;
+        const children = token.tokens ?? [];
+        switch (token.type) {
+          case "strong":
+            return (
+              <strong key={key}>
+                <InlineMarkdown tokens={children} />
+              </strong>
+            );
+          case "em":
+            return (
+              <em key={key}>
+                <InlineMarkdown tokens={children} />
+              </em>
+            );
+          case "del":
+            return (
+              <del key={key}>
+                <InlineMarkdown tokens={children} />
+              </del>
+            );
+          case "codespan":
+            return <code key={key}>{token.text}</code>;
+          case "br":
+            return <br key={key} />;
+          case "link": {
+            const href = safeLink(token.href);
+            return href ? (
+              <a
+                key={key}
+                href={href}
+                title={token.title}
+                target="_blank"
+                rel="noreferrer noopener"
+              >
+                <InlineMarkdown tokens={children} />
+              </a>
+            ) : (
+              <InlineMarkdown key={key} tokens={children} />
+            );
+          }
+          case "image":
+            return <span key={key}>{token.text ?? ""}</span>;
+          case "html":
+            return <span key={key}>{token.raw ?? token.text ?? ""}</span>;
+          case "text":
+            return children.length ? (
+              <React.Fragment key={key}>
+                <InlineMarkdown tokens={children} />
+              </React.Fragment>
+            ) : (
+              <React.Fragment key={key}>{token.text ?? ""}</React.Fragment>
+            );
+          default:
+            return (
+              <React.Fragment key={key}>
+                {token.text ?? token.raw ?? ""}
+              </React.Fragment>
+            );
+        }
+      })}
+    </>
+  );
+}
+
+function CodeBlock({ code, language }: { code: string; language?: string }) {
+  const [copied, setCopied] = useState(false);
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    } catch {
+      setCopied(false);
+    }
+  }
+  return (
+    <div className="markdown-code">
+      <div className="markdown-code-bar">
+        <span>{language || "代码"}</span>
+        <button type="button" onClick={() => void copy()} aria-label="复制代码">
+          {copied ? "已复制" : "复制"}
+        </button>
+      </div>
+      <pre><code>{code}</code></pre>
+    </div>
+  );
+}
+
+function MarkdownBlocks({ tokens = [] }: { tokens?: MarkdownToken[] }) {
+  return (
+    <>
+      {tokens.map((token, index) => {
+        const key = `${token.type}-${index}`;
+        const inline = <InlineMarkdown tokens={token.tokens ?? []} />;
+        switch (token.type) {
+          case "heading": {
+            const level = Math.min(6, Math.max(1, token.depth ?? 1));
+            return React.createElement(`h${level}`, { key }, inline);
+          }
+          case "paragraph":
+          case "text":
+            return <p key={key}>{inline}</p>;
+          case "list": {
+            const items = (token.items ?? []).map((item, itemIndex) => (
+              <li key={itemIndex}>
+                {item.task && (
+                  <input
+                    type="checkbox"
+                    checked={Boolean(item.checked)}
+                    readOnly
+                    aria-label="任务项"
+                  />
+                )}
+                <MarkdownBlocks tokens={item.tokens ?? []} />
+              </li>
+            ));
+            return token.ordered ? (
+              <ol key={key} start={token.start}>
+                {items}
+              </ol>
+            ) : (
+              <ul key={key}>{items}</ul>
+            );
+          }
+          case "blockquote":
+            return (
+              <blockquote key={key}>
+                <MarkdownBlocks tokens={token.tokens} />
+              </blockquote>
+            );
+          case "code":
+            return (
+              <CodeBlock
+                key={key}
+                code={token.text ?? ""}
+                language={token.lang?.split(/\s+/, 1)[0]}
+              />
+            );
+          case "table":
+            return (
+              <div className="markdown-table-wrap" key={key}>
+                <table>
+                  <thead>
+                    <tr>
+                      {(token.header ?? []).map((cell, cellIndex) => (
+                        <th
+                          key={cellIndex}
+                          style={{ textAlign: token.align?.[cellIndex] ?? undefined }}
+                        >
+                          <InlineMarkdown tokens={cell.tokens} />
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(token.rows ?? []).map((row, rowIndex) => (
+                      <tr key={rowIndex}>
+                        {row.map((cell, cellIndex) => (
+                          <td
+                            key={cellIndex}
+                            style={{ textAlign: token.align?.[cellIndex] ?? undefined }}
+                          >
+                            <InlineMarkdown tokens={cell.tokens} />
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            );
+          case "hr":
+            return <hr key={key} />;
+          case "space":
+            return null;
+          case "html":
+            return <p key={key}>{token.raw ?? token.text ?? ""}</p>;
+          default:
+            return <p key={key}>{inline}</p>;
+        }
+      })}
+    </>
+  );
+}
+
+function MarkdownMessage({ value }: { value: string }) {
+  const tokens = marked.lexer(value) as MarkdownToken[];
+  return <MarkdownBlocks tokens={tokens} />;
 }
 
 function ToolCard({ value }: { value: Content }) {
@@ -252,7 +494,6 @@ function ToolCard({ value }: { value: Content }) {
         : result.text !== undefined
           ? "read"
           : "tool");
-  const failed = value.ok === false || Boolean(result.error);
   const nonzeroExit =
     tool === "bash" &&
     typeof result.exit_code === "number" &&
@@ -271,6 +512,7 @@ function ToolCard({ value }: { value: Content }) {
       : result.termination === "timeout"
         ? "已超时停止"
         : "";
+  const failed = value.ok === false || Boolean(result.error) || nonzeroExit;
   const titles: Record<string, string> = {
     read: "读取文件",
     write: "写入文件",
@@ -278,7 +520,7 @@ function ToolCard({ value }: { value: Content }) {
     tool: "工具结果",
   };
   const summary = failed
-    ? (result.error ?? "工具执行失败")
+    ? (result.error ?? (nonzeroExit ? `命令失败 · 退出码 ${result.exit_code}` : "工具执行失败"))
     : tool === "read"
       ? `${result.total_chars ?? 0} 字符${result.truncated ? " · 已截断" : ""}`
       : tool === "write"
@@ -312,11 +554,8 @@ function ToolCard({ value }: { value: Content }) {
         <Icon name="chevron" className="detail-chevron" />
       </summary>
       <div className="tool-body">
-        {failed ? (
-          <p className="danger-text">
-            {result.error ?? "执行失败，请查看工具结果。"}
-          </p>
-        ) : (
+        {failed && <p className="danger-text">{result.error ?? (nonzeroExit ? `命令执行失败，退出码 ${result.exit_code}。` : "执行失败，请查看工具结果。")}</p>}
+        {(!failed || nonzeroExit) && (
           <>
             {tool === "read" && <pre>{result.text || "文件内容为空。"}</pre>}
             {tool === "write" && (
@@ -383,7 +622,9 @@ function ChatMessage({ message }: { message: Message }) {
         <div className="message-author">
           {value.role === "user" ? "你" : "Worker Agent"}
         </div>
-        <div className="message-copy">{messageText(value)}</div>
+        <div className="message-copy">
+          {value.role === "user" ? messageText(value) : <MarkdownMessage value={messageText(value)} />}
+        </div>
       </div>
     </div>
   );
@@ -400,8 +641,24 @@ function App() {
   const [messages, setMessages] = useState<Message[]>([]),
     [jobs, setJobs] = useState<Job[]>([]),
     [selectedJobId, setSelectedJobId] = useState<string | null>(null);
-  const [text, setText] = useState(""),
-    [password, setPassword] = useState(""),
+  const [drafts, setDrafts] = useState<Record<string, string>>(() => {
+    try {
+      const saved = JSON.parse(
+        localStorage.getItem("worker-plane-drafts") ?? "{}",
+      );
+      return saved && typeof saved === "object" && !Array.isArray(saved)
+        ? saved
+        : {};
+    } catch {
+      return {};
+    }
+  });
+  const text = sessionId ? drafts[sessionId] ?? "" : "";
+  const setText = (value: string) => {
+    if (!sessionId) return;
+    setDrafts((current) => ({ ...current, [sessionId]: value }));
+  };
+  const [password, setPassword] = useState(""),
     [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false),
     [loggingIn, setLoggingIn] = useState(false),
@@ -451,6 +708,10 @@ function App() {
     jobs.some((job) => job.state === "needs_attention") ||
     Boolean(activeWorker?.blocked);
 
+  useEffect(() => {
+    localStorage.setItem("worker-plane-drafts", JSON.stringify(drafts));
+  }, [drafts]);
+
   function report(cause: unknown) {
     if (cause instanceof ApiError && cause.status === 401)
       setAuth("logged-out");
@@ -467,7 +728,6 @@ function App() {
     setMessages([]);
     setJobs([]);
     setSelectedJobId(null);
-    setText("");
     setNavOpen(false);
   }
   function selectSession(session: Session) {
@@ -477,7 +737,6 @@ function App() {
     setMessages([]);
     setJobs([]);
     setSelectedJobId(null);
-    setText("");
     setNavOpen(false);
     localStorage.setItem("worker-plane-session", session.session_id);
   }
@@ -493,7 +752,6 @@ function App() {
       setMessages([]);
       setJobs([]);
       setSelectedJobId(null);
-      setText("");
       setNavOpen(false);
     }
   }
@@ -627,7 +885,14 @@ function App() {
       { signal: controller.signal },
     )
       .then((value) => {
-        if (!controller.signal.aborted) setWorkspaces(value.workspaces);
+        if (!controller.signal.aborted) {
+          setWorkspaces(value.workspaces);
+          setModalWorkspace(
+            value.workspaces.length === 1
+              ? value.workspaces[0].workspace_id
+              : "",
+          );
+        }
       })
       .catch((cause) => {
         if (!controller.signal.aborted)
@@ -753,7 +1018,12 @@ function App() {
           message,
         }),
       });
-      setText("");
+      setDrafts((current) => {
+        if (current[target] !== message) return current;
+        const next = { ...current };
+        delete next[target];
+        return next;
+      });
       setSelectedJobId(null);
       setRefreshKey((value) => value + 1);
     } catch (cause) {
@@ -772,6 +1042,13 @@ function App() {
     job,
     messages: messages.filter((message) => message.job_id === job.job_id),
   }));
+  const selectedJobToolFailures = selectedJob
+    ? messages
+        .filter((message) => message.job_id === selectedJob.job_id)
+        .map((message) => ({ message: parseMessage(message), messageId: message.message_id }))
+        .map(({ message, messageId }) => ({ failure: toolFailure(message), messageId, message }))
+        .filter((item) => item.failure)
+    : [];
   const orphanMessages = messages.filter(
     (message) => !jobs.some((job) => job.job_id === message.job_id),
   );
@@ -1346,33 +1623,45 @@ function App() {
           </div>
         </div>
         <div className="task-list">
-          {[...jobs].reverse().map((job) => (
-            <button
-              className={`task-item ${selectedJob?.job_id === job.job_id ? "is-selected" : ""}`}
-              key={job.job_id}
-              onClick={() => chooseJob(job)}
-            >
-              <span className={`timeline-dot timeline-${job.state}`} />
-              <span className="task-item-content">
-                <span className="task-item-top">
-                  <Status state={job.state} />
-                  <time>{time(job.created_at)}</time>
-                </span>
-                <strong>{job.input_text || "会话任务"}</strong>
-                {queuedStates.has(job.state) && (
-                  <span className="task-queue-position">
-                    {job.state === "waiting_worker"
-                      ? "等待目标机器上线"
-                      : "按机器顺序执行"}
-                    {job.queue_position
-                      ? ` · 队列第 ${job.queue_position} 位`
-                      : ""}
+          {[...jobs].reverse().map((job) => {
+            const failures = messages
+              .filter((message) => message.job_id === job.job_id)
+              .map((message) => toolFailure(parseMessage(message)))
+              .filter(Boolean);
+            return (
+              <button
+                className={`task-item ${selectedJob?.job_id === job.job_id ? "is-selected" : ""}`}
+                key={job.job_id}
+                onClick={() => chooseJob(job)}
+              >
+                <span className={`timeline-dot timeline-${job.state}`} />
+                <span className="task-item-content">
+                  <span className="task-item-top">
+                    <Status state={job.state} />
+                    <time>{time(job.created_at)}</time>
                   </span>
-                )}
-                <code>{job.job_id.slice(0, 8)}</code>
-              </span>
-            </button>
-          ))}
+                  <strong>{job.input_text || "会话任务"}</strong>
+                  {failures.length > 0 && (
+                    <span className="task-command-failure">
+                      <Icon name="alert" />
+                      {failures.length} 个工具调用失败
+                    </span>
+                  )}
+                  {queuedStates.has(job.state) && (
+                    <span className="task-queue-position">
+                      {job.state === "waiting_worker"
+                        ? "等待目标机器上线"
+                        : "按机器顺序执行"}
+                      {job.queue_position
+                        ? ` · 队列第 ${job.queue_position} 位`
+                        : ""}
+                    </span>
+                  )}
+                  <code>{job.job_id.slice(0, 8)}</code>
+                </span>
+              </button>
+            );
+          })}
           {!jobs.length && (
             <div className="task-empty">
               <Icon name="clock" />
@@ -1423,6 +1712,17 @@ function App() {
               <p className="attention-note">
                 尚未确认执行结束，不能视为已完成。人工核对入口尚未开放。
               </p>
+            )}
+            {selectedJobToolFailures.length > 0 && (
+              <div className="inspector-command-failures" role="status">
+                <strong><Icon name="alert" /> 工具调用失败</strong>
+                {selectedJobToolFailures.map(({ failure, message, messageId }) => (
+                  <div key={messageId}>
+                    <code>{message.arguments?.command ?? "工具调用"}</code>
+                    <span>{failure}</span>
+                  </div>
+                ))}
+              </div>
             )}
             {activeStates.has(selectedJob.state) && (
               <p className="inspector-note">

@@ -12,8 +12,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: ubuntu-latest
-            runs-on: '"ubuntu-latest"'
           - name: self-hosted
             runs-on: '["self-hosted", "macOS"]'
           - name: self-hosted-linux

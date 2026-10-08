@@ -171,3 +171,91 @@ UI 的 bash 卡片读取 `output`，显示真实退出码或"已取消/已超时
 其余测试全部保持通过，包括 P3 的故障与恢复测试。这些测试的 bash 结果已改为分块输出。
 
 本地环境：macOS arm64，Node 22.22.3，Rust 1.93.1。运行方式同 P3：`PATH=/opt/homebrew/bin:$PATH pnpm test`。
+
+## P4-B：取消、预算与人工处置
+
+### 数据（`migrations/006_p4_control.sql`）
+
+- jobs 新增 `cancel_reason`、`end_reason`、`root_job_id`（P4 中等于自身）、`max_tool_calls`、`max_tokens`、`max_runtime_secs`、`deadline_at`（首次 running 时写入，重启不变）。
+- workers 新增 `reported_ledger_id`（注册时账本变化，仅在人工解除时采用）和 `unblock_pending`。
+- 重建 `runtime_calls`（连同引用它的两张日志表）：状态增加 `not_executed`、`resolved`，并增加 `cancel_sent_at`、`resolution_json`、`resolve_acked`。P4-A 记为 `completed` + `not_executed:true` 的结果迁移为 `not_executed`。
+- 新表 `job_usage`（每轮用量，与轮次同事务写入；中止的生成记 `usage_known=0`）和 `budget_roots`。
+
+### 取消
+
+`ExecutionCoordinator.cancel(jobId, reason)`，REST 为 `POST /api/jobs/:id/cancel`：
+
+| 当前状态 | 处理 |
+|---|---|
+| 终态 / `cancel_requested` | 原样返回（幂等） |
+| queued / waiting_worker | 直接 `cancelled`，没有调用 |
+| running | `cancel_requested`，`runtime_generation+1`，未发送的调用记为 `not_executed`；中止 Pi 生成；已发送的调用发 `cancel_call` |
+| needs_attention | 只记录请求，状态不变 |
+
+- worker 离线时请求保留；重连对账后 `resumeWorker` 先发 `cancel_call`，已取消任务的调用不再重发。
+- `cancel_ack`：`fenced` 记为 `not_executed`；`running`/`completed` 只是回执，等待真实结果；`unknown` 走 `markUnknown`。
+- 没有 dispatched/unknown 调用后 `finalizeCancel`：`cancelled_by_user` 记为 `cancelled`，其余原因（预算、时限、磁盘）记为 `failed`，再释放执行槽并 pump。
+- `disk_full` 拒绝：调用 `not_executed`，job 以 `failed` + `worker_disk_full` 结束，worker 不阻塞。
+
+### 预算
+
+默认值见 `DEFAULT_BUDGET`，可用 `MAX_JOB_TOOL_CALLS`、`MAX_JOB_TOKENS`、`MAX_JOB_RUNTIME_SECS` 覆盖。计数都来自 SQLite。
+
+- 每次生成前检查时限、token 和已提交轮次数（`MAX_MODEL_TURNS`）。
+- `commitTurn` 超过工具次数时：整轮照常提交，新调用全部 `not_executed`，以 `budget_tool_calls` 结束。
+- 时限：每个 running job 一个定时器，外加 `waitSweepMs` 周期扫描；首次派发前再检查一次。到期按取消处理，在途命令先终止。
+
+### 人工处置
+
+| 接口 | 行为 |
+|---|---|
+| `GET /api/attention` | blocked 的 worker、needs_attention 的 job、unknown 和待确认的 resolved 调用、最近 200 条动作 |
+| `POST /api/jobs/:id/abandon` `{note}` | 仅限 needs_attention；变为 `cancelled` + `abandoned`，不解除阻塞，不释放执行槽 |
+| `POST /api/workers/:id/unblock` `{evidence, resolutions}` | 不能有 needs_attention 的 job；依据必填；必须覆盖全部 unknown 调用。调用改为 `resolved`，必要时采用新账本，向 worker 发 `resolve_call`；全部 `resolve_ack`（`resolved` 或 `not_unknown`）且连接已对账后才 `blocked=0`、释放执行槽、pump。期间出现新矛盾则作废这次解除 |
+| `POST /api/jobs/:id/retry` | 仅限终态 job；新 job_id 和新 client_request_id，输入相同，附带核对副作用的提示 |
+
+所有动作写入 `attention_actions`：`blocked`、`abandon`、`unblock`、`unblocked`、`retry`。
+
+### UI
+
+- 任务详情：取消按钮，以及"正在停止"状态。
+- 预算用量（工具次数、token、剩余时限）和结束原因。
+- 人工核对面板：unknown 调用逐个选择结果，放弃需填说明，解除需填依据。
+- 新建重试。
+- bash 卡片的"查看完整日志"：按流分页读取，并标明截断、容量和过期。
+
+### 验证
+
+`apps/server/test/execution.test.ts` 新增协调器单测：
+
+- 运行中取消：保留真实结果，执行槽保留到结果到达，重复取消和终态取消都幂等；
+- `fenced`，以及离线取消在重连后最先发出；
+- queued 取消和 needs_attention 取消；
+- 放弃 → 解除 → `resolve_ack` 的完整动作序列；
+- 超出工具次数的一轮。
+
+`apps/server/test/p4-control.test.ts` 使用真实 Rust worker：
+
+| 场景 | 结果 |
+|---|---|
+| 命令中取消 | 下一 job 在取消的 job 结束后才运行；结果 `termination=cancelled`；`sleep` 之后的副作用没有发生 |
+| 推理中取消（脚本模型延迟 1.5 秒） | 没有任何 runtime_calls，marker 为 0 |
+| 离线取消（代理丢弃首个 tool_call） | 重连后发往 worker 的只有 `cancel_call`，结果为 `fenced` → `not_executed`；queued 取消没有调用 |
+| 工具次数 / token / 时限 | 分别以 `budget_tool_calls`、`budget_tokens`、`deadline_exceeded` 结束；重启主节点后计数不变；时限到期时命令以 cancelled 终止 |
+| 磁盘不足 | `worker_disk_full`，marker 为 0，worker 不阻塞，执行槽释放 |
+| 放弃 → 解除 → 重试 | 放弃后仍 blocked，新 job 拿不到调用；解除后依据写入 `attention_actions`，排队的 job 完成；重试的 job ID 不同 |
+
+全部测试通过；`pnpm build`、`git diff --check` 和协议生成无漂移。
+
+浏览器走查：真实主节点、真实 worker、脚本模型。
+
+- 命令中取消：任务先显示"正在停止"，确认后变为"已取消"，结束原因为"用户取消"。
+- 完整日志查看器：取回全部 30000 行，共 828,894 字节。
+- worker 被 SIGKILL：显示核对面板。放弃后机器仍阻塞；填写依据、选择结果后解除阻塞，机器回到空闲。
+- 新建重试：生成新 job 并开始执行。
+- 预算行显示正常。
+- 走查中发现并修复两处 UI 问题：机器未阻塞时多渲染了一个"0"；长时限改为按小时显示。
+- 随后的改进：
+  - 输入框 Enter 提交、Shift+Enter 换行，输入法组字时不提交；
+  - 任务详情改为独立滚动，内容过长时不再带动整页；
+  - 重试的副作用提示保留显示在新任务上。

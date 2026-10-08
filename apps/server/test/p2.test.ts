@@ -8,7 +8,7 @@ import {ExecutionCoordinator} from "../src/execution.js";
 test("P2 fixed target session, repo guard, offline FIFO and request idempotency",async()=>{
  const db=openDatabase(":memory:");
  db.prepare("INSERT INTO administrators VALUES (1,?)").run(await argon2.hash("p2-test-password",{type:argon2.argon2id}));
- db.prepare("INSERT INTO workers VALUES ('venus','boot','ledger',1,0,0,0,?)").run(Date.now());
+ db.prepare("INSERT INTO workers(worker_id,boot_id,ledger_id,connection_epoch,online,reconciled,blocked,last_seen) VALUES ('venus','boot','ledger',1,0,0,0,?)").run(Date.now());
  db.prepare("INSERT INTO worker_slots(worker_id) VALUES ('venus')").run();
  db.prepare("INSERT INTO workspaces VALUES ('venus','repo-a',1,'/tmp/p2-a','github.com/acme/a',1)").run();
  const app=await createApp(db,"https://localhost:8443",{logging:false});
@@ -44,7 +44,7 @@ test("P2 fixed target session, repo guard, offline FIFO and request idempotency"
 });
 
 test("P2 worker FIFO is shared across sessions and holds one persistent slot",async()=>{
- const db=openDatabase(":memory:");db.prepare("INSERT INTO workers VALUES('venus','boot','ledger',1,1,1,0,?)").run(Date.now());db.prepare("INSERT INTO worker_slots(worker_id) VALUES('venus')").run();
+ const db=openDatabase(":memory:");db.prepare("INSERT INTO workers(worker_id,boot_id,ledger_id,connection_epoch,online,reconciled,blocked,last_seen) VALUES ('venus','boot','ledger',1,1,1,0,?)").run(Date.now());db.prepare("INSERT INTO worker_slots(worker_id) VALUES('venus')").run();
  db.prepare("INSERT INTO workspaces VALUES('venus','primary',1,'/tmp','github.com/acme/repo',1)").run();
  for(const id of ["s1","s2"]) db.prepare("INSERT INTO sessions(session_id,kind,worker_id,workspace_id,workspace_version,repo_id,path) VALUES(?,'worker','venus','primary',1,'github.com/acme/repo','/tmp')").run(id);
  const add=db.prepare("INSERT INTO jobs(job_id,session_id,client_request_id,request_hash,input_text,worker_id,queue_seq,state,created_at) VALUES(?,?,?,?,?,'venus',?,'queued',?)");

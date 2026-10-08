@@ -5,7 +5,7 @@ import websocket from "@fastify/websocket";
 import rateLimit from "@fastify/rate-limit";
 import argon2 from "argon2";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { ExecutionCoordinator, newJobId, workspaceCurrent, type ScriptStep } from "./execution.js";
+import { DEFAULT_BUDGET, ExecutionCoordinator, newJobId, workspaceCurrent, type Budget, type Resolution, type ScriptStep } from "./execution.js";
 import { mainFault } from "./fault.js";
 import type Database from "better-sqlite3";
 import {
@@ -31,6 +31,7 @@ export async function createApp(
     toolResultTimeoutMs?: number;
     waitSweepMs?: number;
     logCapacityBytes?: number;
+    budget?: Partial<Budget>;
   } = {},
 ) {
   const now = options.now ?? Date.now;
@@ -63,7 +64,20 @@ export async function createApp(
     }
   >();
   const coordinator = new ExecutionCoordinator(db, connections, now, options.runJob as ((job:any)=>Promise<void>)|undefined, { dataDir: options.dataDir, fakeScript: options.fakeScript, toolResultTimeoutMs: options.toolResultTimeoutMs, logCapacityBytes: options.logCapacityBytes });
+  const budget = { ...DEFAULT_BUDGET, ...options.budget };
   let shuttingDown = false;
+  /** Inside a transaction: a new job with its own budget root, at the back of its worker's queue. */
+  const insertJob = (session: any, clientRequestId: string, message: string, requestHash: string) => {
+    const worker=db.prepare("SELECT * FROM workers WHERE worker_id=?").get(session.worker_id) as any;
+    const waiting=(worker?.online&&worker?.reconciled&&!worker?.blocked)?"queued":"waiting_worker";
+    const waitMs=Number(process.env.WORKER_WAIT_MS??86400000);
+    const jobId=newJobId(),queueSeq=Number((db.prepare("SELECT COALESCE(MAX(queue_seq),0)+1 n FROM jobs").get() as any).n);
+    db.prepare("INSERT INTO jobs(job_id,session_id,client_request_id,request_hash,input_text,worker_id,queue_seq,state,created_at,wait_until,root_job_id,max_tool_calls,max_tokens,max_runtime_secs) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)").run(jobId,session.session_id,clientRequestId,requestHash,message,session.worker_id,queueSeq,waiting,now(),now()+waitMs,jobId,budget.maxToolCalls,budget.maxTokens,budget.maxRuntimeSecs);
+    db.prepare("INSERT INTO budget_roots(root_job_id) VALUES(?)").run(jobId);
+    db.prepare("INSERT INTO messages(message_id,session_id,job_id,seq,content_json) SELECT ?,?,?,COALESCE(MAX(seq),0)+1,? FROM messages WHERE session_id=?").run(randomBytes(16).toString("hex"),session.session_id,jobId,JSON.stringify({role:"user",content:message}),session.session_id);
+    db.prepare("INSERT INTO worker_slots(worker_id) VALUES (?) ON CONFLICT(worker_id) DO NOTHING").run(session.worker_id);
+    return {job_id:jobId,state:waiting};
+  };
   const offline = (id: string, epoch: number) => {
     if (shuttingDown) return;
     return db
@@ -196,6 +210,9 @@ export async function createApp(
   app.get<{Params:{session_id:string}}>("/api/sessions/:session_id/jobs",async(req,reply)=>{
     if(!db.prepare("SELECT 1 FROM sessions WHERE session_id=?").get(req.params.session_id)) return reply.code(404).send({error:"session_not_found"});
     return db.prepare(`SELECT j.job_id,j.worker_id,j.client_request_id,j.input_text,j.state,j.queue_seq,j.created_at,j.started_at,j.wait_until,
+      j.cancel_requested,j.cancel_reason,j.end_reason,j.max_tool_calls,j.max_tokens,j.max_runtime_secs,j.deadline_at,
+      (SELECT r.tool_calls_used FROM budget_roots r WHERE r.root_job_id=j.root_job_id) AS tool_calls_used,
+      (SELECT r.tokens_used FROM budget_roots r WHERE r.root_job_id=j.root_job_id) AS tokens_used,
       CASE WHEN j.state IN ('queued','waiting_worker') THEN (SELECT COUNT(*) FROM jobs q WHERE q.worker_id=j.worker_id AND q.state IN ('queued','waiting_worker') AND q.queue_seq<=j.queue_seq) ELSE NULL END AS queue_position
       FROM jobs j WHERE j.session_id=? ORDER BY j.queue_seq`).all(req.params.session_id);
   });
@@ -205,7 +222,6 @@ export async function createApp(
     const session=db.prepare("SELECT * FROM sessions WHERE session_id=?").get(req.params.session_id) as any;
     if(!session) return reply.code(404).send({error:"session_not_found"});
     const requestHash=digest(JSON.stringify({message:body.message}));
-    const waitMs=Number(process.env.WORKER_WAIT_MS??86400000);
     const outcome=db.transaction(()=>{
       const existing=db.prepare("SELECT job_id,request_hash,state FROM jobs WHERE session_id=? AND client_request_id=?").get(session.session_id,body.client_request_id) as any;
       if(existing) return existing.request_hash===requestHash?{existing:true,conflict:false,job_id:existing.job_id,state:existing.state}:{existing:true,conflict:true};
@@ -216,20 +232,62 @@ export async function createApp(
       )
         .slice(0, 80)
         .join("");
-      db.prepare("UPDATE sessions SET title=? WHERE session_id=? AND title IS NULL").run(defaultTitle,session.session_id);
-      const worker=db.prepare("SELECT * FROM workers WHERE worker_id=?").get(session.worker_id) as any;
-      const waiting=(worker?.online&&worker?.reconciled&&!worker?.blocked)?"queued":"waiting_worker";
-      const jobId=newJobId(),queueSeq=Number((db.prepare("SELECT COALESCE(MAX(queue_seq),0)+1 n FROM jobs").get() as any).n);
-      db.prepare("INSERT INTO jobs(job_id,session_id,client_request_id,request_hash,input_text,worker_id,queue_seq,state,created_at,wait_until) VALUES(?,?,?,?,?,?,?,?,?,?)").run(jobId,session.session_id,body.client_request_id,requestHash,body.message,session.worker_id,queueSeq,waiting,now(),now()+waitMs);
-      db.prepare("INSERT INTO messages(message_id,session_id,job_id,seq,content_json) SELECT ?,?,?,COALESCE(MAX(seq),0)+1,? FROM messages WHERE session_id=?").run(randomBytes(16).toString("hex"),session.session_id,jobId,JSON.stringify({role:"user",content:body.message}),session.session_id);
-      db.prepare("INSERT INTO worker_slots(worker_id) VALUES (?) ON CONFLICT(worker_id) DO NOTHING").run(session.worker_id);
-      return {existing:false,conflict:false,job_id:jobId,state:waiting};
+      db.prepare(
+        "UPDATE sessions SET title=? WHERE session_id=? AND title IS NULL",
+      ).run(defaultTitle, session.session_id);
+      return {
+        existing: false,
+        conflict: false,
+        ...insertJob(
+          session,
+          body.client_request_id as string,
+          body.message as string,
+          requestHash,
+        ),
+      };
     }).immediate();
     if(outcome.conflict) return reply.code(409).send({error:"idempotency_conflict"});
     if("stale" in outcome) return reply.code(409).send({error:"workspace_version_changed"});
     if(outcome.existing) return outcome;
     if(outcome.state==="queued") void coordinator.pump(session.worker_id);
     return reply.code(202).send({job_id:outcome.job_id,state:outcome.state});
+  });
+  app.post<{Params:{job_id:string}}>("/api/jobs/:job_id/cancel",async(req,reply)=>{
+    const state=coordinator.cancel(req.params.job_id);
+    return state?{state}:reply.code(404).send({error:"job_not_found"});
+  });
+  app.get<{Params:{job_id:string}}>("/api/jobs/:job_id/usage",async(req,reply)=>coordinator.usage(req.params.job_id)??reply.code(404).send({error:"job_not_found"}));
+  app.get("/api/attention",async()=>coordinator.attentionView());
+  app.post<{Params:{job_id:string}}>("/api/jobs/:job_id/abandon",async(req,reply)=>{
+    const note=(req.body as {note?:unknown}|null)?.note;
+    if(typeof note!=="string"||!note.trim()||note.length>4000) return reply.code(400).send({error:"note_required"});
+    const outcome=coordinator.abandon(req.params.job_id,note);
+    if("error" in outcome) return reply.code(outcome.error==="job_not_found"?404:409).send(outcome);
+    return outcome;
+  });
+  app.post<{Params:{worker_id:string}}>("/api/workers/:worker_id/unblock",async(req,reply)=>{
+    const body=req.body as {evidence?:unknown;resolutions?:unknown}|null;
+    const outcomes=new Set(["executed","not_executed","terminated"]);
+    if(typeof body?.evidence!=="string"||!body.evidence.trim()||body.evidence.length>8000) return reply.code(400).send({error:"evidence_required"});
+    if(!Array.isArray(body.resolutions)||body.resolutions.some((r:any)=>typeof r?.call_id!=="string"||!outcomes.has(r?.outcome))) return reply.code(400).send({error:"invalid_resolutions"});
+    const outcome=coordinator.unblock(req.params.worker_id,body.evidence,(body.resolutions as Resolution[]).map(({call_id,outcome})=>({call_id,outcome})));
+    if("error" in outcome) return reply.code(outcome.error==="worker_not_found"?404:409).send(outcome);
+    return outcome;
+  });
+  app.post<{Params:{job_id:string}}>("/api/jobs/:job_id/retry",async(req,reply)=>{
+    const outcome=db.transaction(()=>{
+      const job=db.prepare("SELECT j.*,s.session_id FROM jobs j JOIN sessions s USING(session_id) WHERE j.job_id=?").get(req.params.job_id) as any;
+      if(!job) return {code:404,error:"job_not_found"};
+      if(!["succeeded","failed","cancelled"].includes(job.state)) return {code:409,error:"job_not_terminal"};
+      const session=db.prepare("SELECT * FROM sessions WHERE session_id=?").get(job.session_id) as any;
+      if(!workspaceCurrent(db,session.session_id)) return {code:409,error:"workspace_version_changed"};
+      const created=insertJob(session,`retry:${job.job_id}:${randomBytes(8).toString("hex")}`,job.input_text,job.request_hash);
+      db.prepare("INSERT INTO attention_actions(action_id,worker_id,job_id,action,evidence,created_at) VALUES(?,?,?,'retry',?,?)").run(randomBytes(16).toString("hex"),job.worker_id,job.job_id,JSON.stringify({new_job_id:created.job_id}),now());
+      return {code:202,...created,worker_id:session.worker_id};
+    }).immediate();
+    if("error" in outcome) return reply.code(outcome.code).send({error:outcome.error});
+    if(outcome.state==="queued") void coordinator.pump(outcome.worker_id);
+    return reply.code(202).send({job_id:outcome.job_id,state:outcome.state,retry_of:req.params.job_id,notice:"新任务不会知道原任务做过什么；请先核对原任务已产生的副作用。"});
   });
   app.get<{Params:{job_id:string;call_id:string};Querystring:{stream?:string;from_seq?:string}}>("/api/jobs/:job_id/calls/:call_id/logs",async(req,reply)=>{
     const stream=req.query.stream??"stdout";
@@ -416,7 +474,7 @@ export async function createApp(
               if (workspaceMapChanged && slot?.active_job_id != null)
                 throw new Error("workspace_change_with_active_job");
               db.prepare(
-                `INSERT INTO workers VALUES (?,?,?,1,1,0,0,?) ON CONFLICT(worker_id) DO UPDATE SET boot_id=excluded.boot_id,connection_epoch=workers.connection_epoch+1,online=1,reconciled=0,last_seen=excluded.last_seen,blocked=CASE WHEN workers.ledger_id<>excluded.ledger_id THEN 1 ELSE workers.blocked END`,
+                `INSERT INTO workers(worker_id,boot_id,ledger_id,connection_epoch,online,reconciled,blocked,last_seen) VALUES (?,?,?,1,1,0,0,?) ON CONFLICT(worker_id) DO UPDATE SET boot_id=excluded.boot_id,connection_epoch=workers.connection_epoch+1,online=1,reconciled=0,last_seen=excluded.last_seen,blocked=CASE WHEN workers.ledger_id<>excluded.ledger_id THEN 1 ELSE workers.blocked END,reported_ledger_id=CASE WHEN workers.ledger_id<>excluded.ledger_id THEN excluded.ledger_id ELSE NULL END`,
               ).run(id, f.boot_id, f.ledger_id, now());
               db.prepare(
                 "INSERT OR IGNORE INTO worker_slots(worker_id) VALUES (?)",
@@ -507,7 +565,7 @@ export async function createApp(
             db.prepare("UPDATE workers SET online=1,last_seen=? WHERE worker_id=? AND connection_epoch=? AND reconciled=1").run(now(),id,epoch);
             coordinator.resumeWorker(id, reacks);
             reacks = [];
-          } else if (f.type === "tool_result" || f.type === "tool_rejected" || f.type === "tool_log" || f.type === "log_status") {
+          } else if (f.type === "tool_result" || f.type === "tool_rejected" || f.type === "tool_log" || f.type === "log_status" || f.type === "cancel_ack" || f.type === "resolve_ack") {
             coordinator.receive(f);
           } else if (f.type === "tool_accepted") {
             // Acceptance only proves the worker ledger owns the call; the result decides.
@@ -539,7 +597,8 @@ export async function createApp(
   }, 1000);
   timer.unref();
   const expiryTimer=setInterval(()=>{
-    db.prepare("UPDATE jobs SET state='failed' WHERE state='waiting_worker' AND wait_until IS NOT NULL AND wait_until<?").run(now());
+    db.prepare("UPDATE jobs SET state='failed',end_reason='worker_wait_expired' WHERE state='waiting_worker' AND wait_until IS NOT NULL AND wait_until<?").run(now());
+    coordinator.sweepDeadlines();
   },options.waitSweepMs??60000);
   expiryTimer.unref();
   app.addHook("onClose", async () => {

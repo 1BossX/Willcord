@@ -31,6 +31,11 @@ try {
     {
       ...(scripts ? { fakeScript: (job: any) => scripts[job.input_text] } : {}),
       ...(logCapacity ? { logCapacityBytes: Number(logCapacity) } : {}),
+      budget: {
+        ...(process.env.MAX_JOB_TOOL_CALLS ? { maxToolCalls: Number(process.env.MAX_JOB_TOOL_CALLS) } : {}),
+        ...(process.env.MAX_JOB_TOKENS ? { maxTokens: Number(process.env.MAX_JOB_TOKENS) } : {}),
+        ...(process.env.MAX_JOB_RUNTIME_SECS ? { maxRuntimeSecs: Number(process.env.MAX_JOB_RUNTIME_SECS) } : {}),
+      },
     },
   );
   await app.listen({ host: "127.0.0.1", port: Number(process.env.PORT ?? 3000) });

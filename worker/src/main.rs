@@ -311,6 +311,9 @@ async fn session(
     )
     .await?;
     let mut reconciled = false;
+    // Results already sent on this connection; a completion notice may race
+    // the post-reconcile scan for the same call.
+    let mut sent_results = std::collections::HashSet::new();
     let mut heartbeat = tokio::time::interval(HEARTBEAT);
     loop {
         tokio::select! {
@@ -329,7 +332,9 @@ async fn session(
             Some(call_id) = completed.recv() => {
                 if !reconciled { continue; }
                 let found = worker.ledger.lock().unwrap().completed_result(&call_id)?;
-                if let Some((call, record)) = found {
+                if let Some((call, record)) = found
+                    && sent_results.insert(call.call_id.clone())
+                {
                     send(&mut socket, &result_frame(worker, epoch, &call, &record)).await?;
                 }
             }
@@ -352,6 +357,7 @@ async fn session(
                             }).await?;
                             let results = worker.ledger.lock().unwrap().completed_results()?;
                             for (call, record) in results {
+                                sent_results.insert(call.call_id.clone());
                                 send(&mut socket, &result_frame(worker, epoch, &call, &record)).await?;
                             }
                         }
@@ -472,7 +478,6 @@ async fn tool_call(
     match outcome {
         Accept::Execute => {
             fault("after_accepted");
-            send(socket, &accepted).await?;
             worker.ledger.lock().unwrap().mark_running(&call.call_id)?;
             fault("after_running");
             let (ledger, workspaces, completed) = (
@@ -495,6 +500,9 @@ async fn tool_call(
                 fault("after_result_persisted");
                 let _ = completed.send(call.call_id);
             });
+            // Report only once execution is under way: a lost report must not
+            // leave an accepted call that no retry on this boot would start.
+            send(socket, &accepted).await?;
         }
         Accept::InProgress => send(socket, &accepted).await?,
         Accept::Cached(record) => {

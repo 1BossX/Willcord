@@ -21,7 +21,7 @@ P3-B 完成前，主节点对 worker 上报的账本仅保持 P2 行为：有活
 
 ### Worker 账本（`worker/src/ledger.rs`）
 
-执行顺序：校验 → accepted 落库 → 上报 `tool_accepted` → running 落库 → 执行 → 结果落库 → 发送结果 → 收到 `tool_ack` 后提高下界。
+执行顺序：校验 → accepted 落库 → running 落库 → 启动执行 → 上报 `tool_accepted` → 结果落库 → 发送结果 → 收到 `tool_ack` 后提高下界。执行启动后才上报 accepted：上报丢失只会导致主节点重发，同一 boot 收到重发时返回 InProgress，执行不会因此被遗漏。每个连接只发送一次同一调用的结果，对账后的扫描与完成通知不会重复发送。
 
 | 情况 | 账本判定 |
 |---|---|

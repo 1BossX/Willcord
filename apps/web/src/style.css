@@ -937,6 +937,113 @@ summary:focus-visible {
   line-height: 1.9;
   color: #425967;
 }
+.message-copy > :first-child {
+  margin-top: 0;
+}
+.message-copy > :last-child {
+  margin-bottom: 0;
+}
+.message-copy p,
+.message-copy ul,
+.message-copy ol,
+.message-copy blockquote {
+  margin: 0 0 12px;
+}
+.message-copy h1,
+.message-copy h2,
+.message-copy h3,
+.message-copy h4,
+.message-copy h5,
+.message-copy h6 {
+  color: #304d5c;
+  line-height: 1.4;
+  margin: 20px 0 9px;
+}
+.message-copy h1 { font-size: 21px; }
+.message-copy h2 { font-size: 18px; }
+.message-copy h3 { font-size: 16px; }
+.message-copy h4,
+.message-copy h5,
+.message-copy h6 { font-size: 14px; }
+.message-copy ul,
+.message-copy ol {
+  padding-left: 23px;
+}
+.message-copy li + li {
+  margin-top: 4px;
+}
+.message-copy blockquote {
+  border-left: 3px solid #b8d2c8;
+  color: #617a85;
+  padding: 3px 0 3px 13px;
+}
+.message-copy a {
+  color: #167a70;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.message-copy :not(pre) > code {
+  border-radius: 4px;
+  background: #edf2f4;
+  padding: 2px 5px;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 0.92em;
+}
+.markdown-code {
+  overflow: hidden;
+  border: 1px solid #dce6e9;
+  border-radius: 8px;
+  margin: 13px 0;
+  background: #f5f8fa;
+}
+.markdown-code-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 10px;
+  border-bottom: 1px solid #e2e9ec;
+  color: #7a909b;
+  font-size: 10px;
+}
+.markdown-code-bar button {
+  color: #52756d;
+  background: transparent;
+  padding: 3px 5px;
+  cursor: pointer;
+}
+.markdown-code pre {
+  overflow: auto;
+  margin: 0;
+  padding: 12px;
+  color: #405965;
+  font: 12px/1.7 "SFMono-Regular", Consolas, monospace;
+  white-space: pre;
+}
+.markdown-table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+  margin: 12px 0;
+}
+.message-copy table {
+  border-collapse: collapse;
+  min-width: 100%;
+  font-size: 12px;
+}
+.message-copy th,
+.message-copy td {
+  border: 1px solid #dfe8eb;
+  padding: 7px 10px;
+}
+.message-copy th {
+  background: #f2f6f7;
+  color: #405e6b;
+  font-weight: 600;
+}
+.message-copy hr {
+  border: 0;
+  border-top: 1px solid #e3eaed;
+  margin: 16px 0;
+}
 .from-user .message-copy {
   background: #edf2f5;
   border: 1px solid #e4ebef;
@@ -1077,7 +1184,16 @@ summary:focus-visible {
   background: #fcf1ed;
 }
 .tool-failed .tool-outcome {
-  color: #bc7569;
+  color: #a94e42;
+  font-weight: 650;
+}
+.tool-card.tool-failed {
+  border-color: #e6b9af;
+  background: #fffafa;
+}
+.tool-card.tool-failed .tool-icon {
+  color: #a94e42;
+  background: #fce9e5;
 }
 .output-notice {
   color: #aa8e5e;
@@ -1432,6 +1548,48 @@ summary:focus-visible {
   font-weight: 400;
   line-height: 1.8;
   color: #718996;
+}
+.task-command-failure {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+  color: #a94e42;
+  font-size: 10px;
+  font-weight: 650;
+}
+.task-command-failure .icon {
+  width: 12px;
+  height: 12px;
+}
+.inspector-command-failures {
+  border: 1px solid #edc5bc;
+  border-radius: 7px;
+  background: #fff8f6;
+  color: #994b40;
+  padding: 10px;
+  margin: 12px 0;
+  font-size: 11px;
+}
+.inspector-command-failures > strong {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+}
+.inspector-command-failures .icon {
+  width: 13px;
+  height: 13px;
+}
+.inspector-command-failures > div {
+  display: grid;
+  gap: 3px;
+  margin-top: 8px;
+}
+.inspector-command-failures code {
+  overflow-wrap: anywhere;
+  color: #72443d;
+  font-size: 10px;
 }
 .task-item-content > code {
   display: block;

@@ -2211,3 +2211,12 @@ summary:focus-visible {
   border-color: var(--accent);
   color: var(--accent);
 }
+/* The inspector scrolls on its own, so a tall panel never shifts the page. */
+.task-panel {
+  overflow: hidden;
+}
+.job-inspector {
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}

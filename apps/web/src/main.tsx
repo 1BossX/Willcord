@@ -692,6 +692,8 @@ function App() {
   const [navOpen, setNavOpen] = useState(false),
     [tasksOpen, setTasksOpen] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
+  /** The side-effect warning of a retry, shown on the job it created. */
+  const [retryNotice, setRetryNotice] = useState<{ jobId: string; text: string } | null>(null);
   const lastSession = useRef<string | null>(null);
   const restored = useRef(false),
     dialog = useRef<HTMLDialogElement>(null),
@@ -1552,6 +1554,12 @@ function App() {
                   aria-label="任务消息"
                   value={text}
                   onChange={(event) => setText(event.target.value)}
+                  onKeyDown={(event) => {
+                    // Enter sends; Shift+Enter adds a line. Never interrupt IME composition.
+                    if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
+                    event.preventDefault();
+                    event.currentTarget.form?.requestSubmit();
+                  }}
                   placeholder={
                     sessionId
                       ? "描述任务，或继续这个会话…"
@@ -1737,11 +1745,14 @@ function App() {
                 ))}
               </div>
             )}
+            {retryNotice?.jobId === selectedJob.job_id && (
+              <p className="attention-note">{retryNotice.text}</p>
+            )}
             <div className="job-actions">
               <CancelButton job={selectedJob} onDone={() => setRefreshKey((value) => value + 1)} onError={report} />
               <RetryButton
                 job={selectedJob}
-                onDone={(jobId) => { setSelectedJobId(jobId); setRefreshKey((value) => value + 1); }}
+                onDone={(jobId, notice) => { setRetryNotice({ jobId, text: notice }); setSelectedJobId(jobId); setRefreshKey((value) => value + 1); }}
                 onError={report}
               />
             </div>

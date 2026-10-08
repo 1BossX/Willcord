@@ -109,7 +109,7 @@ export function CancelButton({ job, onDone, onError }: { job: JobControl; onDone
 }
 
 /** Retry a finished job under a new ID; the operator checks side effects first. */
-export function RetryButton({ job, onDone, onError }: { job: JobControl; onDone: (jobId: string) => void; onError: (e: unknown) => void }) {
+export function RetryButton({ job, onDone, onError }: { job: JobControl; onDone: (jobId: string, notice: string) => void; onError: (e: unknown) => void }) {
   const [busy, setBusy] = useState(false);
   if (!["succeeded", "failed", "cancelled"].includes(job.state)) return null;
   return (
@@ -120,7 +120,10 @@ export function RetryButton({ job, onDone, onError }: { job: JobControl; onDone:
       onClick={async () => {
         if (!window.confirm("以相同内容新建一个任务？新任务不知道原任务做过什么，请先核对原任务已产生的副作用。")) return;
         setBusy(true);
-        try { onDone((await post<{ job_id: string }>(`/api/jobs/${job.job_id}/retry`)).job_id); } catch (e) { onError(e); } finally { setBusy(false); }
+        try {
+          const retry = await post<{ job_id: string; notice: string }>(`/api/jobs/${job.job_id}/retry`);
+          onDone(retry.job_id, retry.notice);
+        } catch (e) { onError(e); } finally { setBusy(false); }
       }}
     >
       新建重试

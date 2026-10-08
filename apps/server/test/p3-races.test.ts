@@ -172,6 +172,9 @@ test("P3-C a workspace version change never rebinds an in-flight job and never s
     const rejected = await s.post(oldSession, "more");
     assert.equal(rejected.statusCode, 409);
     assert.equal(rejected.json().error, "workspace_version_changed");
+    const retried = await s.post(oldSession, "old");
+    assert.equal(retried.statusCode, 200, "a retry of an accepted message still returns its job");
+    assert.equal(retried.json().job_id, queued);
 
     // A new session binds version 2; while its call is in flight, version 3 is refused.
     const session = await s.createSession();

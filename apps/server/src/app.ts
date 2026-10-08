@@ -181,12 +181,13 @@ export async function createApp(
     if(typeof body?.client_request_id!=="string"||!body.client_request_id||body.client_request_id.length>128||typeof body.message!=="string"||!body.message.trim()||body.message.length>32000) return reply.code(400).send({error:"invalid_message"});
     const session=db.prepare("SELECT * FROM sessions WHERE session_id=?").get(req.params.session_id) as any;
     if(!session) return reply.code(404).send({error:"session_not_found"});
-    if(!workspaceCurrent(db,session.session_id)) return reply.code(409).send({error:"workspace_version_changed"});
     const requestHash=digest(JSON.stringify({message:body.message}));
     const waitMs=Number(process.env.WORKER_WAIT_MS??86400000);
     const outcome=db.transaction(()=>{
       const existing=db.prepare("SELECT job_id,request_hash,state FROM jobs WHERE session_id=? AND client_request_id=?").get(session.session_id,body.client_request_id) as any;
       if(existing) return existing.request_hash===requestHash?{existing:true,conflict:false,job_id:existing.job_id,state:existing.state}:{existing:true,conflict:true};
+      // Checked after the idempotency lookup: a retry of an accepted message returns its job.
+      if(!workspaceCurrent(db,session.session_id)) return {existing:false,conflict:false,stale:true};
       const worker=db.prepare("SELECT * FROM workers WHERE worker_id=?").get(session.worker_id) as any;
       const waiting=(worker?.online&&worker?.reconciled&&!worker?.blocked)?"queued":"waiting_worker";
       const jobId=newJobId(),queueSeq=Number((db.prepare("SELECT COALESCE(MAX(queue_seq),0)+1 n FROM jobs").get() as any).n);
@@ -196,6 +197,7 @@ export async function createApp(
       return {existing:false,conflict:false,job_id:jobId,state:waiting};
     }).immediate();
     if(outcome.conflict) return reply.code(409).send({error:"idempotency_conflict"});
+    if("stale" in outcome) return reply.code(409).send({error:"workspace_version_changed"});
     if(outcome.existing) return outcome;
     if(outcome.state==="queued") void coordinator.pump(session.worker_id);
     return reply.code(202).send({job_id:outcome.job_id,state:outcome.state});

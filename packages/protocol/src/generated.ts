@@ -35,7 +35,12 @@ export type WorkerFrame =
       connection_epoch: number;
       type: "ack";
       ack_type: "resume" | "reconcile";
-    };
+    }
+  | ToolCall
+  | ToolResult
+  | ToolData
+  | ToolAck
+  | WorkerReady;
 
 export interface WorkerFrame1 {
   protocol_version: 1;
@@ -63,4 +68,61 @@ export interface WorkerFrame1 {
       is_default: boolean;
     }[]
   ];
+}
+export interface ToolCall {
+  protocol_version: 1;
+  type: "tool_call";
+  worker_id: string;
+  connection_epoch: number;
+  job_id: string;
+  call_id: string;
+  call_seq: number;
+  workspace_id: string;
+  config_version: number;
+  request_hash: string;
+  tool: "read" | "write" | "bash";
+  arguments: {
+    [k: string]: unknown;
+  };
+}
+export interface ToolResult {
+  protocol_version: 1;
+  type: "tool_result";
+  worker_id: string;
+  connection_epoch: number;
+  job_id: string;
+  call_id: string;
+  request_hash: string;
+  ok: boolean;
+  result: {
+    [k: string]: unknown;
+  };
+}
+export interface ToolData {
+  protocol_version: 1;
+  type: "tool_data";
+  worker_id: string;
+  connection_epoch: number;
+  job_id: string;
+  call_id: string;
+  request_hash: string;
+  chunk_index: number;
+  data: string;
+  final: boolean;
+}
+export interface ToolAck {
+  protocol_version: 1;
+  type: "tool_ack";
+  worker_id: string;
+  connection_epoch: number;
+  job_id: string;
+  call_id: string;
+  request_hash: string;
+}
+export interface WorkerReady {
+  protocol_version: 1;
+  type: "worker_ready";
+  worker_id: string;
+  connection_epoch: number;
+  ready: boolean;
 }

@@ -226,6 +226,74 @@
           "enum": ["resume", "reconcile"]
         }
       }
+    },
+    {
+      "title": "ToolCall",
+      "type": "object", "additionalProperties": false,
+      "required": ["protocol_version","type","worker_id","connection_epoch","job_id","call_id","call_seq","workspace_id","config_version","request_hash","tool","arguments"],
+      "properties": {
+        "protocol_version":{"const":1},"type":{"const":"tool_call"},
+        "worker_id":{"type":"string","minLength":1,"maxLength":128},
+        "connection_epoch":{"type":"integer","minimum":1,"maximum":9007199254740991},
+        "job_id":{"type":"string","minLength":1,"maxLength":128},
+        "call_id":{"type":"string","minLength":1,"maxLength":128},
+        "call_seq":{"type":"integer","minimum":1,"maximum":9007199254740991},
+        "workspace_id":{"type":"string","minLength":1,"maxLength":128},
+        "config_version":{"type":"integer","minimum":1},
+        "request_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+        "tool":{"enum":["read","write","bash"]},
+        "arguments":{"type":"object"}
+      }
+    },
+    {
+      "title": "ToolResult",
+      "type":"object","additionalProperties":false,
+      "required":["protocol_version","type","worker_id","connection_epoch","job_id","call_id","request_hash","ok","result"],
+      "properties": {
+        "protocol_version":{"const":1},"type":{"const":"tool_result"},
+        "worker_id":{"type":"string","minLength":1,"maxLength":128},
+        "connection_epoch":{"type":"integer","minimum":1,"maximum":9007199254740991},
+        "job_id":{"type":"string","minLength":1,"maxLength":128},
+        "call_id":{"type":"string","minLength":1,"maxLength":128},
+        "request_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+        "ok":{"type":"boolean"},"result":{"type":"object"}
+      }
+    },
+    {
+      "title":"ToolData","type":"object","additionalProperties":false,
+      "required":["protocol_version","type","worker_id","connection_epoch","job_id","call_id","request_hash","chunk_index","data","final"],
+      "properties":{
+        "protocol_version":{"const":1},"type":{"const":"tool_data"},
+        "worker_id":{"type":"string","minLength":1,"maxLength":128},
+        "connection_epoch":{"type":"integer","minimum":1,"maximum":9007199254740991},
+        "job_id":{"type":"string","minLength":1,"maxLength":128},
+        "call_id":{"type":"string","minLength":1,"maxLength":128},
+        "request_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+        "chunk_index":{"type":"integer","minimum":0,"maximum":1000},
+        "data":{"type":"string","maxLength":40000},"final":{"type":"boolean"}
+      }
+    },
+    {
+      "title":"ToolAck","type":"object","additionalProperties":false,
+      "required":["protocol_version","type","worker_id","connection_epoch","job_id","call_id","request_hash"],
+      "properties":{
+        "protocol_version":{"const":1},"type":{"const":"tool_ack"},
+        "worker_id":{"type":"string","minLength":1,"maxLength":128},
+        "connection_epoch":{"type":"integer","minimum":1,"maximum":9007199254740991},
+        "job_id":{"type":"string","minLength":1,"maxLength":128},
+        "call_id":{"type":"string","minLength":1,"maxLength":128},
+        "request_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"}
+      }
+    },
+    {
+      "title":"WorkerReady","type":"object","additionalProperties":false,
+      "required":["protocol_version","type","worker_id","connection_epoch","ready"],
+      "properties":{
+        "protocol_version":{"const":1},"type":{"const":"worker_ready"},
+        "worker_id":{"type":"string","minLength":1,"maxLength":128},
+        "connection_epoch":{"type":"integer","minimum":1,"maximum":9007199254740991},
+        "ready":{"type":"boolean"}
+      }
     }
   ]
 }

@@ -1,6 +1,7 @@
 // Generated from schema.json. Do not edit.
 pub const MAX_FRAME_BYTES: usize = 65536;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Workspace {
@@ -69,4 +70,73 @@ pub struct Ack {
     #[serde(rename = "type")]
     pub kind: String,
     pub ack_type: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolCall {
+    pub protocol_version: u64,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub worker_id: String,
+    pub connection_epoch: u64,
+    pub job_id: String,
+    pub call_id: String,
+    pub call_seq: u64,
+    pub workspace_id: String,
+    pub config_version: u64,
+    pub request_hash: String,
+    pub tool: String,
+    pub arguments: Value,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolResult {
+    pub protocol_version: u64,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub worker_id: String,
+    pub connection_epoch: u64,
+    pub job_id: String,
+    pub call_id: String,
+    pub request_hash: String,
+    pub ok: bool,
+    pub result: Value,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolData {
+    pub protocol_version: u64,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub worker_id: String,
+    pub connection_epoch: u64,
+    pub job_id: String,
+    pub call_id: String,
+    pub request_hash: String,
+    pub chunk_index: u64,
+    pub data: String,
+    #[serde(rename = "final")]
+    pub is_final: bool,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolAck {
+    pub protocol_version: u64,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub worker_id: String,
+    pub connection_epoch: u64,
+    pub job_id: String,
+    pub call_id: String,
+    pub request_hash: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkerReady {
+    pub protocol_version: u64,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub worker_id: String,
+    pub connection_epoch: u64,
+    pub ready: bool,
 }

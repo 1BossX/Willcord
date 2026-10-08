@@ -164,5 +164,30 @@
       "type": "ack",
       "ack_type": "tool_result"
     }
+  },
+  {
+    "name": "worker ready",
+    "valid": true,
+    "frame": {"protocol_version":1,"type":"worker_ready","worker_id":"worker-a","connection_epoch":2,"ready":true}
+  },
+  {
+    "name": "read tool call",
+    "valid": true,
+    "frame": {"protocol_version":1,"type":"tool_call","worker_id":"worker-a","connection_epoch":2,"job_id":"job-1","call_id":"call-1","call_seq":1,"workspace_id":"repo","config_version":1,"request_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","tool":"read","arguments":{"path":"README.md","offset":0,"limit":100}}
+  },
+  {
+    "name": "tool result",
+    "valid": true,
+    "frame": {"protocol_version":1,"type":"tool_result","worker_id":"worker-a","connection_epoch":2,"job_id":"job-1","call_id":"call-1","request_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","ok":true,"result":{"text":"hello","truncated":false}}
+  },
+  {
+    "name": "write data chunk",
+    "valid": true,
+    "frame": {"protocol_version":1,"type":"tool_data","worker_id":"worker-a","connection_epoch":2,"job_id":"job-1","call_id":"call-1","request_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","chunk_index":0,"data":"aGVsbG8=","final":true}
+  },
+  {
+    "name": "unknown remote tool",
+    "valid": false,
+    "frame": {"protocol_version":1,"type":"tool_call","worker_id":"worker-a","connection_epoch":2,"job_id":"job-1","call_id":"call-1","call_seq":1,"workspace_id":"repo","config_version":1,"request_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","tool":"shell","arguments":{"command":"id"}}
   }
 ]

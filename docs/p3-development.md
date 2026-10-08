@@ -4,11 +4,11 @@
 
 | 步骤 | 内容 | 状态 |
 |---|---|---|
-| P3-A | 协议账本帧、Rust worker 账本（下界/tombstone）、执行与连接分离、断线重连 | 本文记录 |
-| P3-B | 主节点按账本对账、在途调用跨断线保留、主节点重启从 SQLite checkpoint 恢复 | 未开始 |
+| P3-A | 协议账本帧、Rust worker 账本（下界/tombstone）、执行与连接分离、断线重连 | 已完成（PR #9） |
+| P3-B | 主节点按账本对账、在途调用跨断线保留、主节点重启从 SQLite checkpoint 恢复 | 本文记录 |
 | P3-C | 可控故障程序（四个 SIGKILL 窗口、帧丢失、主节点三个重启点）与全量验收记录 | 未开始 |
 
-P3-B 完成前，主节点对 worker 上报的账本仅保持 P2 行为：有活动执行槽时拒绝对账，因此 P3 阶段整体验收以 P3-C 记录为准。
+P3 阶段整体验收以 P3-C 的故障程序记录为准；P3-A/P3-B 的测试证明各自机制，不替代四个崩溃窗口的逐项验收。
 
 ## P3-A 协议与 Worker 账本
 
@@ -64,3 +64,93 @@ P3-B 完成前，主节点对 worker 上报的账本仅保持 P2 行为：有活
 另有 Rust 单元测试覆盖账本判定表与 P2 账本迁移，`apps/server/test/execution.test.ts` 覆盖 `ack_through` 与 `tool_rejected` 后阻塞而不重发。
 
 本地环境：macOS arm64、Node 22.22.3、Rust 1.93.1。`pnpm test` 的 TLS 用例需要 OpenSSL 3：OpenSSL 1.1.1 签发的测试证书会被 rustls 判为 `UnknownIssuer`。可以把 OpenSSL 3 放在 PATH 前面再运行，例如 `PATH=/opt/homebrew/bin:$PATH pnpm test`。
+
+## P3-B 主节点对账与重启恢复
+
+### 在途调用
+
+`ExecutionCoordinator.dispatch(job_id, call_id)` 只执行已提交的工具意图：
+
+- 请求从 `runtime_calls` 重建，并核对提交时的 request hash。
+- 调用的状态以 SQLite 为准，内存中的 pending 只负责唤醒等待方。
+- worker 断线时调用继续等待，不报 `worker_offline`，job 保持 running，执行槽不释放，也不派发下一个工具。
+- worker 重连并完成对账后，原请求按同一 call_id、同一内容重发，由 worker 账本原子地决定执行、返回缓存结果还是拒绝。
+- 只有已对账、未阻塞、代次一致的连接才会收到调用。
+- 超过 1800 秒没有结果时，调用标为 unknown，job 标为 needs_attention，worker 置 blocked。
+
+结果的处理：
+
+- 结果提交后才发送 `tool_ack`，ACK 发到当前连接。
+- 重复的相同结果只重发 ACK，不重复写入消息。
+- 同一调用收到不同结果，或收到未提交、unknown 调用的结果，都视为矛盾，阻塞 worker 并写入 `attention_actions`。
+
+### 对账判定
+
+worker 上报 `reconcile.calls` 后，主节点逐条核对，判定只决定是否阻塞，不会在这一步启动执行：
+
+| 上报 | 主节点记录 | 动作 |
+|---|---|---|
+| completed | completed | 记为 ACK 丢失，worker 就绪后重发 ACK |
+| completed | dispatched | 等待 worker 重发结果后提交 |
+| accepted/running，boot 不变 | dispatched | 继续观察，执行槽保留 |
+| unknown，或 P2 迁移记录（`call_seq=0`） | 任意 | 调用标为 unknown，job 标为 needs_attention，worker 置 blocked |
+| boot 已变化的在途调用，或 hash/call_seq 不符 | 任意 | 阻塞 |
+| 账本中有、主节点没有 | 无，或仅 committed | 阻塞 |
+| 账本中没有 | dispatched | 由重发的原请求交给 worker 判定 |
+| 执行槽指向不存在的 job | — | 阻塞，执行槽保留 |
+
+出现矛盾时仍确认对账，连接保持在线并显示 blocked，worker 不再循环重连。worker 被阻塞后不接收新调用，新 job 保持 waiting_worker。解除阻塞属于 P4 的人工处置。
+
+### 执行与恢复
+
+job 首次执行和崩溃后恢复走同一条路径。用户消息先写入 `runtime_history`，然后按以下步骤执行：
+
+1. 按 call_seq 顺序补完未完成的已提交意图（committed 或 dispatched），沿用原 call_id。
+2. 从 SQLite 重建 Pi transcript：用户消息、已提交的 assistant 轮次，以及由结果生成的 toolResult。实时执行和恢复都通过 `toolOutput()` 生成同一种内容，部分写入的 Pi 会话文件不作为依据。
+3. 调用 `continue()` 继续推理。
+
+最终回答、`runtime_history` 和 job 的 succeeded 状态在同一事务中提交。因此恢复时：
+
+- 已结束的 job 不会再向模型请求一次；
+- 已提交的工具轮次不会重新生成；
+- 只有未提交的推理会重试。
+
+`runtime_generation` 在每次执行时递增。轮次提交、最终提交和工具派发都会校验代次和 running 状态，过期的推理不会提交任何内容。
+
+执行槽的处理：
+
+- 主节点重启后不主动恢复任何状态。worker 对账就绪后，调度器发现执行槽被 running 状态的 job 占用、而本进程并没有在运行它，就从 checkpoint 恢复执行。
+- 只有 job 已终态并且没有 dispatched 或 unknown 调用时才释放执行槽。
+- 执行异常退出时，如果还有未决调用，job 标为 needs_attention 并阻塞 worker；否则标为 failed。
+- 模型返回 error 或 aborted 的轮次不当作最终回答。
+
+Migration `004_p3_recovery.sql` 给 `runtime_calls` 增加 `completed_at`，用于生成稳定的 toolResult 时间戳。
+
+### 验证
+
+`apps/server/test/p3-recovery.test.ts` 使用以下环境：
+
+- 真实主节点（Fastify、SQLite 文件）
+- 前置 TLS 代理
+- 真实 Rust worker
+- Pi SDK 加脚本化模型
+
+用 `marker.log` 判定副作用次数：
+
+| 场景 | 结果 |
+|---|---|
+| 命令运行中断网 | job 在新连接上 succeeded，marker 1 行，未阻塞，执行槽释放 |
+| 派发后主节点重启（关闭 app、重开 SQLite 和 app） | 从 checkpoint 恢复，命令只执行一次，工具轮次未重新生成，最终回答 1 条 |
+| 意图已提交、主节点在派发前退出 | 恢复后按原 call_id 派发一次，工具轮次未重新生成，job succeeded |
+| 副作用发生后 SIGKILL worker | worker 上报 unknown，job 标为 needs_attention，worker 置 blocked，执行槽保留；后续 job 保持 waiting_worker，没有新调用 |
+
+`apps/server/test/execution.test.ts` 覆盖：
+
+- 断线等待与原样重发；
+- 未对账的连接不收调用；
+- 重复结果只 ACK；
+- 矛盾结果阻塞；
+- 对账判定表的每一行；
+- 执行异常退出时有未决调用则保留执行槽。
+
+主节点在精确提交点被 SIGKILL 的情况由 P3-C 的独立进程故障程序验证。

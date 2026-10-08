@@ -5,7 +5,7 @@ import websocket from "@fastify/websocket";
 import rateLimit from "@fastify/rate-limit";
 import argon2 from "argon2";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { ExecutionCoordinator, newJobId } from "./execution.js";
+import { ExecutionCoordinator, newJobId, type ScriptStep } from "./execution.js";
 import type Database from "better-sqlite3";
 import {
   parseFrame,
@@ -25,6 +25,8 @@ export async function createApp(
     logging?: boolean;
     logStream?: FastifyLoggerOptions["stream"];
     runJob?: (job:unknown)=>Promise<void>;
+    dataDir?: string;
+    fakeScript?: (job: any) => ScriptStep[];
   } = {},
 ) {
   const now = options.now ?? Date.now;
@@ -56,7 +58,7 @@ export async function createApp(
       tokenDigest: string;
     }
   >();
-  const coordinator = new ExecutionCoordinator(db, connections, now, options.runJob as ((job:any)=>Promise<void>)|undefined);
+  const coordinator = new ExecutionCoordinator(db, connections, now, options.runJob as ((job:any)=>Promise<void>)|undefined, { dataDir: options.dataDir, fakeScript: options.fakeScript });
   let shuttingDown = false;
   const offline = (id: string, epoch: number) => {
     if (shuttingDown) return;
@@ -289,6 +291,7 @@ export async function createApp(
       };
       let epoch = 0;
       let registerHash: string | undefined;
+      let reacks: ReturnType<typeof coordinator.reconcile> = [];
       const registrationDeadline = setTimeout(
         () => socket.close(1008, "register timeout"),
         10000,
@@ -439,22 +442,12 @@ export async function createApp(
             );
           else if (f.type === "reconcile") {
             const worker = db
-              .prepare(
-                "SELECT ledger_id,blocked FROM workers WHERE worker_id=?",
-              )
-              .get(id) as { ledger_id: string; blocked: number };
-            const slot = db
-              .prepare(
-                "SELECT active_job_id FROM worker_slots WHERE worker_id=?",
-              )
-              .get(id) as { active_job_id: string | null };
-            if (
-              f.ledger_id !== worker.ledger_id ||
-              worker.blocked ||
-              slot.active_job_id !== null ||
-              !f.ready
-            )
+              .prepare("SELECT ledger_id FROM workers WHERE worker_id=?")
+              .get(id) as { ledger_id: string };
+            if (f.ledger_id !== worker.ledger_id || !f.ready)
               throw new Error("reconcile_blocked");
+            // Contradictions block the worker but keep it connected and visible.
+            reacks = coordinator.reconcile(id, f.calls);
             db.prepare(
               "UPDATE workers SET reconciled=1 WHERE worker_id=? AND connection_epoch=?",
             ).run(id, epoch);
@@ -469,8 +462,9 @@ export async function createApp(
             );
           } else if (f.type === "worker_ready") {
             if (!f.ready) throw new Error("worker_not_ready");
-            db.prepare("UPDATE workers SET reconciled=1,online=1,last_seen=? WHERE worker_id=? AND connection_epoch=?").run(now(),id,epoch);
-            void coordinator.pump(id);
+            db.prepare("UPDATE workers SET online=1,last_seen=? WHERE worker_id=? AND connection_epoch=? AND reconciled=1").run(now(),id,epoch);
+            coordinator.resumeWorker(id, reacks);
+            reacks = [];
           } else if (f.type === "tool_result" || f.type === "tool_rejected") {
             coordinator.receive(f);
           } else if (f.type === "tool_accepted") {
@@ -506,6 +500,7 @@ export async function createApp(
   },60000);
   expiryTimer.unref();
   app.addHook("onClose", async () => {
+    coordinator.close();
     clearInterval(timer);
     clearInterval(expiryTimer);
     for (const [id, c] of connections) offline(id, c.epoch);

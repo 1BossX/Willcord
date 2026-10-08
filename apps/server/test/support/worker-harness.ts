@@ -76,10 +76,16 @@ export function buildFaultWorker() {
   return join(targetDir, "debug/worker-plane-worker");
 }
 
+/** Stop a worker; a signal it ignores fails the test instead of hanging it. */
 export async function stopWorker(worker: WorkerProcess, signal: NodeJS.Signals = "SIGKILL") {
   if (worker.child.exitCode === null && worker.child.signalCode === null) {
     worker.child.kill(signal);
-    await worker.exited;
+    const exited = await Promise.race([worker.exited.then(() => true), new Promise<boolean>((r) => setTimeout(() => r(false), 10000))]);
+    if (!exited) {
+      worker.child.kill("SIGKILL");
+      await worker.exited;
+      throw new Error(`worker ignored ${signal}: ${worker.stderr()}`);
+    }
   }
 }
 

@@ -145,3 +145,35 @@ test("real Rust worker ledger: lost ACKs, network loss, crash windows and tombst
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("real Rust worker exits on SIGINT that arrives while it is inside a frame handler", { timeout: 30000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "worker-plane-sigint-"));
+  const certs = createCertificates(dir);
+  const peers: Peer[] = [];
+  const endpoint = await startTlsEndpoint(certs, (socket) => peers.push(new Peer(socket)));
+  const worker = startWorker({ dir, id: "w", url: endpoint.url, ca: certs.ca, token: "token", workspace: join(dir, "workspace") });
+  try {
+    await waitFor(() => peers.length > 0, 20000);
+    const peer = peers[0];
+    await peer.next("register");
+    peer.send({ type: "register_ack", worker_id: "w", connection_epoch: 1, reconciliation_required: true });
+    await peer.next("resume");
+    peer.send({ type: "ack", worker_id: "w", connection_epoch: 1, ack_type: "resume" });
+    await peer.next("reconcile");
+    peer.send({ type: "ack", worker_id: "w", connection_epoch: 1, ack_type: "reconcile" });
+    await peer.next("worker_ready");
+    // A chunked write keeps the worker inside the tool_call handler until the final chunk.
+    const base = { worker_id: "w", connection_epoch: 1, job_id: "job-1", call_id: "chunked", request_hash: "0".repeat(64) };
+    peer.send({ ...base, type: "tool_call", call_seq: 1, workspace_id: "repo", config_version: 1, tool: "write", arguments: { path: "big.txt", expected_hash: "missing", transfer_bytes: 2, transfer_sha256: "0".repeat(64), transfer_chunks: 2 } });
+    peer.send({ ...base, type: "tool_data", chunk_index: 0, data: Buffer.from("a").toString("base64"), final: false });
+    await new Promise((r) => setTimeout(r, 500));
+    worker.child.kill("SIGINT");
+    const exited = await Promise.race([worker.exited.then(() => true), new Promise((r) => setTimeout(() => r(false), 5000))]);
+    assert.ok(exited, `SIGINT was lost: ${worker.stderr()}`);
+    assert.equal(worker.child.exitCode, 0);
+  } finally {
+    await stopWorker(worker);
+    await endpoint.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -73,7 +73,7 @@ export function BudgetRows({ job, now }: { job: JobControl; now: number }) {
       {remaining !== null && ["running", "cancel_requested"].includes(job.state) && (
         <div>
           <dt>剩余时限</dt>
-          <dd>{remaining >= 60 ? `${Math.floor(remaining / 60)} 分 ${remaining % 60} 秒` : `${remaining} 秒`}</dd>
+          <dd>{remaining >= 3600 ? `${Math.floor(remaining / 3600)} 小时 ${Math.floor((remaining % 3600) / 60)} 分` : remaining >= 60 ? `${Math.floor(remaining / 60)} 分 ${remaining % 60} 秒` : `${remaining} 秒`}</dd>
         </div>
       )}
       {job.end_reason && (

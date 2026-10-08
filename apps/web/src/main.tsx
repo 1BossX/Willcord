@@ -1716,7 +1716,7 @@ function App() {
               <summary>任务标识</summary>
               <code>{selectedJob.job_id}</code>
             </details>
-            {(selectedJob.state === "needs_attention" || activeWorker?.blocked) && (
+            {(selectedJob.state === "needs_attention" || Boolean(activeWorker?.blocked)) && (
               <AttentionPanel
                 job={selectedJob}
                 workerId={selectedJob.worker_id}

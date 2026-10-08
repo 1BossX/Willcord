@@ -145,9 +145,16 @@ test("P4-A real Rust worker: process-group cancel and timeout, bounded output, l
     peer.call(2, "c8", 8, "bash", request.arguments);
     assert.equal((await peer.next("tool_rejected")).reason, "cancelled");
     assert.equal(count("fenced"), 0);
-    await stopWorker(worker!, "SIGINT");
 
-    // 7. Too little free space refuses new calls without recording them.
+    // 7. A graceful shutdown stops running commands instead of abandoning them.
+    peer.call(2, "c9", 9, "bash", { command: "sleep 60 & echo $! > orphan.pid; wait" });
+    await peer.next("tool_accepted");
+    await waitFor(() => existsSync(join(workspace, "orphan.pid")));
+    const orphan = Number(readFileSync(join(workspace, "orphan.pid"), "utf8"));
+    await stopWorker(worker!, "SIGINT");
+    assert.equal(alive(orphan), false, "shutdown left no process group behind");
+
+    // 8. Too little free space refuses new calls without recording them.
     start("full", "min_free_bytes = 1152921504606846976\n");
     peer = await nextPeer();
     await peer.handshake(1, "full");

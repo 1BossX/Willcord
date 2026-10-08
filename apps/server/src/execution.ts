@@ -24,6 +24,10 @@ export const MODEL_STREAM_BYTES = 64 * 1024;
 const LOG_CHUNK_BYTES = 16 * 1024;
 const DEFAULT_LOG_CAPACITY_BYTES = 1024 ** 3;
 const STREAMS = ["stdout", "stderr"] as const;
+/** Worker refusals that prove the call was never accepted, so never executed. */
+const NOT_EXECUTED_REASONS = new Set(["invalid", "disk_full", "cancelled"]);
+/** Log ACKs are repeated on reconnect for this long, matching worker result retention. */
+const LOG_ACK_REPEAT_MS = 7 * 24 * 3600 * 1000;
 type Stream = (typeof STREAMS)[number];
 type LogSummary = Record<Stream, { bytes_total: number; bytes_logged: number; chunks: number }> & { truncated: boolean };
 type ResultFrame = Extract<WorkerFrame, { type: "tool_result" }>;
@@ -175,7 +179,10 @@ export class ExecutionCoordinator {
       return;
     }
     if (frame.type === "tool_rejected") {
-      if (row.status !== "completed") this.markUnknown(row, `tool_rejected:${frame.reason}`, frame);
+      if (row.status === "completed") return;
+      // These refusals happen before the ledger records the call: it never ran.
+      if (row.status === "dispatched" && NOT_EXECUTED_REASONS.has(frame.reason)) this.commitNotExecuted(row, frame.reason);
+      else this.markUnknown(row, `tool_rejected:${frame.reason}`, frame);
       return;
     }
     const record: ToolRecord = { ok: frame.ok, result: frame.result };
@@ -189,6 +196,19 @@ export class ExecutionCoordinator {
       return;
     }
     this.commitResult(row, frame);
+  }
+
+  /** A main-authored result that states the call never ran; no worker ACK, as the worker holds no record. */
+  private commitNotExecuted(row: CallRow, reason: string) {
+    const record: ToolRecord = { ok: false, result: { error: `not_executed:${reason}`, not_executed: true, reason } };
+    this.db.transaction(() => {
+      this.db.prepare("UPDATE runtime_calls SET status='completed',result_json=?,completed_at=? WHERE job_id=? AND call_id=? AND status='dispatched'").run(JSON.stringify(record), this.now(), row.job_id, row.call_id);
+      this.db.prepare("UPDATE tool_calls SET state='finished',result_json=? WHERE call_id=?").run(JSON.stringify(record), row.call_id);
+      this.db.prepare("INSERT INTO messages(message_id,session_id,job_id,seq,content_json) SELECT ?,j.session_id,j.job_id,(SELECT COALESCE(MAX(seq),0)+1 FROM messages WHERE session_id=j.session_id),? FROM jobs j WHERE j.job_id=?").run(randomUUID(), JSON.stringify({ role: "tool", call_id: row.call_id, tool: row.tool_name, arguments: JSON.parse(row.arguments_json), content: record.result, ok: false }), row.job_id);
+    })();
+    const k = key(row.job_id, row.call_id);
+    const p = this.pending.get(k);
+    if (p) { clearTimeout(p.timer); this.pending.delete(k); p.resolve(record); }
   }
 
   /**
@@ -331,10 +351,14 @@ export class ExecutionCoordinator {
       for (const seq of held) { if (seq !== next) break; next++; }
       if (next >= state.chunks || state.main_truncated) {
         this.db.prepare("UPDATE call_log_state SET state='complete' WHERE job_id=? AND call_id=? AND stream=?").run(row.job_id, row.call_id, stream);
-        const conn = this.connection(row.worker_id);
-        conn?.socket.send(JSON.stringify({ protocol_version: 1, type: "log_ack", worker_id: row.worker_id, connection_epoch: conn.epoch, job_id: row.job_id, call_id: row.call_id, request_hash: row.request_hash, stream, chunks: state.chunks }));
+        this.logAck(row, stream, state.chunks);
       } else this.fetchLog(row, stream, next);
     }
+  }
+
+  private logAck(row: CallRow, stream: Stream, chunks: number) {
+    const conn = this.connection(row.worker_id);
+    conn?.socket.send(JSON.stringify({ protocol_version: 1, type: "log_ack", worker_id: row.worker_id, connection_epoch: conn.epoch, job_id: row.job_id, call_id: row.call_id, request_hash: row.request_hash, stream, chunks }));
   }
 
   /** Stored output of a call for the operator, in pages of chunks. */
@@ -386,6 +410,9 @@ export class ExecutionCoordinator {
       const row = this.call(job_id, call_id);
       if (row?.status === "completed") this.fetchRest(row);
     }
+    // A log_ack may have been lost with the connection; repeating it is idempotent.
+    const settled = this.db.prepare("SELECT s.job_id,s.call_id,s.stream,s.chunks FROM call_log_state s JOIN jobs j USING(job_id) JOIN runtime_calls c USING(job_id,call_id) WHERE j.worker_id=? AND s.state='complete' AND c.completed_at>?").all(workerId, this.now() - LOG_ACK_REPEAT_MS) as Array<{ job_id: string; call_id: string; stream: Stream; chunks: number }>;
+    for (const s of settled) { const row = this.call(s.job_id, s.call_id); if (row) this.logAck(row, s.stream, s.chunks); }
     for (const p of this.pending.values()) if (p.workerId === workerId) this.deliver(p);
     void this.pump(workerId);
   }

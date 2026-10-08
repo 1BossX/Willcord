@@ -257,7 +257,7 @@ async fn main() -> Result<(), Error> {
         // synchronous, so cancellation never splits one.
         let outcome = tokio::select! {
             outcome = session(&worker, &mut completed_rx, &mut live_logs_rx, &mut registered) => outcome,
-            _ = worker.shutdown.notified() => return Ok(()),
+            _ = worker.shutdown.notified() => return stop_running(&worker).await,
         };
         match outcome {
             Ok(()) => return Ok(()),
@@ -271,10 +271,24 @@ async fn main() -> Result<(), Error> {
         }
         tokio::select! {
             _ = tokio::time::sleep(backoff) => {}
-            _ = worker.shutdown.notified() => return Ok(()),
+            _ = worker.shutdown.notified() => return stop_running(&worker).await,
         }
         backoff = (backoff * 2).min(MAX_BACKOFF);
     }
+}
+
+/// On shutdown, stop every running command through the normal cancel path and
+/// wait for its result to be persisted, so no process group outlives the worker.
+async fn stop_running(worker: &Worker) -> Result<(), Error> {
+    for stop in worker.cancels.lock().unwrap().values() {
+        let _ = stop.send(true);
+    }
+    let deadline =
+        Instant::now() + worker.limits.grace + worker.limits.confirm + Duration::from_secs(2);
+    while !worker.cancels.lock().unwrap().is_empty() && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    Ok(())
 }
 
 async fn connect(worker: &Worker) -> Result<Socket, Error> {

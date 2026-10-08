@@ -6,7 +6,7 @@ import {ExecutionCoordinator} from "../src/execution.js";
 
 function fixture(){
  const db=openDatabase(":memory:");
- db.prepare("INSERT INTO workers VALUES('venus','boot','ledger',2,1,1,0,?)").run(Date.now());
+ db.prepare("INSERT INTO workers(worker_id,boot_id,ledger_id,connection_epoch,online,reconciled,blocked,last_seen) VALUES ('venus','boot','ledger',2,1,1,0,?)").run(Date.now());
  db.prepare("INSERT INTO worker_slots(worker_id) VALUES('venus')").run();
  db.prepare("INSERT INTO workspaces VALUES('venus','primary',1,'/tmp','github.com/acme/repo',1)").run();
  db.prepare("INSERT INTO sessions(session_id,kind,worker_id,workspace_id,workspace_version,repo_id,path) VALUES('s','worker','venus','primary',1,'github.com/acme/repo','/tmp')").run();
@@ -161,15 +161,116 @@ test("P3 an inference from a superseded run commits neither a tool turn nor a fi
  coordinator.close();db.close();
 });
 
-test("P4 a refusal that proves non-execution completes the call as not executed and does not block",async()=>{
+test("P4 a refusal that proves non-execution records the call as not executed and does not block",async()=>{
  const {db,sent,coordinator,commit,one}=fixture();
  const hash=commit("c1",1,"bash",{command:"true",timeout_secs:900});
  const call=coordinator.dispatch("j","c1");
  coordinator.receive({protocol_version:1,type:"tool_rejected",worker_id:"venus",connection_epoch:2,job_id:"j",call_id:"c1",request_hash:hash,reason:"disk_full"});
  assert.deepEqual(await call,{ok:false,result:{error:"not_executed:disk_full",not_executed:true,reason:"disk_full"}});
  assert.equal(sent.length,1,"no ACK: the worker recorded nothing");
- assert.equal(one("SELECT status FROM runtime_calls WHERE call_id='c1'").status,"completed");
+ assert.equal(one("SELECT status FROM runtime_calls WHERE call_id='c1'").status,"not_executed");
  assert.equal(one("SELECT blocked FROM workers").blocked,0);
- assert.equal(one("SELECT state FROM jobs").state,"running");
+ // A full disk proves nothing ran, but the job cannot go on: it fails, the worker stays usable.
+ assert.deepEqual(one("SELECT state,end_reason FROM jobs"),{state:"failed",end_reason:"worker_disk_full"});
+ coordinator.close();db.close();
+});
+
+test("P4 cancel of a running job stops new work, keeps the slot until the sent call ends, keeps its real result",async()=>{
+ const {db,sent,coordinator,commit,result,one}=fixture();
+ const h1=commit("c1",1,"bash",{command:"sleep 60"});
+ commit("c2",2,"bash",{command:"echo never"});
+ const first=coordinator.dispatch("j","c1");
+ const generation=one("SELECT runtime_generation g FROM jobs").g;
+ assert.equal(coordinator.cancel("j"),"cancel_requested");
+ assert.equal(one("SELECT runtime_generation g FROM jobs").g,generation+1,"a superseded run commits nothing more");
+ assert.equal(one("SELECT status FROM runtime_calls WHERE call_id='c2'").status,"not_executed","never sent, so proven not run");
+ const cancel=sent.find((f)=>f.type==="cancel_call");
+ assert.deepEqual([cancel.call_id,cancel.call_seq,cancel.request_hash],["c1",1,h1]);
+ assert.equal(coordinator.cancel("j"),"cancel_requested","repeat cancel is idempotent");
+ assert.equal(sent.filter((f)=>f.type==="cancel_call").length,2,"repeat re-sends the idempotent stop");
+ coordinator.receive({protocol_version:1,type:"cancel_ack",worker_id:"venus",connection_epoch:2,job_id:"j",call_id:"c1",request_hash:h1,state:"running"});
+ assert.equal(one("SELECT state FROM jobs").state,"cancel_requested","a receipt is not proof of stop");
+ assert.equal(one("SELECT active_job_id a FROM worker_slots").a,"j");
+ result("c1",h1,{exit_code:null,termination:"cancelled",signal:15},false);
+ assert.equal((await first).ok,false);
+ assert.equal(one("SELECT status FROM runtime_calls WHERE call_id='c1'").status,"completed","the real result is kept");
+ assert.deepEqual(one("SELECT state,end_reason FROM jobs"),{state:"cancelled",end_reason:"cancelled_by_user"});
+ assert.equal(one("SELECT active_job_id a FROM worker_slots").a,null);
+ assert.equal(coordinator.cancel("j"),"cancelled","a terminal job keeps its state");
+ coordinator.close();db.close();
+});
+
+test("P4 a fenced cancel proves the call never ran; an offline cancel is sent first on reconnect",async()=>{
+ const {db,sent,connections,coordinator,commit,one}=fixture();
+ const h1=commit("c1",1,"read",{path:"a"});
+ const pending=coordinator.dispatch("j","c1");
+ sent.length=0;
+ connections.delete("venus");
+ coordinator.cancel("j");
+ assert.equal(sent.length,0,"offline: the request is kept, not lost");
+ assert.equal(one("SELECT state FROM jobs").state,"cancel_requested");
+ connections.set("venus",{epoch:2,socket:{readyState:1,send:(v:string)=>sent.push(JSON.parse(v))},tokenDigest:"token"});
+ coordinator.resumeWorker("venus");
+ assert.equal(sent[0].type,"cancel_call","the stop precedes anything else");
+ assert.ok(!sent.some((f)=>f.type==="tool_call"),"a cancelled call is never re-sent");
+ coordinator.receive({protocol_version:1,type:"cancel_ack",worker_id:"venus",connection_epoch:2,job_id:"j",call_id:"c1",request_hash:h1,state:"fenced"});
+ assert.equal((await pending).result.reason,"cancelled");
+ assert.equal(one("SELECT status FROM runtime_calls").status,"not_executed");
+ assert.equal(one("SELECT state FROM jobs").state,"cancelled");
+ coordinator.close();db.close();
+});
+
+test("P4 queued cancel creates no call; cancel of a job needing attention is only recorded",async()=>{
+ const {db,coordinator,one}=fixture();
+ db.prepare("INSERT INTO jobs(job_id,session_id,client_request_id,request_hash,input_text,worker_id,queue_seq,state,created_at) VALUES('q','s','r2','h','run','venus',2,'queued',?)").run(Date.now());
+ assert.equal(coordinator.cancel("q"),"cancelled");
+ assert.equal(one("SELECT count(*) n FROM runtime_calls WHERE job_id='q'").n,0);
+ db.prepare("UPDATE jobs SET state='needs_attention' WHERE job_id='j'").run();
+ assert.equal(coordinator.cancel("j"),"needs_attention");
+ assert.deepEqual(one("SELECT state,cancel_requested FROM jobs WHERE job_id='j'"),{state:"needs_attention",cancel_requested:1});
+ assert.equal(coordinator.cancel("missing"),undefined);
+ coordinator.close();db.close();
+});
+
+test("P4 abandon keeps the block; unblock needs evidence for every unknown call and the worker's confirmation",async()=>{
+ const {db,sent,coordinator,commit,one}=fixture();
+ const h1=commit("c1",1,"bash",{command:"x"});
+ const pending=coordinator.dispatch("j","c1");pending.catch(()=>{});
+ coordinator.receive({protocol_version:1,type:"tool_rejected",worker_id:"venus",connection_epoch:2,job_id:"j",call_id:"c1",request_hash:h1,reason:"unknown"});
+ assert.equal(one("SELECT state FROM jobs").state,"needs_attention");
+ assert.equal(coordinator.unblock("venus","checked",[{call_id:"c1",outcome:"terminated"}]).hasOwnProperty("error"),true,"the job must be abandoned or settled first");
+ assert.deepEqual(coordinator.abandon("j","giving up"),{state:"cancelled"});
+ assert.equal(one("SELECT end_reason FROM jobs").end_reason,"abandoned");
+ assert.equal(one("SELECT blocked FROM workers").blocked,1,"abandon never unblocks");
+ assert.equal(one("SELECT active_job_id a FROM worker_slots").a,"j","the unknown call keeps the slot");
+ assert.deepEqual(coordinator.unblock("venus","checked",[]),{error:"resolutions_must_cover_unknown_calls"});
+ sent.length=0;
+ assert.deepEqual(coordinator.unblock("venus","ps shows no process; marker absent",[{call_id:"c1",outcome:"not_executed"}]),{blocked:1,unblock_pending:1});
+ const resolve=sent.find((f)=>f.type==="resolve_call");
+ assert.deepEqual([resolve.call_id,resolve.call_seq,resolve.request_hash],["c1",1,h1]);
+ assert.equal(one("SELECT status FROM runtime_calls").status,"resolved");
+ coordinator.receive({protocol_version:1,type:"resolve_ack",worker_id:"venus",connection_epoch:2,job_id:"j",call_id:"c1",request_hash:h1,state:"resolved"});
+ assert.deepEqual(one("SELECT blocked,unblock_pending FROM workers"),{blocked:0,unblock_pending:0});
+ assert.equal(one("SELECT active_job_id a FROM worker_slots").a,null);
+ const actions=db.prepare("SELECT action,evidence FROM attention_actions ORDER BY created_at,rowid").all() as any[];
+ assert.deepEqual(actions.map((a)=>a.action),["blocked","abandon","unblock","unblocked"]);
+ assert.match(actions[2].evidence,/marker absent/);
+ coordinator.close();db.close();
+});
+
+test("P4 a turn over the tool-call budget is committed but none of its calls is sent",async()=>{
+ const {db,sent,coordinator,one}=fixture();
+ db.prepare("UPDATE jobs SET root_job_id='j',max_tool_calls=1").run();
+ db.prepare("INSERT INTO budget_roots(root_job_id) VALUES('j')").run();
+ const job={...one("SELECT j.*,s.workspace_id,s.workspace_version FROM jobs j JOIN sessions s USING(session_id)")};
+ const call=(id:string)=>({type:"toolCall",id,name:"read",arguments:{path:id}});
+ const turn=(key:string,ids:string[])=>(coordinator as any).commitTurn(job,key,{role:"assistant",content:ids.map(call),usage:{input:10,output:5}},ids.map(call));
+ assert.equal(turn("t1",["a"]),true);
+ job.runtime_generation=one("SELECT runtime_generation g FROM jobs").g;
+ assert.equal(turn("t2",["b","c"]),false);
+ assert.deepEqual(db.prepare("SELECT call_id,status FROM runtime_calls ORDER BY call_seq").all(),[{call_id:"a",status:"not_executed"},{call_id:"b",status:"not_executed"},{call_id:"c",status:"not_executed"}]);
+ assert.deepEqual(one("SELECT tokens_used,tool_calls_used FROM budget_roots"),{tokens_used:30,tool_calls_used:3});
+ assert.deepEqual(one("SELECT state,cancel_reason FROM jobs"),{state:"failed",cancel_reason:"budget_tool_calls"});
+ assert.equal(sent.length,0);
  coordinator.close();db.close();
 });

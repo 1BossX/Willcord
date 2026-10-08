@@ -29,11 +29,12 @@ export async function startScenario(options: {
   const marker = join(workspace, "marker.log");
   let main: { db: ReturnType<typeof openDatabase>; app: Awaited<ReturnType<typeof createApp>>; port: number } | undefined;
   let worker: WorkerProcess | undefined;
-  const startMain = async () => {
+  /** `app` replaces the scenario's app options for this start, e.g. other budgets. */
+  const startMain = async (app: AppOptions = options.app) => {
     const db = openDatabase(dbPath);
-    const app = await createApp(db, origin, { logging: false, dataDir: join(dir, "data"), fakeScript: (job) => options.scripts[job.input_text], ...options.app });
-    await app.listen({ host: "127.0.0.1", port: 0 });
-    main = { db, app, port: (app.server.address() as { port: number }).port };
+    const app_ = await createApp(db, origin, { logging: false, dataDir: join(dir, "data"), fakeScript: (job) => options.scripts[job.input_text], ...app });
+    await app_.listen({ host: "127.0.0.1", port: 0 });
+    main = { db, app: app_, port: (app_.server.address() as { port: number }).port };
   };
   const stopMain = async () => { await main!.app.close(); main!.db.close(); main = undefined; };
   const proxy = await startTlsProxy(certs, () => main!.port, { drop: options.drop });
@@ -65,6 +66,8 @@ export async function startScenario(options: {
       assert.equal(response.statusCode, 201, response.body);
       return response.json().session_id as string;
     },
+    /** An authenticated REST call, with CSRF for anything that changes state. */
+    api: (method: "GET" | "POST", url: string, payload?: object) => main!.app.inject({ method, url, headers, ...(payload ? { payload } : {}) }),
     post: (session: string, message: string) =>
       main!.app.inject({ method: "POST", url: `/api/sessions/${session}/messages`, headers, payload: { client_request_id: message, message } }),
     submit: async (session: string, message: string) => {

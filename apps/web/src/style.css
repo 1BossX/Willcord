@@ -2135,3 +2135,79 @@ summary:focus-visible {
 .tool-outcome.exit-warning {
   color: #aa8854;
 }
+/* P4 controls: cancel, attention handling, full log. */
+.job-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+.job-actions:empty {
+  display: none;
+}
+.danger-action {
+  color: #b4473a;
+}
+.attention-panel {
+  margin-top: 14px;
+  display: grid;
+  gap: 10px;
+}
+.attention-calls {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+  font-size: 11px;
+}
+.attention-calls li {
+  display: grid;
+  gap: 4px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow-wrap: anywhere;
+}
+.attention-action {
+  display: grid;
+  gap: 6px;
+}
+.attention-action label {
+  display: grid;
+  gap: 4px;
+  font-size: 11px;
+}
+.attention-action textarea,
+.attention-calls select {
+  font: inherit;
+  font-size: 12px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  max-width: 100%;
+}
+.log-viewer {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+}
+.log-viewer pre {
+  max-height: 360px;
+  overflow: auto;
+}
+.log-tabs {
+  display: flex;
+  gap: 4px;
+}
+.log-tabs button {
+  font-size: 11px;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: transparent;
+}
+.log-tabs button.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}

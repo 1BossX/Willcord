@@ -30,6 +30,7 @@ export async function createApp(
     fakeScript?: (job: any) => ScriptStep[];
     toolResultTimeoutMs?: number;
     waitSweepMs?: number;
+    logCapacityBytes?: number;
   } = {},
 ) {
   const now = options.now ?? Date.now;
@@ -61,7 +62,7 @@ export async function createApp(
       tokenDigest: string;
     }
   >();
-  const coordinator = new ExecutionCoordinator(db, connections, now, options.runJob as ((job:any)=>Promise<void>)|undefined, { dataDir: options.dataDir, fakeScript: options.fakeScript, toolResultTimeoutMs: options.toolResultTimeoutMs });
+  const coordinator = new ExecutionCoordinator(db, connections, now, options.runJob as ((job:any)=>Promise<void>)|undefined, { dataDir: options.dataDir, fakeScript: options.fakeScript, toolResultTimeoutMs: options.toolResultTimeoutMs, logCapacityBytes: options.logCapacityBytes });
   let shuttingDown = false;
   const offline = (id: string, epoch: number) => {
     if (shuttingDown) return;
@@ -201,6 +202,13 @@ export async function createApp(
     if(outcome.existing) return outcome;
     if(outcome.state==="queued") void coordinator.pump(session.worker_id);
     return reply.code(202).send({job_id:outcome.job_id,state:outcome.state});
+  });
+  app.get<{Params:{job_id:string;call_id:string};Querystring:{stream?:string;from_seq?:string}}>("/api/jobs/:job_id/calls/:call_id/logs",async(req,reply)=>{
+    const stream=req.query.stream??"stdout";
+    const fromSeq=Number(req.query.from_seq??0);
+    if((stream!=="stdout"&&stream!=="stderr")||!Number.isSafeInteger(fromSeq)||fromSeq<0) return reply.code(400).send({error:"invalid_log_query"});
+    const log=coordinator.readLog(req.params.job_id,req.params.call_id,stream,fromSeq);
+    return log??reply.code(404).send({error:"log_not_found"});
   });
   app.get<{
     Params: { worker_id: string };
@@ -471,7 +479,7 @@ export async function createApp(
             db.prepare("UPDATE workers SET online=1,last_seen=? WHERE worker_id=? AND connection_epoch=? AND reconciled=1").run(now(),id,epoch);
             coordinator.resumeWorker(id, reacks);
             reacks = [];
-          } else if (f.type === "tool_result" || f.type === "tool_rejected") {
+          } else if (f.type === "tool_result" || f.type === "tool_rejected" || f.type === "tool_log" || f.type === "log_status") {
             coordinator.receive(f);
           } else if (f.type === "tool_accepted") {
             // Acceptance only proves the worker ledger owns the call; the result decides.

@@ -24,10 +24,14 @@ try {
   // Fault acceptance runs this process with scripted model turns keyed by the user message.
   const scriptFile = process.env.P3_FAKE_SCRIPT_FILE;
   const scripts = scriptFile ? JSON.parse(readFileSync(scriptFile, "utf8")) : undefined;
+  const logCapacity = process.env.MAIN_LOG_CAPACITY_BYTES;
   const app = await createApp(
     db,
     process.env.PUBLIC_BASE_URL ?? "https://localhost:8443",
-    scripts ? { fakeScript: (job) => scripts[job.input_text] } : {},
+    {
+      ...(scripts ? { fakeScript: (job: any) => scripts[job.input_text] } : {}),
+      ...(logCapacity ? { logCapacityBytes: Number(logCapacity) } : {}),
+    },
   );
   await app.listen({ host: "127.0.0.1", port: Number(process.env.PORT ?? 3000) });
   for (const signal of ["SIGINT", "SIGTERM"] as const)

@@ -1,24 +1,28 @@
 mod generated;
 mod ledger;
+mod logs;
+mod process;
 mod tools;
 use base64::Engine as _;
 use fs2::FileExt;
 use futures_util::{SinkExt, StreamExt};
 use generated::{MAX_FRAME_BYTES, ToolCall, ToolData, ToolResult, Workspace};
 use ledger::{Accept, CallIdentity, Ledger};
+use logs::Chunk;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::Digest;
 use std::{
+    collections::HashMap,
     fs::{self, OpenOptions},
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
     time::{Duration, Instant},
 };
 use tokio::{
     net::TcpStream,
-    sync::{Notify, mpsc},
+    sync::{Notify, mpsc, watch},
 };
 use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream, connect_async_with_config,
@@ -35,6 +39,15 @@ const DEFAULT_RESULT_RETENTION_SECS: u64 = 7 * 24 * 3600;
 const HEARTBEAT: Duration = Duration::from_secs(10);
 const SERVER_SILENCE: Duration = Duration::from_secs(30);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
+/// The protocol's hard ceiling for any tool time limit.
+const MAX_TOOL_TIMEOUT_SECS: u64 = 1800;
+const DEFAULT_KILL_GRACE_SECS: u64 = 10;
+const MAX_KILL_GRACE_SECS: u64 = 30;
+const STOP_CONFIRM: Duration = Duration::from_secs(5);
+const DEFAULT_LOG_DISK_BUDGET: u64 = 2 * 1024 * 1024 * 1024;
+const DEFAULT_MIN_FREE_BYTES: u64 = 1024 * 1024 * 1024;
+/// Chunks answered per log_fetch; the main node asks again for more.
+const LOG_FETCH_BATCH: u64 = 64;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -46,6 +59,18 @@ struct Config {
     /// How long acknowledged results stay readable before only a tombstone remains.
     #[serde(default)]
     result_retention_secs: Option<u64>,
+    /// Seconds between TERM and KILL when a command is cancelled or times out.
+    #[serde(default)]
+    kill_grace_secs: Option<u64>,
+    /// Local bash time limit cap; at most 1800.
+    #[serde(default)]
+    max_tool_timeout_secs: Option<u64>,
+    /// Stored command output across all calls; new calls are refused above it.
+    #[serde(default)]
+    log_disk_budget_bytes: Option<u64>,
+    /// New calls are refused when less space than this is free.
+    #[serde(default)]
+    min_free_bytes: Option<u64>,
 }
 
 /// A connection-level failure. The process keeps its ledger and running calls
@@ -71,9 +96,27 @@ struct Worker {
     workspaces: Arc<Vec<Workspace>>,
     ledger: Arc<Mutex<Ledger>>,
     completed: mpsc::UnboundedSender<String>,
+    data_dir: PathBuf,
+    log_root: PathBuf,
+    limits: Arc<process::Limits>,
+    max_tool_timeout_secs: u64,
+    log_disk_budget: u64,
+    min_free_bytes: u64,
+    /// Stop switches of calls running on this boot.
+    cancels: Arc<Mutex<HashMap<String, watch::Sender<bool>>>>,
+    live_logs: mpsc::Sender<Chunk>,
     /// SIGINT, stored until observed. A `ctrl_c()` future made per loop
     /// iteration misses signals that arrive while a frame is being handled.
     shutdown: Arc<Notify>,
+}
+
+fn validator() -> &'static jsonschema::Validator {
+    static VALIDATOR: OnceLock<jsonschema::Validator> = OnceLock::new();
+    VALIDATOR.get_or_init(|| {
+        let schema: Value =
+            serde_json::from_str(include_str!("../../packages/protocol/schema.json")).unwrap();
+        jsonschema::validator_for(&schema).unwrap()
+    })
 }
 
 fn parse_frame(text: &str) -> Result<Value, Error> {
@@ -82,8 +125,7 @@ fn parse_frame(text: &str) -> Result<Value, Error> {
         return Err("oversized frame".into());
     }
     let value: Value = serde_json::from_str(text)?;
-    let schema: Value = serde_json::from_str(include_str!("../../packages/protocol/schema.json"))?;
-    if !jsonschema::validator_for(&schema)?.is_valid(&value) {
+    if !validator().is_valid(&value) {
         eprintln!(
             "rejected inbound frame type={:?} keys={:?}",
             value.get("type").and_then(Value::as_str),
@@ -94,9 +136,9 @@ fn parse_frame(text: &str) -> Result<Value, Error> {
     Ok(value)
 }
 
-/// Crash points for the P3 fault program; compiled out of normal builds.
+/// Crash points for the fault programs; compiled out of normal builds.
 #[cfg(feature = "fault-injection")]
-fn fault(point: &str) {
+pub(crate) fn fault(point: &str) {
     if std::env::var("WP_FAULT").as_deref() == Ok(point) {
         eprintln!("fault injection: SIGKILL at {point}");
         unsafe {
@@ -106,7 +148,7 @@ fn fault(point: &str) {
 }
 #[cfg(not(feature = "fault-injection"))]
 #[inline(always)]
-fn fault(_: &str) {}
+pub(crate) fn fault(_: &str) {}
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
@@ -159,8 +201,23 @@ async fn main() -> Result<(), Error> {
         .result_retention_secs
         .unwrap_or(DEFAULT_RESULT_RETENTION_SECS)
         * 1000) as i64;
+    let max_tool_timeout_secs = config
+        .max_tool_timeout_secs
+        .unwrap_or(MAX_TOOL_TIMEOUT_SECS);
+    if !(1..=MAX_TOOL_TIMEOUT_SECS).contains(&max_tool_timeout_secs) {
+        return Err("max_tool_timeout_secs must be 1..=1800".into());
+    }
+    // The main node waits the time limit plus a fixed margin for a stop to be confirmed.
+    let kill_grace_secs = config.kill_grace_secs.unwrap_or(DEFAULT_KILL_GRACE_SECS);
+    if kill_grace_secs > MAX_KILL_GRACE_SECS {
+        return Err("kill_grace_secs must be at most 30".into());
+    }
     ledger.retire_acknowledged(retention_ms)?;
+    let log_root = config.data_dir.join("logs");
+    fs::create_dir_all(&log_root)?;
+    logs::prune(&log_root, &ledger.held_calls()?)?;
     let (completed, mut completed_rx) = mpsc::unbounded_channel();
+    let (live_logs, mut live_logs_rx) = mpsc::channel(64);
     let shutdown = Arc::new(Notify::new());
     let listener = shutdown.clone();
     let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
@@ -177,6 +234,19 @@ async fn main() -> Result<(), Error> {
         workspaces: Arc::new(config.workspaces),
         ledger: Arc::new(Mutex::new(ledger)),
         completed,
+        data_dir: config.data_dir.clone(),
+        log_root,
+        limits: Arc::new(process::Limits {
+            grace: Duration::from_secs(kill_grace_secs),
+            confirm: STOP_CONFIRM,
+        }),
+        max_tool_timeout_secs,
+        log_disk_budget: config
+            .log_disk_budget_bytes
+            .unwrap_or(DEFAULT_LOG_DISK_BUDGET),
+        min_free_bytes: config.min_free_bytes.unwrap_or(DEFAULT_MIN_FREE_BYTES),
+        cancels: Arc::new(Mutex::new(HashMap::new())),
+        live_logs,
         shutdown,
     };
     let mut backoff = Duration::from_secs(1);
@@ -186,8 +256,8 @@ async fn main() -> Result<(), Error> {
         // handler, a chunked transfer or the handshake. Ledger writes are
         // synchronous, so cancellation never splits one.
         let outcome = tokio::select! {
-            outcome = session(&worker, &mut completed_rx, &mut registered) => outcome,
-            _ = worker.shutdown.notified() => return Ok(()),
+            outcome = session(&worker, &mut completed_rx, &mut live_logs_rx, &mut registered) => outcome,
+            _ = worker.shutdown.notified() => return stop_running(&worker).await,
         };
         match outcome {
             Ok(()) => return Ok(()),
@@ -201,10 +271,24 @@ async fn main() -> Result<(), Error> {
         }
         tokio::select! {
             _ = tokio::time::sleep(backoff) => {}
-            _ = worker.shutdown.notified() => return Ok(()),
+            _ = worker.shutdown.notified() => return stop_running(&worker).await,
         }
         backoff = (backoff * 2).min(MAX_BACKOFF);
     }
+}
+
+/// On shutdown, stop every running command through the normal cancel path and
+/// wait for its result to be persisted, so no process group outlives the worker.
+async fn stop_running(worker: &Worker) -> Result<(), Error> {
+    for stop in worker.cancels.lock().unwrap().values() {
+        let _ = stop.send(true);
+    }
+    let deadline =
+        Instant::now() + worker.limits.grace + worker.limits.confirm + Duration::from_secs(2);
+    while !worker.cancels.lock().unwrap().is_empty() && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    Ok(())
 }
 
 async fn connect(worker: &Worker) -> Result<Socket, Error> {
@@ -273,9 +357,44 @@ fn result_frame(worker: &Worker, epoch: u64, call: &CallIdentity, record: &Value
     }
 }
 
+fn rejected_frame(
+    worker: &Worker,
+    epoch: u64,
+    call: &CallIdentity,
+    reason: &str,
+) -> generated::ToolRejected {
+    generated::ToolRejected {
+        protocol_version: 1,
+        kind: "tool_rejected".into(),
+        worker_id: worker.worker_id.clone(),
+        connection_epoch: epoch,
+        job_id: call.job_id.clone(),
+        call_id: call.call_id.clone(),
+        request_hash: call.request_hash.clone(),
+        reason: reason.into(),
+    }
+}
+
+/// Delete stored output the main node no longer needs.
+fn prune_logs(worker: &Worker) -> Result<(), Error> {
+    let ledger = worker.ledger.lock().unwrap();
+    for call_id in ledger.settled_logs()? {
+        logs::remove(&worker.log_root, &call_id);
+    }
+    logs::prune(&worker.log_root, &ledger.held_calls()?)?;
+    Ok(())
+}
+
+/// Space for a new call: free disk and the stored-output budget.
+fn disk_ok(worker: &Worker) -> bool {
+    let free = logs::free_bytes(&worker.data_dir).unwrap_or(0);
+    free >= worker.min_free_bytes && logs::usage(&worker.log_root) < worker.log_disk_budget
+}
+
 async fn session(
     worker: &Worker,
     completed: &mut mpsc::UnboundedReceiver<String>,
+    live_logs: &mut mpsc::Receiver<Chunk>,
     registered: &mut bool,
 ) -> Result<(), Error> {
     let mut socket = connect(worker).await?;
@@ -357,7 +476,21 @@ async fn session(
                     && sent_results.insert(call.call_id.clone())
                 {
                     send(&mut socket, &result_frame(worker, epoch, &call, &record)).await?;
+                    continue;
                 }
+                // Stopping could not be confirmed: report it now instead of
+                // leaving the main node to wait for a result that never comes.
+                let held = worker.ledger.lock().unwrap().call(&call_id)?;
+                if let Some((call, status)) = held
+                    && status == "unknown"
+                {
+                    send(&mut socket, &rejected_frame(worker, epoch, &call, "unknown")).await?;
+                }
+            }
+            Some(chunk) = live_logs.recv() => {
+                // Live output is a convenience; anything missed is fetched later.
+                if !reconciled { continue; }
+                send(&mut socket, &log_frame(worker, epoch, chunk)).await?;
             }
             text = next_text(&mut socket, &mut last_inbound) => {
                 let frame = parse_frame(&text?)?;
@@ -404,9 +537,94 @@ async fn session(
                         if ack.worker_id != worker.worker_id || ack.connection_epoch != epoch {
                             return Err("stale tool ack".into());
                         }
-                        let mut ledger = worker.ledger.lock().unwrap();
-                        ledger.acknowledge(&ack.job_id, &ack.call_id, &ack.request_hash, ack.ack_through)?;
-                        ledger.retire_acknowledged(worker.retention_ms)?;
+                        {
+                            let mut ledger = worker.ledger.lock().unwrap();
+                            ledger.acknowledge(&ack.job_id, &ack.call_id, &ack.request_hash, ack.ack_through)?;
+                            ledger.retire_acknowledged(worker.retention_ms)?;
+                        }
+                        prune_logs(worker)?;
+                    }
+                    Some("cancel_call") => {
+                        if !reconciled {
+                            return Err("cancel before reconciliation".into());
+                        }
+                        let cancel: generated::CancelCall = serde_json::from_value(frame)?;
+                        if cancel.worker_id != worker.worker_id || cancel.connection_epoch != epoch {
+                            return Err("stale cancel".into());
+                        }
+                        let identity = CallIdentity {
+                            job_id: cancel.job_id,
+                            call_id: cancel.call_id,
+                            call_seq: cancel.call_seq,
+                            request_hash: cancel.request_hash,
+                        };
+                        let state = worker.ledger.lock().unwrap().request_cancel(&identity, &worker.boot_id)?;
+                        fault("after_cancel_recorded");
+                        if state == "running"
+                            && let Some(stop) = worker.cancels.lock().unwrap().get(&identity.call_id)
+                        {
+                            let _ = stop.send(true);
+                        }
+                        send(&mut socket, &generated::CancelAck {
+                            protocol_version: 1,
+                            kind: "cancel_ack".into(),
+                            worker_id: worker.worker_id.clone(),
+                            connection_epoch: epoch,
+                            job_id: identity.job_id,
+                            call_id: identity.call_id,
+                            request_hash: identity.request_hash,
+                            state: state.into(),
+                        }).await?;
+                    }
+                    Some("log_fetch") => {
+                        let fetch: generated::LogFetch = serde_json::from_value(frame)?;
+                        if fetch.worker_id != worker.worker_id || fetch.connection_epoch != epoch {
+                            return Err("stale log fetch".into());
+                        }
+                        log_fetch(worker, &mut socket, epoch, fetch).await?;
+                    }
+                    Some("log_ack") => {
+                        let ack: generated::LogAck = serde_json::from_value(frame)?;
+                        if ack.worker_id != worker.worker_id || ack.connection_epoch != epoch {
+                            return Err("stale log ack".into());
+                        }
+                        let held = worker.ledger.lock().unwrap().call(&ack.call_id)?;
+                        if let Some((call, _)) = held
+                            && call.job_id == ack.job_id
+                            && call.request_hash == ack.request_hash
+                        {
+                            worker.ledger.lock().unwrap().ack_log(&ack.call_id, &ack.stream, ack.chunks)?;
+                            prune_logs(worker)?;
+                        }
+                    }
+                    Some("resolve_call") => {
+                        if !reconciled {
+                            return Err("resolve before reconciliation".into());
+                        }
+                        let resolve: generated::ResolveCall = serde_json::from_value(frame)?;
+                        if resolve.worker_id != worker.worker_id || resolve.connection_epoch != epoch {
+                            return Err("stale resolve".into());
+                        }
+                        let identity = CallIdentity {
+                            job_id: resolve.job_id,
+                            call_id: resolve.call_id,
+                            call_seq: resolve.call_seq,
+                            request_hash: resolve.request_hash,
+                        };
+                        let state = worker.ledger.lock().unwrap().resolve(&identity)?;
+                        if state == "resolved" {
+                            logs::remove(&worker.log_root, &identity.call_id);
+                        }
+                        send(&mut socket, &generated::ResolveAck {
+                            protocol_version: 1,
+                            kind: "resolve_ack".into(),
+                            worker_id: worker.worker_id.clone(),
+                            connection_epoch: epoch,
+                            job_id: identity.job_id,
+                            call_id: identity.call_id,
+                            request_hash: identity.request_hash,
+                            state: state.into(),
+                        }).await?;
                     }
                     _ => return Err("unexpected frame".into()),
                 }
@@ -487,33 +705,85 @@ async fn tool_call(
         request_hash: call.request_hash.clone(),
         boot_id: worker.boot_id.clone(),
     };
-    let outcome = worker
-        .ledger
-        .lock()
-        .unwrap()
-        .accept(&identity, &worker.boot_id)?;
+    // A request this worker would never run is refused before the ledger sees it.
+    let timeout = if call.tool == "bash" {
+        match process::bash_timeout(&call.arguments, worker.max_tool_timeout_secs) {
+            Ok(timeout) => Some(timeout),
+            Err(reason) => {
+                send(socket, &rejected_frame(worker, epoch, &identity, reason)).await?;
+                return Ok(());
+            }
+        }
+    } else {
+        None
+    };
+    let outcome =
+        worker
+            .ledger
+            .lock()
+            .unwrap()
+            .accept(&identity, &worker.boot_id, disk_ok(worker))?;
     match outcome {
         Accept::Execute => {
             fault("after_accepted");
             worker.ledger.lock().unwrap().mark_running(&call.call_id)?;
             fault("after_running");
-            let (ledger, workspaces, completed) = (
+            let (stop, cancel) = watch::channel(false);
+            worker
+                .cancels
+                .lock()
+                .unwrap()
+                .insert(call.call_id.clone(), stop);
+            let (ledger, workspaces, completed, cancels) = (
                 worker.ledger.clone(),
                 worker.workspaces.clone(),
                 worker.completed.clone(),
+                worker.cancels.clone(),
+            );
+            let (log_root, live_logs, limits) = (
+                worker.log_root.clone(),
+                worker.live_logs.clone(),
+                worker.limits.clone(),
             );
             // Execution outlives the connection; its result is persisted before
             // any connection is told about it.
             tokio::spawn(async move {
-                let record = match tools::execute_tool(&workspaces, &call).await {
-                    Ok(result) => serde_json::json!({"ok":true,"result":result}),
-                    Err(e) => serde_json::json!({"ok":false,"result":{"error":e.to_string()}}),
+                let (settled, record, streams) = match timeout {
+                    Some(timeout) => {
+                        run_bash(
+                            &workspaces,
+                            &call,
+                            timeout,
+                            cancel,
+                            &log_root,
+                            live_logs,
+                            &limits,
+                        )
+                        .await
+                    }
+                    None => {
+                        let record = match tools::execute_tool(&workspaces, &call).await {
+                            Ok(result) => serde_json::json!({"ok":true,"result":result}),
+                            Err(e) => {
+                                serde_json::json!({"ok":false,"result":{"error":e.to_string()}})
+                            }
+                        };
+                        (true, record, Vec::new())
+                    }
                 };
                 fault("after_effect");
-                if let Err(e) = ledger.lock().unwrap().complete(&call.call_id, &record) {
+                let mut ledger = ledger.lock().unwrap();
+                let persisted = if settled {
+                    ledger.complete(&call.call_id, &record, &streams)
+                } else {
+                    ledger.mark_unknown(&call.call_id, &record, &streams)
+                };
+                if let Err(e) = persisted {
                     eprintln!("ledger write failed for {}: {e}", call.call_id);
                     std::process::abort();
                 }
+                drop(ledger);
+                cancels.lock().unwrap().remove(&call.call_id);
                 fault("after_result_persisted");
                 let _ = completed.send(call.call_id);
             });
@@ -526,23 +796,165 @@ async fn tool_call(
             send(socket, &result_frame(worker, epoch, &identity, &record)).await?
         }
         Accept::Rejected(reason) => {
-            send(
-                socket,
-                &generated::ToolRejected {
-                    protocol_version: 1,
-                    kind: "tool_rejected".into(),
-                    worker_id: worker.worker_id.clone(),
-                    connection_epoch: epoch,
-                    job_id: identity.job_id,
-                    call_id: identity.call_id,
-                    request_hash: identity.request_hash,
-                    reason: reason.into(),
-                },
-            )
-            .await?
+            send(socket, &rejected_frame(worker, epoch, &identity, reason)).await?
         }
     }
     Ok(())
+}
+
+/// Run a bash call. Returns whether stopping was confirmed, the ledger record,
+/// and the stored streams. Without confirmation the record is evidence only.
+async fn run_bash(
+    workspaces: &[Workspace],
+    call: &ToolCall,
+    timeout: Duration,
+    cancel: watch::Receiver<bool>,
+    log_root: &std::path::Path,
+    live_logs: mpsc::Sender<Chunk>,
+    limits: &process::Limits,
+) -> (bool, Value, Vec<ledger::LogStream>) {
+    let failed = |e: &dyn std::fmt::Display| {
+        (
+            true,
+            serde_json::json!({"ok":false,"result":{"error":e.to_string()}}),
+            Vec::new(),
+        )
+    };
+    let Some(workspace) = workspaces
+        .iter()
+        .find(|w| w.workspace_id == call.workspace_id && w.config_version == call.config_version)
+    else {
+        return failed(&"workspace mismatch");
+    };
+    let Some(command) = call.arguments["command"].as_str() else {
+        return failed(&"command required");
+    };
+    let log = match logs::CallLog::create(log_root, &call.job_id, &call.call_id, live_logs) {
+        Ok(log) => Arc::new(log),
+        Err(e) => return failed(&e),
+    };
+    let outcome = process::run_bash(
+        command,
+        std::path::Path::new(&workspace.path),
+        timeout,
+        cancel,
+        log.clone(),
+        limits,
+    )
+    .await;
+    let (_, streams) = log.summary();
+    match outcome {
+        Ok(process::Outcome::Finished(result)) => (
+            true,
+            serde_json::json!({"ok":true,"result":result}),
+            streams,
+        ),
+        Ok(process::Outcome::Unconfirmed(evidence)) => (
+            false,
+            serde_json::json!({"ok":false,"result":evidence}),
+            streams,
+        ),
+        // Spawning failed: nothing ran.
+        Err(e) => (
+            true,
+            serde_json::json!({"ok":false,"result":{"error":e.to_string()}}),
+            streams,
+        ),
+    }
+}
+
+fn log_frame(worker: &Worker, epoch: u64, chunk: Chunk) -> generated::ToolLog {
+    generated::ToolLog {
+        protocol_version: 1,
+        kind: "tool_log".into(),
+        worker_id: worker.worker_id.clone(),
+        connection_epoch: epoch,
+        job_id: chunk.job_id,
+        call_id: chunk.call_id,
+        stream: chunk.stream.into(),
+        seq: chunk.seq,
+        offset: chunk.offset,
+        data: base64::engine::general_purpose::STANDARD.encode(chunk.data),
+    }
+}
+
+/// Answer a log_fetch with stored chunks and a closing log_status.
+async fn log_fetch(
+    worker: &Worker,
+    socket: &mut Socket,
+    epoch: u64,
+    fetch: generated::LogFetch,
+) -> Result<(), Error> {
+    let held = worker.ledger.lock().unwrap().call(&fetch.call_id)?;
+    let status = match &held {
+        Some((call, status))
+            if call.job_id == fetch.job_id && call.request_hash == fetch.request_hash =>
+        {
+            Some(status.clone())
+        }
+        _ => None,
+    };
+    let stream: &'static str = if fetch.stream == "stderr" {
+        "stderr"
+    } else {
+        "stdout"
+    };
+    let stored = match status {
+        Some(_) => logs::read(
+            &worker.log_root,
+            &fetch.call_id,
+            stream,
+            fetch.from_seq,
+            LOG_FETCH_BATCH,
+        )?,
+        None => None,
+    };
+    let (state, chunks) = match stored {
+        None => ("expired", 0),
+        Some((found, total)) => {
+            let last = found
+                .last()
+                .map(|(seq, _, _)| seq + 1)
+                .unwrap_or(fetch.from_seq);
+            for (seq, offset, data) in found {
+                let chunk = Chunk {
+                    job_id: fetch.job_id.clone(),
+                    call_id: fetch.call_id.clone(),
+                    stream,
+                    seq,
+                    offset,
+                    data,
+                };
+                send(socket, &log_frame(worker, epoch, chunk)).await?;
+            }
+            let running = matches!(status.as_deref(), Some("accepted" | "running"));
+            (
+                if running {
+                    "running"
+                } else if last < total {
+                    "more"
+                } else {
+                    "complete"
+                },
+                total,
+            )
+        }
+    };
+    send(
+        socket,
+        &generated::LogStatus {
+            protocol_version: 1,
+            kind: "log_status".into(),
+            worker_id: worker.worker_id.clone(),
+            connection_epoch: epoch,
+            job_id: fetch.job_id,
+            call_id: fetch.call_id,
+            stream: stream.into(),
+            chunks,
+            state: state.into(),
+        },
+    )
+    .await
 }
 
 #[cfg(test)]

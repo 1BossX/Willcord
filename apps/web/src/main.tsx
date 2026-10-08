@@ -45,7 +45,18 @@ type ToolContent = {
   sha256?: string;
   stdout?: string;
   stderr?: string;
-  exit_code?: number;
+  exit_code?: number | null;
+  signal?: number | null;
+  termination?: "exited" | "cancelled" | "timeout";
+  output?: Partial<Record<"stdout" | "stderr", StreamOutput>>;
+};
+/** What the main node assembled from stored chunks for the model. */
+type StreamOutput = {
+  text: string;
+  bytes_shown: number;
+  bytes_total: number;
+  truncated: boolean;
+  gap: boolean;
 };
 type Content = {
   role: string;
@@ -246,6 +257,20 @@ function ToolCard({ value }: { value: Content }) {
     tool === "bash" &&
     typeof result.exit_code === "number" &&
     result.exit_code !== 0;
+  const streamText = (stream: "stdout" | "stderr") =>
+    result.output?.[stream]?.text ?? result[stream] ?? "";
+  const outputCut = ["stdout", "stderr"].some(
+    (s) => result.output?.[s as "stdout" | "stderr"]?.truncated,
+  );
+  const outputGap = ["stdout", "stderr"].some(
+    (s) => result.output?.[s as "stdout" | "stderr"]?.gap,
+  );
+  const stopped =
+    result.termination === "cancelled"
+      ? "已取消"
+      : result.termination === "timeout"
+        ? "已超时停止"
+        : "";
   const titles: Record<string, string> = {
     read: "读取文件",
     write: "写入文件",
@@ -259,7 +284,7 @@ function ToolCard({ value }: { value: Content }) {
       : tool === "write"
         ? `${(result.bytes ?? 0).toLocaleString()} 字节`
         : tool === "bash"
-          ? `退出码 ${result.exit_code ?? "未知"}${result.truncated ? " · 输出已截断" : ""}`
+          ? `${stopped ? `${stopped} · 信号 ${result.signal ?? "未知"}` : `退出码 ${result.exit_code ?? "未知"}`}${result.truncated || outputCut ? " · 输出已截断" : ""}`
           : "查看结果";
   return (
     <details className={`tool-card ${failed ? "tool-failed" : ""}`}>
@@ -303,11 +328,11 @@ function ToolCard({ value }: { value: Content }) {
             {tool === "bash" && (
               <>
                 <div className="stream-label">STDOUT</div>
-                <pre>{result.stdout || "无标准输出"}</pre>
-                {result.stderr && (
+                <pre>{streamText("stdout") || "无标准输出"}</pre>
+                {streamText("stderr") && (
                   <>
                     <div className="stream-label">STDERR</div>
-                    <pre>{result.stderr}</pre>
+                    <pre>{streamText("stderr")}</pre>
                   </>
                 )}
               </>
@@ -315,8 +340,23 @@ function ToolCard({ value }: { value: Content }) {
             {tool === "tool" && <pre>{JSON.stringify(result, null, 2)}</pre>}
           </>
         )}
-        {result.truncated && (
-          <p className="output-notice">此处展示的输出已截断。</p>
+        {(result.truncated || outputCut) && (
+          <p className="output-notice">
+            此处展示的输出已截断
+            {(["stdout", "stderr"] as const)
+              .filter((s) => result.output?.[s]?.truncated)
+              .map(
+                (s) =>
+                  `，${s} 显示 ${result.output![s]!.bytes_shown.toLocaleString()} / ${result.output![s]!.bytes_total.toLocaleString()} 字节`,
+              )
+              .join("")}
+            。
+          </p>
+        )}
+        {outputGap && (
+          <p className="output-notice">
+            部分输出已无法从机器取回，显示内容存在缺口。
+          </p>
         )}
         {result.sha256 && (
           <details className="technical-detail">

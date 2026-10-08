@@ -160,3 +160,16 @@ test("P3 an inference from a superseded run commits neither a tool turn nor a fi
  assert.equal(one("SELECT state FROM jobs").state,"running");
  coordinator.close();db.close();
 });
+
+test("P4 a refusal that proves non-execution completes the call as not executed and does not block",async()=>{
+ const {db,sent,coordinator,commit,one}=fixture();
+ const hash=commit("c1",1,"bash",{command:"true",timeout_secs:900});
+ const call=coordinator.dispatch("j","c1");
+ coordinator.receive({protocol_version:1,type:"tool_rejected",worker_id:"venus",connection_epoch:2,job_id:"j",call_id:"c1",request_hash:hash,reason:"disk_full"});
+ assert.deepEqual(await call,{ok:false,result:{error:"not_executed:disk_full",not_executed:true,reason:"disk_full"}});
+ assert.equal(sent.length,1,"no ACK: the worker recorded nothing");
+ assert.equal(one("SELECT status FROM runtime_calls WHERE call_id='c1'").status,"completed");
+ assert.equal(one("SELECT blocked FROM workers").blocked,0);
+ assert.equal(one("SELECT state FROM jobs").state,"running");
+ coordinator.close();db.close();
+});

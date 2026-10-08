@@ -5,7 +5,7 @@ import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { once } from "node:events";
-import { WebSocketServer, type WebSocket } from "ws";
+import { WebSocket, WebSocketServer } from "ws";
 
 export const repoRoot = resolve(import.meta.dirname, "../../../..");
 
@@ -71,4 +71,43 @@ export async function stopWorker(worker: WorkerProcess, signal: NodeJS.Signals =
     worker.child.kill(signal);
     await worker.exited;
   }
+}
+
+/**
+ * TLS termination in front of the main node, standing in for Caddy. The target
+ * port is read per connection so a restarted main node is reached at its new
+ * port; dropAll() simulates a network loss without restarting either side.
+ */
+export async function startTlsProxy(certs: ReturnType<typeof createCertificates>, target: () => number) {
+  const server: Server = createServer({ key: readFileSync(certs.key), cert: readFileSync(certs.cert) });
+  const gateway = new WebSocketServer({ noServer: true, maxPayload: 65536 });
+  const pairs = new Set<{ client: WebSocket; upstream: WebSocket }>();
+  server.on("upgrade", (req, socket, head) => {
+    const upstream = new WebSocket(`ws://127.0.0.1:${target()}${req.url}`, { headers: { authorization: req.headers.authorization ?? "" } });
+    upstream.on("unexpected-response", (_req, res) => socket.end(`HTTP/1.1 ${res.statusCode} Unauthorized\r\nConnection: close\r\n\r\n`));
+    upstream.on("error", () => socket.destroy());
+    upstream.on("open", () =>
+      gateway.handleUpgrade(req, socket, head, (client) => {
+        const pair = { client, upstream };
+        pairs.add(pair);
+        client.on("message", (data) => upstream.send(data.toString()));
+        upstream.on("message", (data) => client.send(data.toString()));
+        client.on("close", () => { pairs.delete(pair); upstream.close(); });
+        upstream.on("close", (code, reason) => { pairs.delete(pair); if (code === 1005 || code === 1006) client.terminate(); else client.close(code, reason); });
+        client.on("error", () => upstream.terminate());
+      }),
+    );
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const port = (server.address() as { port: number }).port;
+  return {
+    url: `wss://localhost:${port}/ws/worker`,
+    dropAll: () => { for (const { client, upstream } of pairs) { client.terminate(); upstream.terminate(); } },
+    close: async () => {
+      for (const { client, upstream } of pairs) { client.terminate(); upstream.terminate(); }
+      gateway.close();
+      await new Promise<void>((r) => server.close(() => r()));
+    },
+  };
 }

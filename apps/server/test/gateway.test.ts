@@ -173,7 +173,9 @@ test(
       c.send(JSON.stringify({ ...register, boot_id: "boot-c" }));
       const third = JSON.parse((await message)[0].toString());
       assert.equal(third.connection_epoch, 3);
-      const blocked = once(c, "close");
+      // A slot held by a job this node does not know cannot be explained:
+      // the worker reconciles but stays blocked, and the slot is kept.
+      message = once(c, "message");
       c.send(
         JSON.stringify({
           protocol_version: 1,
@@ -185,7 +187,7 @@ test(
           calls: [],
         }),
       );
-      assert.equal((await blocked)[0], 1008);
+      assert.equal(JSON.parse((await message)[0].toString()).ack_type, "reconcile");
       assert.equal(
         (
           db.prepare("SELECT active_job_id FROM worker_slots").get() as {
@@ -195,9 +197,14 @@ test(
         "unresolved-job",
       );
       assert.equal(
-        (db.prepare("SELECT online FROM workers").get() as { online: number })
-          .online,
-        0,
+        (db.prepare("SELECT blocked FROM workers").get() as { blocked: number })
+          .blocked,
+        1,
+      );
+      assert.match(
+        (db.prepare("SELECT evidence FROM attention_actions").get() as { evidence: string })
+          .evidence,
+        /slot_held_by_unknown_job/,
       );
       const impostor = await connect(`Bearer ${token}`);
       const rejected = once(impostor, "close");

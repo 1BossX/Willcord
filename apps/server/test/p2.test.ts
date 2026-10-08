@@ -23,10 +23,15 @@ test("P2 fixed target session, repo guard, offline FIFO and request idempotency"
   const created=await app.inject({method:"POST",url:"/api/sessions",headers,payload:{worker_id:"venus",workspace_id:"repo-a",repo_id:"github.com/acme/a"}});
   assert.equal(created.statusCode,201);
   const session=created.json().session_id as string;
+  assert.equal(created.json().title,null);
   const submit={method:"POST" as const,url:`/api/sessions/${session}/messages`,headers,payload:{client_request_id:"request-1",message:"inspect the repository"}};
   const first=await app.inject(submit); assert.equal(first.statusCode,202);assert.equal(first.json().state,"waiting_worker");
+  assert.equal((await app.inject({url:"/api/sessions",headers:{cookie}})).json()[0].title,"inspect the repository");
+  const renamed=await app.inject({method:"PATCH",url:`/api/sessions/${session}`,headers,payload:{title:"  Release   audit  "}});
+  assert.equal(renamed.statusCode,200);assert.equal(renamed.json().title,"Release audit");
   const retry=await app.inject(submit);assert.equal(retry.statusCode,200);assert.equal(retry.json().job_id,first.json().job_id);
   const conflict=await app.inject({...submit,payload:{client_request_id:"request-1",message:"different payload"}});assert.equal(conflict.statusCode,409);
+  const invalidTitle=await app.inject({method:"PATCH",url:`/api/sessions/${session}`,headers,payload:{title:"   "}});assert.equal(invalidTitle.statusCode,400);
   const jobs=await app.inject({url:`/api/sessions/${session}/jobs`,headers:{cookie}});assert.equal(jobs.json().length,1);
   assert.equal(jobs.json()[0].input_text,"inspect the repository");assert.equal(jobs.json()[0].queue_position,1);
   assert.equal((await app.inject({url:`/api/sessions/${session}/messages`,headers:{cookie}})).json().length,1);

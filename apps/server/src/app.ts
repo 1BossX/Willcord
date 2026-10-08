@@ -167,6 +167,28 @@ export async function createApp(
     db.prepare("INSERT INTO sessions(session_id,kind,worker_id,workspace_id,workspace_version,repo_id,path,created_at) VALUES(?,'worker',?,?,?,?,?,?)").run(session_id,body.worker_id,body.workspace_id,workspace.config_version,workspace.repo_id,workspace.path,now());
     return reply.code(201).send(db.prepare("SELECT * FROM sessions WHERE session_id=?").get(session_id));
   });
+  app.patch<{ Params: { session_id: string } }>(
+    "/api/sessions/:session_id",
+    async (req, reply) => {
+      const body = req.body as { title?: unknown } | null;
+      if (typeof body?.title !== "string")
+        return reply.code(400).send({ error: "invalid_session_title" });
+      const title = body.title.trim().replace(/\s+/g, " ");
+      if (!title || Array.from(title).length > 80)
+        return reply.code(400).send({ error: "invalid_session_title" });
+      const exists = db
+        .prepare("SELECT 1 FROM sessions WHERE session_id=?")
+        .get(req.params.session_id);
+      if (!exists) return reply.code(404).send({ error: "session_not_found" });
+      db.prepare("UPDATE sessions SET title=? WHERE session_id=?").run(
+        title,
+        req.params.session_id,
+      );
+      return db
+        .prepare("SELECT * FROM sessions WHERE session_id=?")
+        .get(req.params.session_id);
+    },
+  );
   app.get<{Params:{session_id:string}}>("/api/sessions/:session_id/messages",async(req,reply)=>{
     if(!db.prepare("SELECT 1 FROM sessions WHERE session_id=?").get(req.params.session_id)) return reply.code(404).send({error:"session_not_found"});
     return db.prepare("SELECT * FROM messages WHERE session_id=? ORDER BY seq").all(req.params.session_id);
@@ -189,6 +211,12 @@ export async function createApp(
       if(existing) return existing.request_hash===requestHash?{existing:true,conflict:false,job_id:existing.job_id,state:existing.state}:{existing:true,conflict:true};
       // Checked after the idempotency lookup: a retry of an accepted message returns its job.
       if(!workspaceCurrent(db,session.session_id)) return {existing:false,conflict:false,stale:true};
+      const defaultTitle = Array.from(
+        (body.message as string).trim().replace(/\s+/g, " "),
+      )
+        .slice(0, 80)
+        .join("");
+      db.prepare("UPDATE sessions SET title=? WHERE session_id=? AND title IS NULL").run(defaultTitle,session.session_id);
       const worker=db.prepare("SELECT * FROM workers WHERE worker_id=?").get(session.worker_id) as any;
       const waiting=(worker?.online&&worker?.reconciled&&!worker?.blocked)?"queued":"waiting_worker";
       const jobId=newJobId(),queueSeq=Number((db.prepare("SELECT COALESCE(MAX(queue_seq),0)+1 n FROM jobs").get() as any).n);

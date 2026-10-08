@@ -26,6 +26,7 @@ type Session = {
   repo_id: string;
   path: string;
   created_at: number;
+  title: string | null;
 };
 type Job = {
   job_id: string;
@@ -638,6 +639,8 @@ function App() {
     [sessions, setSessions] = useState<Session[]>([]);
   const [selectedWorker, setSelectedWorker] = useState<string | null>(null),
     [sessionId, setSessionId] = useState<string | null>(null);
+  const [editingSessionId, setEditingSessionId] = useState<string | null>(null),
+    [editingTitle, setEditingTitle] = useState("");
   const [messages, setMessages] = useState<Message[]>([]),
     [jobs, setJobs] = useState<Job[]>([]),
     [selectedJobId, setSelectedJobId] = useState<string | null>(null);
@@ -722,6 +725,7 @@ function App() {
   }
   function selectMain() {
     setError("");
+    setEditingSessionId(null);
     localStorage.removeItem("worker-plane-session");
     setSelectedWorker(null);
     setSessionId(null);
@@ -732,6 +736,7 @@ function App() {
   }
   function selectSession(session: Session) {
     setError("");
+    setEditingSessionId(null);
     setSelectedWorker(session.worker_id);
     setSessionId(session.session_id);
     setMessages([]);
@@ -1003,6 +1008,34 @@ function App() {
       setCreating(false);
     }
   }
+  function beginRenameSession(session: Session) {
+    setEditingSessionId(session.session_id);
+    setEditingTitle(session.title ?? session.workspace_id);
+    setError("");
+  }
+  async function renameSession(event: React.FormEvent, session: Session) {
+    event.preventDefault();
+    const title = editingTitle.trim();
+    if (!title || Array.from(title).length > 80) {
+      setError("会话名称需为 1–80 个字符。");
+      return;
+    }
+    try {
+      const updated = await request<Session>(
+        `/api/sessions/${encodeURIComponent(session.session_id)}`,
+        { method: "PATCH", body: JSON.stringify({ title }) },
+      );
+      setSessions((current) =>
+        current.map((item) =>
+          item.session_id === updated.session_id ? updated : item,
+        ),
+      );
+      setEditingSessionId(null);
+      setError("");
+    } catch (cause) {
+      report(cause);
+    }
+  }
   async function send(event: React.FormEvent) {
     event.preventDefault();
     if (!sessionId || !text.trim() || submitting) return;
@@ -1011,13 +1044,28 @@ function App() {
     setSubmitting(true);
     setError("");
     try {
-      await request(`/api/sessions/${encodeURIComponent(target)}/messages`, {
-        method: "POST",
-        body: JSON.stringify({
-          client_request_id: crypto.randomUUID(),
-          message,
-        }),
-      });
+      const result = await request<{ existing?: boolean }>(
+        `/api/sessions/${encodeURIComponent(target)}/messages`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            client_request_id: crypto.randomUUID(),
+            message,
+          }),
+        },
+      );
+      if (!result.existing && !activeSession?.title) {
+        const title = Array.from(message.trim().replace(/\s+/g, " "))
+          .slice(0, 80)
+          .join("");
+        setSessions((current) =>
+          current.map((item) =>
+            item.session_id === target && !item.title
+              ? { ...item, title }
+              : item,
+          ),
+        );
+      }
       setDrafts((current) => {
         if (current[target] !== message) return current;
         const next = { ...current };
@@ -1222,20 +1270,63 @@ function App() {
           {selectedWorker ? (
             workerSessions.length ? (
               workerSessions.map((session) => (
-                <button
-                  key={session.session_id}
-                  className={`session-nav ${session.session_id === sessionId ? "is-selected" : ""}`}
-                  onClick={() => selectSession(session)}
-                >
-                  <Icon name="chat" />
-                  <span>
-                    <strong>{session.workspace_id}</strong>
-                    <small>
-                      {time(session.created_at, true)} ·{" "}
-                      {session.session_id.slice(0, 6)}
-                    </small>
-                  </span>
-                </button>
+                <div className="session-nav-row" key={session.session_id}>
+                  {editingSessionId === session.session_id ? (
+                    <form
+                      className="session-title-editor"
+                      onSubmit={(event) => void renameSession(event, session)}
+                    >
+                      <label className="sr-only" htmlFor={`session-title-${session.session_id}`}>
+                        会话名称
+                      </label>
+                      <input
+                        id={`session-title-${session.session_id}`}
+                        autoFocus
+                        maxLength={160}
+                        value={editingTitle}
+                        onChange={(event) => setEditingTitle(event.target.value)}
+                      />
+                      <div>
+                        <button type="submit" aria-label="保存会话名称">
+                          <Icon name="check" />
+                        </button>
+                        <button
+                          type="button"
+                          aria-label="取消重命名"
+                          onClick={() => setEditingSessionId(null)}
+                        >
+                          <Icon name="close" />
+                        </button>
+                      </div>
+                    </form>
+                  ) : (
+                    <>
+                      <button
+                        className={`session-nav ${session.session_id === sessionId ? "is-selected" : ""}`}
+                        onClick={() => selectSession(session)}
+                      >
+                        <Icon name="chat" />
+                        <span>
+                          <strong title={session.title ?? session.workspace_id}>
+                            {session.title ?? session.workspace_id}
+                          </strong>
+                          <small>
+                            {time(session.created_at, true)} ·{" "}
+                            {session.session_id.slice(0, 6)}
+                          </small>
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        className="session-rename"
+                        aria-label={`重命名会话 ${session.title ?? session.workspace_id}`}
+                        onClick={() => beginRenameSession(session)}
+                      >
+                        <Icon name="write" />
+                      </button>
+                    </>
+                  )}
+                </div>
               ))
             ) : (
               <div className="sidebar-empty">
@@ -1294,7 +1385,7 @@ function App() {
               {selectedWorker ?? "Main Agent"}
             </span>
             <h1>
-              {activeSession?.workspace_id ??
+              {activeSession?.title ?? activeSession?.workspace_id ??
                 (selectedWorker ? "独立会话" : "Main Agent")}
             </h1>
           </div>
@@ -1504,24 +1595,47 @@ function App() {
                 </div>
               ) : (
                 <div className="conversation-inner">
-                  {grouped.map((group) => (
-                    <section
-                      className={`turn-group ${group.job.job_id === selectedJob?.job_id ? "selected-turn" : ""}`}
-                      id={`job-${group.job.job_id}`}
-                      key={group.job.job_id}
-                    >
-                      <div className="turn-divider">
-                        <span>{time(group.job.created_at, true)}</span>
-                        <Status state={group.job.state} />
-                      </div>
-                      {group.messages.map((message) => (
-                        <ChatMessage
-                          key={message.message_id}
-                          message={message}
-                        />
-                      ))}
-                    </section>
-                  ))}
+                  {grouped.map((group) => {
+                    const toolMessages = group.messages.filter(
+                      (message) => parseMessage(message).role === "tool",
+                    );
+                    const resultMessages = group.messages.filter(
+                      (message) => parseMessage(message).role !== "tool",
+                    );
+                    return (
+                      <section
+                        className={`turn-group ${group.job.job_id === selectedJob?.job_id ? "selected-turn" : ""}`}
+                        id={`job-${group.job.job_id}`}
+                        key={group.job.job_id}
+                      >
+                        <div className="turn-divider">
+                          <span>{time(group.job.created_at, true)}</span>
+                          <Status state={group.job.state} />
+                        </div>
+                        {resultMessages.map((message) => (
+                          <ChatMessage
+                            key={message.message_id}
+                            message={message}
+                          />
+                        ))}
+                        {toolMessages.length > 0 && (
+                          <details className="execution-details">
+                            <summary>
+                              执行详情 · {toolMessages.length} 次工具调用
+                            </summary>
+                            <div>
+                              {toolMessages.map((message) => (
+                                <ChatMessage
+                                  key={message.message_id}
+                                  message={message}
+                                />
+                              ))}
+                            </div>
+                          </details>
+                        )}
+                      </section>
+                    );
+                  })}
                   {orphanMessages.map((message) => (
                     <ChatMessage key={message.message_id} message={message} />
                   ))}

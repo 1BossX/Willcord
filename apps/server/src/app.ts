@@ -5,6 +5,7 @@ import websocket from "@fastify/websocket";
 import rateLimit from "@fastify/rate-limit";
 import argon2 from "argon2";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { ExecutionCoordinator, newJobId } from "./execution.js";
 import type Database from "better-sqlite3";
 import {
   parseFrame,
@@ -23,6 +24,7 @@ export async function createApp(
     now?: () => number;
     logging?: boolean;
     logStream?: FastifyLoggerOptions["stream"];
+    runJob?: (job:unknown)=>Promise<void>;
   } = {},
 ) {
   const now = options.now ?? Date.now;
@@ -54,6 +56,7 @@ export async function createApp(
       tokenDigest: string;
     }
   >();
+  const coordinator = new ExecutionCoordinator(db, connections, now, options.runJob as ((job:any)=>Promise<void>)|undefined);
   let shuttingDown = false;
   const offline = (id: string, epoch: number) => {
     if (shuttingDown) return;
@@ -67,6 +70,7 @@ export async function createApp(
     if (
       req.url.split("?")[0] === "/health" ||
       req.url.split("?")[0] === "/auth/login" ||
+      req.url.split("?")[0] === "/auth/session" ||
       req.url.split("?")[0] === "/ws/worker"
     )
       return;
@@ -92,8 +96,8 @@ export async function createApp(
   });
   app.get("/health", async () => ({
     alive: true,
-    scheduling_ready: false,
-    phase: "P1",
+    scheduling_ready: true,
+    phase: "P2",
   }));
   app.post(
     "/auth/login",
@@ -136,12 +140,63 @@ export async function createApp(
     );
     return reply.clearCookie("session", { path: "/" }).send({ ok: true });
   });
+  app.get("/auth/session", async (req) => {
+    const token=req.cookies.session;
+    const session=token?db.prepare("SELECT csrf,expires_at FROM auth_sessions WHERE digest=? AND expires_at>?").get(digest(token),now()) as {csrf:string;expires_at:number}|undefined:undefined;
+    if(!session) return {authenticated:false};
+    return {authenticated:true,csrf:session.csrf,expires_at:session.expires_at};
+  });
   app.get("/api/workers", async () =>
-    db.prepare("SELECT * FROM workers ORDER BY worker_id").all(),
+    db.prepare("SELECT w.*,s.active_job_id FROM workers w LEFT JOIN worker_slots s USING(worker_id) ORDER BY w.worker_id").all(),
   );
+  app.get("/api/sessions", async () => db.prepare("SELECT * FROM sessions ORDER BY created_at DESC").all());
+  app.post("/api/sessions", async (req, reply) => {
+    const body=req.body as {worker_id?:unknown;workspace_id?:unknown;repo_id?:unknown}|null;
+    if(typeof body?.worker_id!=="string"||typeof body.workspace_id!=="string") return reply.code(400).send({error:"worker_and_workspace_required"});
+    const workspace=db.prepare("SELECT * FROM workspaces WHERE worker_id=? AND workspace_id=?").get(body.worker_id,body.workspace_id) as any;
+    const worker=db.prepare("SELECT 1 FROM workers WHERE worker_id=?").get(body.worker_id);
+    if(!worker||!workspace) return reply.code(404).send({error:"worker_or_workspace_not_found"});
+    if(body.repo_id!==undefined&&(typeof body.repo_id!=="string"||body.repo_id!==workspace.repo_id)) return reply.code(409).send({error:"repo_mismatch"});
+    const session_id=randomBytes(16).toString("hex");
+    db.prepare("INSERT INTO sessions(session_id,kind,worker_id,workspace_id,workspace_version,repo_id,path,created_at) VALUES(?,'worker',?,?,?,?,?,?)").run(session_id,body.worker_id,body.workspace_id,workspace.config_version,workspace.repo_id,workspace.path,now());
+    return reply.code(201).send(db.prepare("SELECT * FROM sessions WHERE session_id=?").get(session_id));
+  });
+  app.get<{Params:{session_id:string}}>("/api/sessions/:session_id/messages",async(req,reply)=>{
+    if(!db.prepare("SELECT 1 FROM sessions WHERE session_id=?").get(req.params.session_id)) return reply.code(404).send({error:"session_not_found"});
+    return db.prepare("SELECT * FROM messages WHERE session_id=? ORDER BY seq").all(req.params.session_id);
+  });
+  app.get<{Params:{session_id:string}}>("/api/sessions/:session_id/jobs",async(req,reply)=>{
+    if(!db.prepare("SELECT 1 FROM sessions WHERE session_id=?").get(req.params.session_id)) return reply.code(404).send({error:"session_not_found"});
+    return db.prepare(`SELECT j.job_id,j.worker_id,j.client_request_id,j.input_text,j.state,j.queue_seq,j.created_at,j.started_at,j.wait_until,
+      CASE WHEN j.state IN ('queued','waiting_worker') THEN (SELECT COUNT(*) FROM jobs q WHERE q.worker_id=j.worker_id AND q.state IN ('queued','waiting_worker') AND q.queue_seq<=j.queue_seq) ELSE NULL END AS queue_position
+      FROM jobs j WHERE j.session_id=? ORDER BY j.queue_seq`).all(req.params.session_id);
+  });
+  app.post<{Params:{session_id:string}}>("/api/sessions/:session_id/messages",async(req,reply)=>{
+    const body=req.body as {client_request_id?:unknown;message?:unknown}|null;
+    if(typeof body?.client_request_id!=="string"||!body.client_request_id||body.client_request_id.length>128||typeof body.message!=="string"||!body.message.trim()||body.message.length>32000) return reply.code(400).send({error:"invalid_message"});
+    const session=db.prepare("SELECT * FROM sessions WHERE session_id=?").get(req.params.session_id) as any;
+    if(!session) return reply.code(404).send({error:"session_not_found"});
+    const requestHash=digest(JSON.stringify({message:body.message}));
+    const waitMs=Number(process.env.WORKER_WAIT_MS??86400000);
+    const outcome=db.transaction(()=>{
+      const existing=db.prepare("SELECT job_id,request_hash,state FROM jobs WHERE session_id=? AND client_request_id=?").get(session.session_id,body.client_request_id) as any;
+      if(existing) return existing.request_hash===requestHash?{existing:true,conflict:false,job_id:existing.job_id,state:existing.state}:{existing:true,conflict:true};
+      const worker=db.prepare("SELECT * FROM workers WHERE worker_id=?").get(session.worker_id) as any;
+      const waiting=(worker?.online&&worker?.reconciled&&!worker?.blocked)?"queued":"waiting_worker";
+      const jobId=newJobId(),queueSeq=Number((db.prepare("SELECT COALESCE(MAX(queue_seq),0)+1 n FROM jobs").get() as any).n);
+      db.prepare("INSERT INTO jobs(job_id,session_id,client_request_id,request_hash,input_text,worker_id,queue_seq,state,created_at,wait_until) VALUES(?,?,?,?,?,?,?,?,?,?)").run(jobId,session.session_id,body.client_request_id,requestHash,body.message,session.worker_id,queueSeq,waiting,now(),now()+waitMs);
+      db.prepare("INSERT INTO messages(message_id,session_id,job_id,seq,content_json) SELECT ?,?,?,COALESCE(MAX(seq),0)+1,? FROM messages WHERE session_id=?").run(randomBytes(16).toString("hex"),session.session_id,jobId,JSON.stringify({role:"user",content:body.message}),session.session_id);
+      db.prepare("INSERT INTO worker_slots(worker_id) VALUES (?) ON CONFLICT(worker_id) DO NOTHING").run(session.worker_id);
+      return {existing:false,conflict:false,job_id:jobId,state:waiting};
+    }).immediate();
+    if(outcome.conflict) return reply.code(409).send({error:"idempotency_conflict"});
+    if(outcome.existing) return outcome;
+    if(outcome.state==="queued") void coordinator.pump(session.worker_id);
+    return reply.code(202).send({job_id:outcome.job_id,state:outcome.state});
+  });
   app.get<{
     Params: { worker_id: string };
-    Querystring: { workspace_id?: string };
+    Querystring: { workspace_id?: string; all?: string };
   }>("/api/workers/:worker_id/workspaces", async (req, reply) => {
     const workspaces = db
       .prepare(
@@ -157,6 +212,7 @@ export async function createApp(
     }>;
     if (workspaces.length === 0)
       return reply.code(404).send({ error: "worker_or_workspace_not_found" });
+    if(req.query.all==="true") return {workspaces};
     if (req.query.workspace_id !== undefined) {
       const workspace = workspaces.find(
         (item) => item.workspace_id === req.query.workspace_id,
@@ -411,6 +467,14 @@ export async function createApp(
                 ack_type: "reconcile",
               } as WorkerFrame),
             );
+          } else if (f.type === "worker_ready") {
+            if (!f.ready) throw new Error("worker_not_ready");
+            db.prepare("UPDATE workers SET reconciled=1,online=1,last_seen=? WHERE worker_id=? AND connection_epoch=?").run(now(),id,epoch);
+            void coordinator.pump(id);
+          } else if (f.type === "tool_result") {
+            coordinator.receive(f);
+          } else if (f.type === "tool_ack") {
+            // Result acknowledgements are idempotent; the worker retains its ledger entry.
           } else throw new Error("unexpected_frame");
         } catch {
           if (epoch) offline(id, epoch);
@@ -437,8 +501,13 @@ export async function createApp(
     }
   }, 1000);
   timer.unref();
+  const expiryTimer=setInterval(()=>{
+    db.prepare("UPDATE jobs SET state='failed' WHERE state='waiting_worker' AND wait_until IS NOT NULL AND wait_until<?").run(now());
+  },60000);
+  expiryTimer.unref();
   app.addHook("onClose", async () => {
     clearInterval(timer);
+    clearInterval(expiryTimer);
     for (const [id, c] of connections) offline(id, c.epoch);
     shuttingDown = true;
     for (const c of connections.values()) c.socket.terminate();

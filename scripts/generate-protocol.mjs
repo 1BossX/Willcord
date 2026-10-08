@@ -30,12 +30,14 @@ const fieldType = (s) =>
           ? "bool"
           : s.type === "array"
             ? "Vec<Workspace>"
+            : s.type === "object"
+              ? "Value"
             : "String";
 const workspace = schema.oneOf[0].properties.workspaces.items;
 let rust =
   "// Generated from schema.json. Do not edit.\npub const MAX_FRAME_BYTES: usize = " +
   schema["x-max-frame-bytes"] +
-  ";\nuse serde::{Serialize, Deserialize};\n";
+  ";\nuse serde::{Serialize, Deserialize};\nuse serde_json::Value;\n";
 for (const [name, props] of [
   ["Workspace", workspace.properties],
   ...schema.oneOf.map((s) => [
@@ -53,8 +55,9 @@ for (const [name, props] of [
   for (const [key, value] of Object.entries(props))
     rust +=
       (key === "type" ? '    #[serde(rename="type")]\n' : "") +
+      (key === "final" ? '    #[serde(rename="final")]\n' : "") +
       "    pub " +
-      (key === "type" ? "kind" : key) +
+      (key === "type" ? "kind" : key === "final" ? "is_final" : key) +
       ": " +
       fieldType(value) +
       ",\n";

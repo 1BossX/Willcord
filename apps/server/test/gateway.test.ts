@@ -98,6 +98,7 @@ test(
           connection_epoch: 1,
           ledger_id: "ledger-a",
           ready: true,
+          calls: [],
         }),
       );
       await message;
@@ -110,6 +111,7 @@ test(
           connection_epoch: 1,
           ledger_id: "ledger-a",
           ready: true,
+          calls: [],
         }),
       );
       assert.equal(
@@ -180,6 +182,7 @@ test(
           connection_epoch: 3,
           ledger_id: "ledger-a",
           ready: true,
+          calls: [],
         }),
       );
       assert.equal((await blocked)[0], 1008);
@@ -354,6 +357,7 @@ test(
           connection_epoch: 1,
           ledger_id: "ledger-a",
           ready: true,
+          calls: [],
         }),
       );
       await message;
@@ -431,6 +435,7 @@ test(
           connection_epoch: 1,
           ledger_id: "ledger-a",
           ready: true,
+          calls: [],
         }),
       );
       await message;

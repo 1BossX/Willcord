@@ -471,10 +471,10 @@ export async function createApp(
             if (!f.ready) throw new Error("worker_not_ready");
             db.prepare("UPDATE workers SET reconciled=1,online=1,last_seen=? WHERE worker_id=? AND connection_epoch=?").run(now(),id,epoch);
             void coordinator.pump(id);
-          } else if (f.type === "tool_result") {
+          } else if (f.type === "tool_result" || f.type === "tool_rejected") {
             coordinator.receive(f);
-          } else if (f.type === "tool_ack") {
-            // Result acknowledgements are idempotent; the worker retains its ledger entry.
+          } else if (f.type === "tool_accepted") {
+            // Acceptance only proves the worker ledger owns the call; the result decides.
           } else throw new Error("unexpected_frame");
         } catch {
           if (epoch) offline(id, epoch);

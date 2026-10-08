@@ -81,7 +81,8 @@
       "worker_id": "worker-a",
       "connection_epoch": 2,
       "ledger_id": "ledger-a",
-      "ready": true
+      "ready": true,
+      "calls": []
     }
   },
   {
@@ -168,26 +169,221 @@
   {
     "name": "worker ready",
     "valid": true,
-    "frame": {"protocol_version":1,"type":"worker_ready","worker_id":"worker-a","connection_epoch":2,"ready":true}
+    "frame": {
+      "protocol_version": 1,
+      "type": "worker_ready",
+      "worker_id": "worker-a",
+      "connection_epoch": 2,
+      "ready": true
+    }
   },
   {
     "name": "read tool call",
     "valid": true,
-    "frame": {"protocol_version":1,"type":"tool_call","worker_id":"worker-a","connection_epoch":2,"job_id":"job-1","call_id":"call-1","call_seq":1,"workspace_id":"repo","config_version":1,"request_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","tool":"read","arguments":{"path":"README.md","offset":0,"limit":100}}
+    "frame": {
+      "protocol_version": 1,
+      "type": "tool_call",
+      "worker_id": "worker-a",
+      "connection_epoch": 2,
+      "job_id": "job-1",
+      "call_id": "call-1",
+      "call_seq": 1,
+      "workspace_id": "repo",
+      "config_version": 1,
+      "request_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "tool": "read",
+      "arguments": {
+        "path": "README.md",
+        "offset": 0,
+        "limit": 100
+      }
+    }
   },
   {
     "name": "tool result",
     "valid": true,
-    "frame": {"protocol_version":1,"type":"tool_result","worker_id":"worker-a","connection_epoch":2,"job_id":"job-1","call_id":"call-1","request_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","ok":true,"result":{"text":"hello","truncated":false}}
+    "frame": {
+      "protocol_version": 1,
+      "type": "tool_result",
+      "worker_id": "worker-a",
+      "connection_epoch": 2,
+      "job_id": "job-1",
+      "call_id": "call-1",
+      "request_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "ok": true,
+      "result": {
+        "text": "hello",
+        "truncated": false
+      }
+    }
   },
   {
     "name": "write data chunk",
     "valid": true,
-    "frame": {"protocol_version":1,"type":"tool_data","worker_id":"worker-a","connection_epoch":2,"job_id":"job-1","call_id":"call-1","request_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","chunk_index":0,"data":"aGVsbG8=","final":true}
+    "frame": {
+      "protocol_version": 1,
+      "type": "tool_data",
+      "worker_id": "worker-a",
+      "connection_epoch": 2,
+      "job_id": "job-1",
+      "call_id": "call-1",
+      "request_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "chunk_index": 0,
+      "data": "aGVsbG8=",
+      "final": true
+    }
   },
   {
     "name": "unknown remote tool",
     "valid": false,
-    "frame": {"protocol_version":1,"type":"tool_call","worker_id":"worker-a","connection_epoch":2,"job_id":"job-1","call_id":"call-1","call_seq":1,"workspace_id":"repo","config_version":1,"request_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","tool":"shell","arguments":{"command":"id"}}
+    "frame": {
+      "protocol_version": 1,
+      "type": "tool_call",
+      "worker_id": "worker-a",
+      "connection_epoch": 2,
+      "job_id": "job-1",
+      "call_id": "call-1",
+      "call_seq": 1,
+      "workspace_id": "repo",
+      "config_version": 1,
+      "request_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "tool": "shell",
+      "arguments": {
+        "command": "id"
+      }
+    }
+  },
+  {
+    "name": "reconcile with unacknowledged ledger calls",
+    "valid": true,
+    "frame": {
+      "protocol_version": 1,
+      "type": "reconcile",
+      "worker_id": "worker-a",
+      "connection_epoch": 2,
+      "ledger_id": "ledger-a",
+      "ready": true,
+      "calls": [
+        {
+          "job_id": "job-1",
+          "call_id": "call-1",
+          "call_seq": 1,
+          "request_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "status": "running",
+          "boot_id": "boot-a"
+        },
+        {
+          "job_id": "job-1",
+          "call_id": "legacy",
+          "call_seq": 0,
+          "request_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "status": "unknown",
+          "boot_id": "boot-a"
+        }
+      ]
+    }
+  },
+  {
+    "name": "reconcile without ledger report",
+    "valid": false,
+    "frame": {
+      "protocol_version": 1,
+      "type": "reconcile",
+      "worker_id": "worker-a",
+      "connection_epoch": 2,
+      "ledger_id": "ledger-a",
+      "ready": true
+    }
+  },
+  {
+    "name": "reconcile reports acknowledged call",
+    "valid": false,
+    "frame": {
+      "protocol_version": 1,
+      "type": "reconcile",
+      "worker_id": "worker-a",
+      "connection_epoch": 2,
+      "ledger_id": "ledger-a",
+      "ready": true,
+      "calls": [
+        {
+          "job_id": "job-1",
+          "call_id": "call-1",
+          "call_seq": 1,
+          "request_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "status": "acked",
+          "boot_id": "boot-a"
+        }
+      ]
+    }
+  },
+  {
+    "name": "tool accepted",
+    "valid": true,
+    "frame": {
+      "protocol_version": 1,
+      "type": "tool_accepted",
+      "worker_id": "worker-a",
+      "connection_epoch": 2,
+      "job_id": "job-1",
+      "call_id": "call-1",
+      "request_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "boot_id": "boot-a"
+    }
+  },
+  {
+    "name": "tool rejected",
+    "valid": true,
+    "frame": {
+      "protocol_version": 1,
+      "type": "tool_rejected",
+      "worker_id": "worker-a",
+      "connection_epoch": 2,
+      "job_id": "job-1",
+      "call_id": "call-1",
+      "request_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "reason": "retired"
+    }
+  },
+  {
+    "name": "tool rejected with unknown reason",
+    "valid": false,
+    "frame": {
+      "protocol_version": 1,
+      "type": "tool_rejected",
+      "worker_id": "worker-a",
+      "connection_epoch": 2,
+      "job_id": "job-1",
+      "call_id": "call-1",
+      "request_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "reason": "maybe"
+    }
+  },
+  {
+    "name": "result acknowledgement with floor",
+    "valid": true,
+    "frame": {
+      "protocol_version": 1,
+      "type": "tool_ack",
+      "worker_id": "worker-a",
+      "connection_epoch": 2,
+      "job_id": "job-1",
+      "call_id": "call-1",
+      "request_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "ack_through": 1
+    }
+  },
+  {
+    "name": "result acknowledgement without floor",
+    "valid": false,
+    "frame": {
+      "protocol_version": 1,
+      "type": "tool_ack",
+      "worker_id": "worker-a",
+      "connection_epoch": 2,
+      "job_id": "job-1",
+      "call_id": "call-1",
+      "request_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
   }
 ]

@@ -166,7 +166,8 @@
         "connection_epoch",
         "type",
         "ledger_id",
-        "ready"
+        "ready",
+        "calls"
       ],
       "properties": {
         "protocol_version": {
@@ -192,6 +193,25 @@
         },
         "ready": {
           "type": "boolean"
+        },
+        "calls": {
+          "description": "Every ledger entry the main node has not acknowledged. call_seq 0 marks a legacy entry whose sequence cannot be proven.",
+          "type": "array",
+          "maxItems": 128,
+          "items": {
+            "title": "CallReport",
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["job_id", "call_id", "call_seq", "request_hash", "status", "boot_id"],
+            "properties": {
+              "job_id": {"type": "string", "minLength": 1, "maxLength": 128},
+              "call_id": {"type": "string", "minLength": 1, "maxLength": 128},
+              "call_seq": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+              "request_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+              "status": {"enum": ["accepted", "running", "completed", "unknown"]},
+              "boot_id": {"type": "string", "minLength": 1, "maxLength": 128}
+            }
+          }
         }
       }
     },
@@ -275,14 +295,41 @@
     },
     {
       "title":"ToolAck","type":"object","additionalProperties":false,
-      "required":["protocol_version","type","worker_id","connection_epoch","job_id","call_id","request_hash"],
+      "required":["protocol_version","type","worker_id","connection_epoch","job_id","call_id","request_hash","ack_through"],
       "properties":{
         "protocol_version":{"const":1},"type":{"const":"tool_ack"},
         "worker_id":{"type":"string","minLength":1,"maxLength":128},
         "connection_epoch":{"type":"integer","minimum":1,"maximum":9007199254740991},
         "job_id":{"type":"string","minLength":1,"maxLength":128},
         "call_id":{"type":"string","minLength":1,"maxLength":128},
-        "request_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"}
+        "request_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+        "ack_through":{"description":"Highest call_seq of this job whose result the main node has committed; the worker refuses older unseen calls.","type":"integer","minimum":1,"maximum":9007199254740991}
+      }
+    },
+    {
+      "title":"ToolAccepted","type":"object","additionalProperties":false,
+      "required":["protocol_version","type","worker_id","connection_epoch","job_id","call_id","request_hash","boot_id"],
+      "properties":{
+        "protocol_version":{"const":1},"type":{"const":"tool_accepted"},
+        "worker_id":{"type":"string","minLength":1,"maxLength":128},
+        "connection_epoch":{"type":"integer","minimum":1,"maximum":9007199254740991},
+        "job_id":{"type":"string","minLength":1,"maxLength":128},
+        "call_id":{"type":"string","minLength":1,"maxLength":128},
+        "request_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+        "boot_id":{"type":"string","minLength":1,"maxLength":128}
+      }
+    },
+    {
+      "title":"ToolRejected","type":"object","additionalProperties":false,
+      "required":["protocol_version","type","worker_id","connection_epoch","job_id","call_id","request_hash","reason"],
+      "properties":{
+        "protocol_version":{"const":1},"type":{"const":"tool_rejected"},
+        "worker_id":{"type":"string","minLength":1,"maxLength":128},
+        "connection_epoch":{"type":"integer","minimum":1,"maximum":9007199254740991},
+        "job_id":{"type":"string","minLength":1,"maxLength":128},
+        "call_id":{"type":"string","minLength":1,"maxLength":128},
+        "request_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+        "reason":{"enum":["conflict","unknown","retired","busy"]}
       }
     },
     {

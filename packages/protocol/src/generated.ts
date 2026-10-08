@@ -28,6 +28,12 @@ export type WorkerFrame =
       type: "reconcile";
       ledger_id: string;
       ready: boolean;
+      /**
+       * Every ledger entry the main node has not acknowledged. call_seq 0 marks a legacy entry whose sequence cannot be proven.
+       *
+       * @maxItems 128
+       */
+      calls: CallReport[];
     }
   | {
       protocol_version: 1;
@@ -40,6 +46,8 @@ export type WorkerFrame =
   | ToolResult
   | ToolData
   | ToolAck
+  | ToolAccepted
+  | ToolRejected
   | WorkerReady;
 
 export interface WorkerFrame1 {
@@ -68,6 +76,14 @@ export interface WorkerFrame1 {
       is_default: boolean;
     }[]
   ];
+}
+export interface CallReport {
+  job_id: string;
+  call_id: string;
+  call_seq: number;
+  request_hash: string;
+  status: "accepted" | "running" | "completed" | "unknown";
+  boot_id: string;
 }
 export interface ToolCall {
   protocol_version: 1;
@@ -118,6 +134,30 @@ export interface ToolAck {
   job_id: string;
   call_id: string;
   request_hash: string;
+  /**
+   * Highest call_seq of this job whose result the main node has committed; the worker refuses older unseen calls.
+   */
+  ack_through: number;
+}
+export interface ToolAccepted {
+  protocol_version: 1;
+  type: "tool_accepted";
+  worker_id: string;
+  connection_epoch: number;
+  job_id: string;
+  call_id: string;
+  request_hash: string;
+  boot_id: string;
+}
+export interface ToolRejected {
+  protocol_version: 1;
+  type: "tool_rejected";
+  worker_id: string;
+  connection_epoch: number;
+  job_id: string;
+  call_id: string;
+  request_hash: string;
+  reason: "conflict" | "unknown" | "retired" | "busy";
 }
 export interface WorkerReady {
   protocol_version: 1;

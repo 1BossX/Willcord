@@ -12,10 +12,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: ubuntu-latest
-            runs-on: '"ubuntu-latest"'
-          - name: macos-latest
-            runs-on: '"macos-latest"'
           - name: self-hosted
             runs-on: '["self-hosted", "macOS"]'
     runs-on: ${{ fromJSON(matrix.runs-on) }}

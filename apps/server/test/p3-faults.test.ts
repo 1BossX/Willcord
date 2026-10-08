@@ -125,6 +125,7 @@ test("P3-C a lost worker ledger blocks the worker; missing records never prove a
     await s.stopWorker();
     rmSync(join(s.dir, "w-data"), { recursive: true, force: true });
 
+    const restartedAt = s.proxy.frames.length;
     s.startWorker();
     await s.until(() => s.one("SELECT blocked FROM workers").blocked === 1);
     const next = await s.submit(session, "next");
@@ -137,6 +138,8 @@ test("P3-C a lost worker ledger blocks the worker; missing records never prove a
     assert.equal(s.state(next), "waiting_worker");
     assert.equal(s.count("lost"), 1, "the call was not re-run on the new ledger");
     assert.equal(s.count("next"), 0);
-    assert.equal(s.proxy.frames.filter((f) => f.type === "tool_call" && f.call_id === "lost-1").length, 1, "the call was never re-sent");
+    // Before the crash the call may legitimately be sent twice on the same ledger
+    // (worker_ready re-delivers waiting calls); after the ledger is lost, never.
+    assert.equal(s.proxy.frames.slice(restartedAt).filter((f) => f.type === "tool_call").length, 0, "nothing is sent to the new ledger");
   } finally { await s.close(); }
 });

@@ -91,6 +91,7 @@ test("P3-C a late result on a replaced connection is not committed and the old c
     const sent = await old.next("tool_call");
     assert.equal(sent.connection_epoch, 1);
 
+    const replacedAt = old.received.length;
     const replacement = await s.connect();
     const closed = once(old.socket, "close");
     await replacement.handshake({ calls: [] });
@@ -100,7 +101,7 @@ test("P3-C a late result on a replaced connection is not committed and the old c
     await settle();
     assert.equal(s.one("SELECT status FROM runtime_calls WHERE call_id='race-1'").status, "dispatched", "a stale-epoch result is never committed");
     assert.equal(s.one("SELECT blocked FROM workers").blocked, 0);
-    assert.equal(old.received.filter((f) => f.type === "tool_call").length, 1, "the old connection never receives another call");
+    assert.equal(old.received.slice(replacedAt).filter((f) => f.type === "tool_call").length, 0, "the old connection receives no call after replacement");
 
     // The waiting call is re-sent on the new epoch only after it reconciled.
     const resent = await replacement.next("tool_call");
@@ -126,6 +127,7 @@ test("P3-C wait deadlines never release a slot whose call is unknown", { timeout
     const sent = await w.next("tool_call");
     // No result within the tool deadline: execution is unknown, not failed.
     await waitFor(() => s.state(slow) === "needs_attention");
+    const unknownAt = w.received.length;
     assert.equal(s.one("SELECT status FROM runtime_calls WHERE call_id='slow-1'").status, "unknown");
     assert.equal(s.one("SELECT blocked FROM workers").blocked, 1);
     assert.match(s.one("SELECT evidence FROM attention_actions WHERE job_id=?", slow).evidence, /tool_result_timeout/);
@@ -144,7 +146,7 @@ test("P3-C wait deadlines never release a slot whose call is unknown", { timeout
     assert.equal(s.state(slow), "needs_attention");
     assert.equal(s.one("SELECT active_job_id FROM worker_slots").active_job_id, slow);
     assert.ok(s.one("SELECT 1 FROM attention_actions WHERE evidence LIKE '%result_for_unknown_call%'"));
-    assert.equal(w.received.filter((f) => f.type === "tool_call").length, 1);
+    assert.equal(w.received.slice(unknownAt).filter((f) => f.type === "tool_call").length, 0, "an unknown call is never re-sent");
   } finally {
     if (previousWait === undefined) delete process.env.WORKER_WAIT_MS; else process.env.WORKER_WAIT_MS = previousWait;
     await s.close();

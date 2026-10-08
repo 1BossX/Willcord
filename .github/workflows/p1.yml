@@ -7,10 +7,18 @@ permissions:
   contents: read
 jobs:
   verify:
+    name: verify (${{ matrix.name }})
     strategy:
+      fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+        include:
+          - name: ubuntu-latest
+            runs-on: '"ubuntu-latest"'
+          - name: macos-latest
+            runs-on: '"macos-latest"'
+          - name: self-hosted
+            runs-on: '["self-hosted", "macOS"]'
+    runs-on: ${{ fromJSON(matrix.runs-on) }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -24,6 +32,9 @@ jobs:
       - run: cargo test --locked --manifest-path worker/Cargo.toml
       - run: cargo test --locked --manifest-path worker/Cargo.toml --features fault-injection
       - run: cargo build --locked --manifest-path worker/Cargo.toml
+      # The P3-C fault tests use this binary; building it here keeps the
+      # cold compile from competing with the timed end-to-end tests.
+      - run: cargo build --locked --manifest-path worker/Cargo.toml --features fault-injection --target-dir worker/target/fault
       - run: pnpm check
       - run: pnpm test
       - run: pnpm build

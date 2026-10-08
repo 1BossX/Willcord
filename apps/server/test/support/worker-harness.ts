@@ -48,14 +48,14 @@ export async function startTlsEndpoint(certs: ReturnType<typeof createCertificat
 
 export type WorkerProcess = { child: ChildProcess; stderr: () => string; exited: Promise<unknown> };
 
-export function startWorker(options: { dir: string; id: string; url: string; ca: string; token: string; workspace: string; binary?: string; env?: Record<string, string>; retentionSecs?: number }): WorkerProcess {
+export function startWorker(options: { dir: string; id: string; url: string; ca: string; token: string; workspace: string; binary?: string; env?: Record<string, string>; retentionSecs?: number; configVersion?: number }): WorkerProcess {
   const config = join(options.dir, `${options.id}.toml`);
   mkdirSync(options.workspace, { recursive: true });
   writeFileSync(
     config,
     `worker_id = "${options.id}"\ndata_dir = "${options.dir}/${options.id}-data"\nurl = "${options.url}"\n` +
       (options.retentionSecs === undefined ? "" : `result_retention_secs = ${options.retentionSecs}\n`) +
-      `[[workspaces]]\nworkspace_id = "repo"\nconfig_version = 1\npath = "${options.workspace}"\nrepo_id = "github.com/1BossX/WorkerPlane"\nis_default = true\n`,
+      `[[workspaces]]\nworkspace_id = "repo"\nconfig_version = ${options.configVersion ?? 1}\npath = "${options.workspace}"\nrepo_id = "github.com/1BossX/WorkerPlane"\nis_default = true\n`,
   );
   const child = spawn(options.binary ?? join(repoRoot, "worker/target/debug/worker-plane-worker"), [config], {
     env: { ...process.env, WORKER_TOKEN: options.token, SSL_CERT_FILE: options.ca, ...options.env },
@@ -66,19 +66,47 @@ export function startWorker(options: { dir: string; id: string; url: string; ca:
   return { child, stderr: () => stderr, exited: once(child, "exit") };
 }
 
+/**
+ * The worker built with test-only SIGKILL points (WP_FAULT). It lives in its own
+ * target directory so the default debug binary used by other tests is untouched.
+ */
+export function buildFaultWorker() {
+  const targetDir = join(repoRoot, "worker/target/fault");
+  execFileSync("cargo", ["build", "--locked", "--quiet", "--manifest-path", join(repoRoot, "worker/Cargo.toml"), "--features", "fault-injection", "--target-dir", targetDir], { stdio: "inherit" });
+  return join(targetDir, "debug/worker-plane-worker");
+}
+
+/** Stop a worker; a signal it ignores fails the test instead of hanging it. */
 export async function stopWorker(worker: WorkerProcess, signal: NodeJS.Signals = "SIGKILL") {
   if (worker.child.exitCode === null && worker.child.signalCode === null) {
     worker.child.kill(signal);
-    await worker.exited;
+    const exited = await Promise.race([worker.exited.then(() => true), new Promise<boolean>((r) => setTimeout(() => r(false), 10000))]);
+    if (!exited) {
+      worker.child.kill("SIGKILL");
+      await worker.exited;
+      throw new Error(`worker ignored ${signal}: ${worker.stderr()}`);
+    }
   }
 }
+
+export type Direction = "to_main" | "to_worker";
+export type RelayedFrame = { direction: Direction; type: string; call_id?: string; dropped: boolean };
 
 /**
  * TLS termination in front of the main node, standing in for Caddy. The target
  * port is read per connection so a restarted main node is reached at its new
  * port; dropAll() simulates a network loss without restarting either side.
+ * `drop` loses individual frames on an otherwise healthy connection; every
+ * relayed frame is recorded in `frames` as evidence.
  */
-export async function startTlsProxy(certs: ReturnType<typeof createCertificates>, target: () => number) {
+export async function startTlsProxy(certs: ReturnType<typeof createCertificates>, target: () => number, options: { drop?: (direction: Direction, frame: any) => boolean } = {}) {
+  const frames: RelayedFrame[] = [];
+  const relay = (direction: Direction, to: WebSocket, data: string) => {
+    const frame = JSON.parse(data);
+    const dropped = options.drop?.(direction, frame) ?? false;
+    if (frame.type !== "heartbeat") frames.push({ direction, type: frame.type, call_id: frame.call_id, dropped });
+    if (!dropped) to.send(data);
+  };
   const server: Server = createServer({ key: readFileSync(certs.key), cert: readFileSync(certs.cert) });
   const gateway = new WebSocketServer({ noServer: true, maxPayload: 65536 });
   const pairs = new Set<{ client: WebSocket; upstream: WebSocket }>();
@@ -90,8 +118,8 @@ export async function startTlsProxy(certs: ReturnType<typeof createCertificates>
       gateway.handleUpgrade(req, socket, head, (client) => {
         const pair = { client, upstream };
         pairs.add(pair);
-        client.on("message", (data) => upstream.send(data.toString()));
-        upstream.on("message", (data) => client.send(data.toString()));
+        client.on("message", (data) => relay("to_main", upstream, data.toString()));
+        upstream.on("message", (data) => relay("to_worker", client, data.toString()));
         client.on("close", () => { pairs.delete(pair); upstream.close(); });
         upstream.on("close", (code, reason) => { pairs.delete(pair); if (code === 1005 || code === 1006) client.terminate(); else client.close(code, reason); });
         client.on("error", () => upstream.terminate());
@@ -103,6 +131,7 @@ export async function startTlsProxy(certs: ReturnType<typeof createCertificates>
   const port = (server.address() as { port: number }).port;
   return {
     url: `wss://localhost:${port}/ws/worker`,
+    frames,
     dropAll: () => { for (const { client, upstream } of pairs) { client.terminate(); upstream.terminate(); } },
     close: async () => {
       for (const { client, upstream } of pairs) { client.terminate(); upstream.terminate(); }

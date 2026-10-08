@@ -4,6 +4,7 @@ import { isDeepStrictEqual } from "node:util";
 import type Database from "better-sqlite3";
 import type { WorkerFrame } from "@worker-plane/protocol";
 import { requestHash } from "@worker-plane/protocol";
+import { mainFault } from "./fault.js";
 
 type Socket = { readyState: number; send(data: string): void };
 type Connection = { epoch: number; socket: Socket; tokenDigest: string };
@@ -35,7 +36,7 @@ export class ExecutionCoordinator {
     readonly connections: Map<string, Connection>,
     readonly now = Date.now,
     readonly runJob?: (job: any) => Promise<void>,
-    readonly options: { dataDir?: string; fakeScript?: (job: any) => ScriptStep[] } = {},
+    readonly options: { dataDir?: string; fakeScript?: (job: any) => ScriptStep[]; toolResultTimeoutMs?: number } = {},
   ) {}
 
   close() {
@@ -124,7 +125,7 @@ export class ExecutionCoordinator {
     })();
     let settle!: Pick<Pending, "resolve" | "reject">;
     const promise = new Promise<ToolRecord>((resolve, reject) => (settle = { resolve, reject }));
-    const timer = setTimeout(() => { const current = this.call(jobId, callId); if (current) this.markUnknown(current, "tool_result_timeout", { call_id: callId }); }, TOOL_RESULT_TIMEOUT_MS);
+    const timer = setTimeout(() => { const current = this.call(jobId, callId); if (current) this.markUnknown(current, "tool_result_timeout", { call_id: callId }); }, this.options.toolResultTimeoutMs ?? TOOL_RESULT_TIMEOUT_MS);
     timer.unref();
     const p: Pending = { workerId: row.worker_id, jobId, callId, promise, timer, ...settle };
     this.pending.set(key(jobId, callId), p);
@@ -163,6 +164,7 @@ export class ExecutionCoordinator {
       this.db.prepare("UPDATE tool_calls SET state='finished',result_json=? WHERE call_id=?").run(JSON.stringify(record), row.call_id);
       this.db.prepare("INSERT INTO messages(message_id,session_id,job_id,seq,content_json) SELECT ?,j.session_id,j.job_id,(SELECT COALESCE(MAX(seq),0)+1 FROM messages WHERE session_id=j.session_id),? FROM jobs j WHERE j.job_id=?").run(randomUUID(), JSON.stringify({ role: "tool", call_id: row.call_id, tool: row.tool_name, arguments: JSON.parse(row.arguments_json), content: record.result, ok: record.ok }), row.job_id);
     })();
+    mainFault("after_result_commit");
     this.ack(row);
     const p = this.pending.get(key(row.job_id, row.call_id));
     if (p) { clearTimeout(p.timer); this.pending.delete(key(row.job_id, row.call_id)); p.resolve(record); }
@@ -220,9 +222,10 @@ export class ExecutionCoordinator {
           if (!this.release(workerId, slot)) return;
           continue;
         }
-        const job = this.db.prepare("SELECT job_id,wait_until FROM jobs WHERE worker_id=? AND state IN ('queued','waiting_worker') ORDER BY queue_seq LIMIT 1").get(workerId) as any;
+        const job = this.db.prepare("SELECT job_id,session_id,wait_until FROM jobs WHERE worker_id=? AND state IN ('queued','waiting_worker') ORDER BY queue_seq LIMIT 1").get(workerId) as any;
         if (!job) return;
         if (job.wait_until && job.wait_until < this.now()) { this.db.prepare("UPDATE jobs SET state='failed' WHERE job_id=?").run(job.job_id); continue; }
+        if (!workspaceCurrent(this.db, job.session_id)) { this.failStaleWorkspace(job.job_id, job.session_id); continue; }
         const claimed = this.db.transaction(() => {
           if (this.db.prepare("UPDATE worker_slots SET active_job_id=? WHERE worker_id=? AND active_job_id IS NULL").run(job.job_id, workerId).changes !== 1) return false;
           this.db.prepare("UPDATE jobs SET state='running',started_at=? WHERE job_id=?").run(this.now(), job.job_id);
@@ -231,6 +234,14 @@ export class ExecutionCoordinator {
         if (claimed) await this.execute(job.job_id);
       }
     } finally { this.inFlight.delete(workerId); }
+  }
+
+  /** Queued work never moves to a workspace its session did not bind. */
+  private failStaleWorkspace(jobId: string, sessionId: string) {
+    this.db.transaction(() => {
+      this.db.prepare("UPDATE jobs SET state='failed' WHERE job_id=? AND state IN ('queued','waiting_worker')").run(jobId);
+      this.db.prepare("INSERT INTO events(created_at,content_json) VALUES(?,?)").run(this.now(), JSON.stringify({ type: "job_failed", job_id: jobId, session_id: sessionId, reason: "workspace_version_changed" }));
+    })();
   }
 
   /** Release only when no call of the job can still be executing. */
@@ -348,10 +359,12 @@ export class ExecutionCoordinator {
 
   private commitTurn(job: any, turnKey: string, assistantMessage: any, calls: any[]) {
     const fingerprint = hash({ assistantMessage, calls });
-    return this.db.transaction(() => {
+    let inserted = false;
+    const committed = this.db.transaction(() => {
       if (!this.current(job)) return false;
       const old = this.db.prepare("SELECT content_hash FROM runtime_turns WHERE job_id=? AND turn_key=?").get(job.job_id, turnKey) as any;
       if (old) { if (old.content_hash !== fingerprint) throw new Error("turn_checkpoint_conflict"); return true; }
+      inserted = true;
       this.db.prepare("INSERT INTO runtime_turns VALUES(?,?,?,?,?)").run(job.job_id, turnKey, JSON.stringify(assistantMessage), fingerprint, this.now());
       const add = this.db.prepare("INSERT INTO runtime_calls(job_id,turn_key,call_id,call_seq,request_hash,tool_name,arguments_json,status) VALUES(?,?,?,?,?,?,?,'committed')");
       let seq = (this.db.prepare("SELECT COALESCE(MAX(call_seq),0) n FROM runtime_calls WHERE job_id=?").get(job.job_id) as any).n;
@@ -363,6 +376,8 @@ export class ExecutionCoordinator {
       this.db.prepare("INSERT INTO runtime_history(job_id,entry_key,turn_key,message_json) VALUES(?,?,?,NULL)").run(job.job_id, `turn:${turnKey}`, turnKey);
       return true;
     })();
+    if (inserted) mainFault("before_dispatch");
+    return committed;
   }
 
   /** The final answer and the job outcome commit together, so recovery never asks the model again. */
@@ -394,3 +409,8 @@ function p2Script(job: any): ScriptStep[] {
 }
 
 export function newJobId() { return randomUUID(); }
+
+/** A session stays usable only while its worker still registers the exact workspace it bound. */
+export function workspaceCurrent(db: Database.Database, sessionId: string) {
+  return Boolean(db.prepare("SELECT 1 FROM sessions s JOIN workspaces w ON w.worker_id=s.worker_id AND w.workspace_id=s.workspace_id AND w.config_version=s.workspace_version AND w.path=s.path AND w.repo_id=s.repo_id WHERE s.session_id=?").get(sessionId));
+}

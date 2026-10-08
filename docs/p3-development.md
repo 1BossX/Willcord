@@ -5,8 +5,8 @@
 | 步骤 | 内容 | 状态 |
 |---|---|---|
 | P3-A | 协议账本帧、Rust worker 账本（下界/tombstone）、执行与连接分离、断线重连 | 已完成（PR #9） |
-| P3-B | 主节点按账本对账、在途调用跨断线保留、主节点重启从 SQLite checkpoint 恢复 | 本文记录 |
-| P3-C | 可控故障程序（四个 SIGKILL 窗口、帧丢失、主节点三个重启点）与全量验收记录 | 未开始 |
+| P3-B | 主节点按账本对账、在途调用跨断线保留、主节点重启从 SQLite checkpoint 恢复 | 已完成（PR #10） |
+| P3-C | 可控故障程序（四个 SIGKILL 窗口、帧丢失、主节点三个重启点）与全量验收记录 | 本文记录 |
 
 P3 阶段整体验收以 P3-C 的故障程序记录为准；P3-A/P3-B 的测试证明各自机制，不替代四个崩溃窗口的逐项验收。
 
@@ -154,3 +154,87 @@ Migration `004_p3_recovery.sql` 给 `runtime_calls` 增加 `completed_at`，用�
 - 执行异常退出时有未决调用则保留执行槽。
 
 主节点在精确提交点被 SIGKILL 的情况由 P3-C 的独立进程故障程序验证。
+
+## P3-C 故障程序与验收
+
+### 故障程序
+
+所有场景都用真实进程和真实副作用判定：bash 命令向 workspace 的 `marker.log` 追加唯一标记，按行数计副作用次数；同时核对主节点 SQLite（`runtime_calls`、`jobs`、`workers`、`worker_slots`、`attention_actions`）、进程退出信号和代理记录的帧。
+
+| 文件 | 内容 |
+|---|---|
+| `apps/server/test/p3-faults.test.ts` | 进程内主节点 + TLS 代理 + 真实 Rust worker：四个 worker SIGKILL 窗口、四种帧丢失、ledger 丢失 |
+| `apps/server/test/p3-main-process.test.ts` | 主节点作为独立进程（`src/main.ts`）：三个提交点 SIGKILL 后重启、第二实例被拒绝 |
+| `apps/server/test/p3-races.test.ts` | 脚本化 worker 直连进程内主节点，精确控制帧顺序：新旧连接竞争、等待期限、workspace 版本变化 |
+| `apps/server/test/support/main-node.ts` | 每个场景独立目录的进程内主节点 |
+| `apps/server/test/support/main-process.ts` | 启动、等待健康、拒绝启动的主节点子进程，管理员客户端 |
+| `apps/server/test/support/worker-harness.ts` | 新增 `buildFaultWorker()`（`--features fault-injection`，输出到 `worker/target/fault`，不覆盖默认 debug 二进制）；`startTlsProxy` 新增 `drop` 规则和 `frames` 记录 |
+
+主节点故障点：`apps/server/src/fault.ts` 的 `mainFault()` 在 `WP_MAIN_FAULT` 指定的位置向自身发 SIGKILL，只在脚本化模型模式（`P2_FAKE_MODEL=1` 或设置了 `P3_FAKE_SCRIPT_FILE`）下生效，真实部署不会触发。
+
+| 故障点 | 位置 | 崩溃时的数据库状态 |
+|---|---|---|
+| `before_dispatch` | 工具轮次与调用意图提交之后（`commitTurn`） | call `committed`，未发送 |
+| `after_dispatch` | 收到 worker 的 `tool_accepted` 时 | call `dispatched`，worker 已在执行 |
+| `after_result_commit` | 结果、工具消息提交之后，发送 `tool_ack` 之前 | call `completed`，worker 未收到 ACK |
+
+为独立进程运行新增的入口配置：`PORT`（默认 3000）、`P3_FAKE_SCRIPT_FILE`（按用户消息给出脚本化模型轮次的 JSON）。`createApp` 新增 `toolResultTimeoutMs`（默认 1800 s）和 `waitSweepMs`（默认 60 s），只为在测试里缩短等待期限。
+
+### workspace 配置版本变化
+
+会话创建时绑定 workspace 的 `config_version` 和路径。P3-C 补齐了版本变化后的处理：
+
+- 有 job 占用执行槽时，worker 以不同的 workspace 映射注册会被拒绝（P2 已有），在途 job 不改绑。
+- worker 以新映射注册后，绑定旧版本的会话里排队的 job 在调度时直接 failed，并在 `events` 记录 `workspace_version_changed`，不会派发到新目录。
+- 旧版本会话再提交消息返回 409 `workspace_version_changed`，需要新建会话。
+
+### 观察到的行为
+
+- **重复帧**：结果或 ACK 随连接丢失后，重连时 worker 在 `worker_ready` 之后主动重发未确认的结果，主节点同时重发等待中的调用，worker 再返回一次缓存结果。主节点因此可能收到两次相同结果、发出两次 ACK。重复结果只重新 ACK，副作用和工具消息都只有一次，终态不倒退。
+- **主节点 SIGKILL 后的锁**：`main.lock` 不会自动过期，重启会以 `EEXIST` 失败，需要运维确认旧进程已退出后删除该目录。测试按此操作。
+- **worker 丢失 SIGINT（已修复）**：CI 中 `p3-recovery` 在 ubuntu 上偶发卡满 120 s，P3-B 分支上已出现过。原因是 worker 每轮会话循环新建 `ctrl_c()` 监听，信号在处理帧、分块传输或握手期间到达时没有监听者，直接丢失，worker 不退出。现在进程启动时注册一次 SIGINT 监听并保存信号，会话在任何等待点都会被取消。`worker-ledger.test.ts` 用停在分块传输中的 worker 复现：修复前 SIGINT 后不退出，修复后立即以 0 退出。测试工具的 `stopWorker` 增加 10 s 上限，信号被忽略时报错而不是挂住。
+- **ledger 丢失**：worker 用新 ledger_id 注册时被置为 blocked，对账以 `reconcile_blocked` 被拒，worker 按退避持续重连但始终不能对账。主节点保留原 ledger_id，在途调用不重发也不判定为未执行，执行槽保留。人工处置属于 P4。
+
+### 总验收
+
+验收环境：macOS arm64，Node 22.22.3，Rust 1.93.1，本机临时 CA，worker 与主节点均在本机。未在 venus-local 远端复验。命令：`cargo build --locked --manifest-path worker/Cargo.toml` 后执行 `PATH=/opt/homebrew/bin:$PATH pnpm test`（server 39 项、protocol 3 项全部通过）；`cargo test --locked`（含 `--features fault-injection`）12 项通过。job ID 为下面这次运行的记录，测试每次运行通过 `t.diagnostic` 输出新的 job ID。
+
+**故障程序：worker 四个崩溃窗口**（`p3-faults.test.ts`，call `crash-1` / `done-1`）
+
+| 窗口 | 预期 | 实际 | job |
+|---|---|---|---|
+| `after_accepted` | unknown、needs_attention、worker blocked，无标记 | 进程以 SIGKILL 退出；重启后 call unknown，job needs_attention，blocked=1，执行槽保留，marker 0 行；后续 job 保持 waiting_worker、无调用 | `fb1e2768-ea42-4f1f-8ad4-d726b4479e5f` |
+| `after_running` | 同上 | 同上，marker 0 行 | `66de44d1-d76e-487f-aa75-9bc88ae81895` |
+| `after_effect` | 同上，marker 不出现第二行 | 同上，marker 1 行 | `e7b33bf6-0169-4143-bb5f-61151271b176` |
+| `after_result_persisted` | 返回原结果，job succeeded，marker 1 行 | 崩溃时 call 仍为 dispatched；重启后缓存结果提交，job succeeded，未阻塞，工具消息 1 条，后续 job 正常执行 | `4dcd4168-4a07-4654-9819-90e4386fc6ef` |
+
+**P3 验收表**
+
+| 故障或竞争 | 必须观察到的结果 | 实际 | 证据 |
+|---|---|---|---|
+| tool_call 丢失 | 重连查询账本，已经接受的调用不重启 | 代理丢弃 `tool_call` 并断线；重连后按原 call_id 重发一次，marker 1 行 | `p3-faults` job `5bfef38e-4709-437b-a188-b230dd681ca3`，call `lose-1` |
+| accepted ACK 丢失 | 同上 | 丢弃 `tool_accepted` 并断线；重连后 worker 返回缓存结果，不重新执行，marker 1 行 | `p3-faults` job `50996f9e-64fb-431f-8c2d-0327db4dc48f`；`worker-ledger.test.ts` |
+| 命令完成、tool_result 丢失 | 缓存结果重传，副作用只发生一次 | 丢弃 `tool_result` 并断线；重连后结果重传并提交，marker 1 行，工具消息 1 条 | `p3-faults` job `124c0617-b1c9-45b3-a345-6d1575a9027c` |
+| 主节点结果提交、result_ack 丢失 | 工具消息不重复，ACK 可以重发 | 丢弃 `tool_ack` 并断线；对账后重发 ACK，工具消息 1 条；主节点在 `after_result_commit` 被 SIGKILL 的情况同样在重启后重发 ACK | `p3-faults` job `6c2430b4-5002-4dd2-8133-055cd8e98fd1`；`p3-main-process` job `992edec1-afb0-4531-ad34-0fb9624b5817` |
+| 相同 call_id 不同参数 | 返回冲突，无额外执行 | `tool_rejected` reason `conflict`，marker 不增加 | `worker-ledger.test.ts`（P3-A） |
+| 清理详细结果后收到旧调用 | 下界/tombstone 拒绝执行 | `tool_rejected` reason `retired` | `worker-ledger.test.ts`（P3-A） |
+| worker 未重启、网络断开 | 命令继续，主节点保留槽且不派发下一工具 | 断线期间命令完成，新连接上提交，marker 1 行 | `p3-recovery.test.ts`（P3-B） |
+| accepted/running 与进程启动窗口崩溃 | 无法证明执行情况时 needs_attention，不重跑 | 见四个崩溃窗口 | `p3-faults` |
+| worker 完成结果落库后重启 | 返回原结果，不要求再次执行 | 见 `after_result_persisted` | `p3-faults` |
+| ledger 丢失或 ledger_id 改变 | worker 阻塞，不以记录不存在证明未执行 | 删除 worker 数据目录后重启：blocked=1，对账不通过，在途 call 未完成也未重发，marker 1 行，执行槽保留，后续 job waiting_worker | `p3-faults` call `lost-1` |
+| 主节点派发前、后、结果落库后重启 | 从原请求/checkpoint 恢复，不重复生成或执行 | 独立进程在三个提交点被 SIGKILL，删除锁后重启：job succeeded，`runtime_turns` 1 条，工具消息 1 条，最终回答 1 条，marker 1 行，执行槽释放 | `p3-main-process` job `6cea0369-bc19-4ba6-b1d3-b344d21d3dc5`（before_dispatch）、`8004ffee-3adc-45a9-8ccd-e8797fb3ca3d`（after_dispatch）、`992edec1-afb0-4531-ad34-0fb9624b5817`（after_result_commit） |
+| 新旧连接竞争 | 旧连接不接收新调用；已接受调用仍需对账 | 新连接注册后，旧连接晚到的结果未提交（call 仍 dispatched）、旧连接以 1008 关闭且没有收到新调用；新连接对账后按原 request_hash 重发，提交的是新连接的结果 | `p3-races` job `fc7a06ca-14ea-439b-9bee-1185e4a63655`，call `race-1` |
+| workspace 配置版本变化 | 在途 job 不改绑；后续任务不静默切换目录 | 在途调用期间版本 3 注册被拒，job 以版本 2 完成；绑定版本 1 的排队 job failed 且无调用，旧会话新消息 409 | `p3-races` 版本 1 job `903bd7a3-7a7a-47a3-8abf-502c2ea8c58e`，版本 2 job `c4c20853-5254-4837-a1a1-e4856979c735` |
+
+**补充验收**
+
+| 项 | 实际 | 证据 |
+|---|---|---|
+| 重复帧不使终态倒退 | 帧丢失场景中重复的结果和 ACK 只重新 ACK；`execution.test.ts` 覆盖相同结果只 ACK、矛盾结果阻塞 | `p3-faults`、`execution.test.ts` |
+| 过期推理不提交结果 | 代次落后的工具轮次和最终回答都不提交，job 状态不变 | `execution.test.ts` “superseded run” |
+| 对账未完成不可派发 | 未对账的连接不收调用；新旧连接竞争中重发只发生在新连接对账之后 | `execution.test.ts`、`p3-races` |
+| 等待期限不释放状态不明的执行槽 | 工具结果超时后 call unknown、job needs_attention、blocked；排队 job 等待期满 failed 且无调用；执行槽一直由 unknown job 占用；晚到结果记为 `result_for_unknown_call`，不倒退 | `p3-races` job `67f21764-8787-4525-aba9-96e121cfc8bc`，过期 job `5869d322-7905-48e8-9945-2739503b3b3f` |
+| 主节点第二实例启动被拒绝 | 第二个进程以 `EEXIST` 非零退出，第一个继续提供服务，锁仍指向第一个进程；正常退出后锁释放，可再次启动 | `p3-main-process` |
+
+未接受或明确拒绝的调用没有产生标记（`after_accepted`、`after_running` 为 0 行，阻塞后的后续 job 为 0 行），已执行的调用没有因恢复产生第二个标记。
+

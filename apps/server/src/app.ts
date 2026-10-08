@@ -5,7 +5,8 @@ import websocket from "@fastify/websocket";
 import rateLimit from "@fastify/rate-limit";
 import argon2 from "argon2";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { ExecutionCoordinator, newJobId, type ScriptStep } from "./execution.js";
+import { ExecutionCoordinator, newJobId, workspaceCurrent, type ScriptStep } from "./execution.js";
+import { mainFault } from "./fault.js";
 import type Database from "better-sqlite3";
 import {
   parseFrame,
@@ -27,6 +28,8 @@ export async function createApp(
     runJob?: (job:unknown)=>Promise<void>;
     dataDir?: string;
     fakeScript?: (job: any) => ScriptStep[];
+    toolResultTimeoutMs?: number;
+    waitSweepMs?: number;
   } = {},
 ) {
   const now = options.now ?? Date.now;
@@ -58,7 +61,7 @@ export async function createApp(
       tokenDigest: string;
     }
   >();
-  const coordinator = new ExecutionCoordinator(db, connections, now, options.runJob as ((job:any)=>Promise<void>)|undefined, { dataDir: options.dataDir, fakeScript: options.fakeScript });
+  const coordinator = new ExecutionCoordinator(db, connections, now, options.runJob as ((job:any)=>Promise<void>)|undefined, { dataDir: options.dataDir, fakeScript: options.fakeScript, toolResultTimeoutMs: options.toolResultTimeoutMs });
   let shuttingDown = false;
   const offline = (id: string, epoch: number) => {
     if (shuttingDown) return;
@@ -183,6 +186,8 @@ export async function createApp(
     const outcome=db.transaction(()=>{
       const existing=db.prepare("SELECT job_id,request_hash,state FROM jobs WHERE session_id=? AND client_request_id=?").get(session.session_id,body.client_request_id) as any;
       if(existing) return existing.request_hash===requestHash?{existing:true,conflict:false,job_id:existing.job_id,state:existing.state}:{existing:true,conflict:true};
+      // Checked after the idempotency lookup: a retry of an accepted message returns its job.
+      if(!workspaceCurrent(db,session.session_id)) return {existing:false,conflict:false,stale:true};
       const worker=db.prepare("SELECT * FROM workers WHERE worker_id=?").get(session.worker_id) as any;
       const waiting=(worker?.online&&worker?.reconciled&&!worker?.blocked)?"queued":"waiting_worker";
       const jobId=newJobId(),queueSeq=Number((db.prepare("SELECT COALESCE(MAX(queue_seq),0)+1 n FROM jobs").get() as any).n);
@@ -192,6 +197,7 @@ export async function createApp(
       return {existing:false,conflict:false,job_id:jobId,state:waiting};
     }).immediate();
     if(outcome.conflict) return reply.code(409).send({error:"idempotency_conflict"});
+    if("stale" in outcome) return reply.code(409).send({error:"workspace_version_changed"});
     if(outcome.existing) return outcome;
     if(outcome.state==="queued") void coordinator.pump(session.worker_id);
     return reply.code(202).send({job_id:outcome.job_id,state:outcome.state});
@@ -469,6 +475,7 @@ export async function createApp(
             coordinator.receive(f);
           } else if (f.type === "tool_accepted") {
             // Acceptance only proves the worker ledger owns the call; the result decides.
+            mainFault("after_dispatch");
           } else throw new Error("unexpected_frame");
         } catch {
           if (epoch) offline(id, epoch);
@@ -497,7 +504,7 @@ export async function createApp(
   timer.unref();
   const expiryTimer=setInterval(()=>{
     db.prepare("UPDATE jobs SET state='failed' WHERE state='waiting_worker' AND wait_until IS NOT NULL AND wait_until<?").run(now());
-  },60000);
+  },options.waitSweepMs??60000);
   expiryTimer.unref();
   app.addHook("onClose", async () => {
     coordinator.close();

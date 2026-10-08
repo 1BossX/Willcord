@@ -16,7 +16,10 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-use tokio::{net::TcpStream, sync::mpsc};
+use tokio::{
+    net::TcpStream,
+    sync::{Notify, mpsc},
+};
 use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream, connect_async_with_config,
     tungstenite::{
@@ -68,6 +71,9 @@ struct Worker {
     workspaces: Arc<Vec<Workspace>>,
     ledger: Arc<Mutex<Ledger>>,
     completed: mpsc::UnboundedSender<String>,
+    /// SIGINT, stored until observed. A `ctrl_c()` future made per loop
+    /// iteration misses signals that arrive while a frame is being handled.
+    shutdown: Arc<Notify>,
 }
 
 fn parse_frame(text: &str) -> Result<Value, Error> {
@@ -155,6 +161,13 @@ async fn main() -> Result<(), Error> {
         * 1000) as i64;
     ledger.retire_acknowledged(retention_ms)?;
     let (completed, mut completed_rx) = mpsc::unbounded_channel();
+    let shutdown = Arc::new(Notify::new());
+    let listener = shutdown.clone();
+    let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
+    tokio::spawn(async move {
+        interrupt.recv().await;
+        listener.notify_one();
+    });
     let worker = Worker {
         worker_id: config.worker_id,
         url: config.url,
@@ -164,11 +177,19 @@ async fn main() -> Result<(), Error> {
         workspaces: Arc::new(config.workspaces),
         ledger: Arc::new(Mutex::new(ledger)),
         completed,
+        shutdown,
     };
     let mut backoff = Duration::from_secs(1);
     loop {
         let mut registered = false;
-        match session(&worker, &mut completed_rx, &mut registered).await {
+        // Shutdown cancels the session wherever it is waiting: inside a frame
+        // handler, a chunked transfer or the handshake. Ledger writes are
+        // synchronous, so cancellation never splits one.
+        let outcome = tokio::select! {
+            outcome = session(&worker, &mut completed_rx, &mut registered) => outcome,
+            _ = worker.shutdown.notified() => return Ok(()),
+        };
+        match outcome {
             Ok(()) => return Ok(()),
             Err(error) if error.is::<Retry>() => {
                 if registered {
@@ -180,7 +201,7 @@ async fn main() -> Result<(), Error> {
         }
         tokio::select! {
             _ = tokio::time::sleep(backoff) => {}
-            _ = tokio::signal::ctrl_c() => return Ok(()),
+            _ = worker.shutdown.notified() => return Ok(()),
         }
         backoff = (backoff * 2).min(MAX_BACKOFF);
     }
@@ -389,10 +410,6 @@ async fn session(
                     }
                     _ => return Err("unexpected frame".into()),
                 }
-            }
-            _ = tokio::signal::ctrl_c() => {
-                let _ = socket.close(None).await;
-                return Ok(());
             }
         }
     }

@@ -15,21 +15,26 @@ export function useFeed(enabled: boolean, sessionId: string | null, handlers: { 
   useEffect(() => {
     if (!enabled) { setState(emptyFeed()); return; }
     let closed = false, source: EventSource | undefined, timer: ReturnType<typeof setTimeout> | undefined;
+    /** Each start supersedes the previous one; callbacks of an older start do nothing. */
+    let generation = 0;
     const controller = new AbortController();
     // Another session's records never stay on screen while this one loads.
     setState((s) => ({ ...s, sessionId: null, messages: {}, jobs: {}, calls: {}, logs: {}, drafts: {} }));
-    const restart = () => {
+    const restart = (gen: number) => {
+      if (closed || gen !== generation) return;
+      generation++;
       source?.close(); source = undefined;
-      if (closed) return;
       setConnection("reconnecting");
       clearTimeout(timer);
       timer = setTimeout(() => void start(), RESTART_MS);
     };
     const start = async () => {
+      const gen = ++generation;
+      source?.close(); source = undefined;
       try {
         const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
         const snapshot = await request<Snapshot>(`/api/snapshot${query}`, { signal: controller.signal });
-        if (closed) return;
+        if (closed || gen !== generation) return;
         setState((s) => fromSnapshot(snapshot, sessionId, s.attentionVersion));
         const es = new EventSource(`/api/events?after=${snapshot.cursor}`);
         source = es;
@@ -37,22 +42,22 @@ export function useFeed(enabled: boolean, sessionId: string | null, handlers: { 
         for (const kind of KINDS) es.addEventListener(kind, apply as EventListener);
         es.addEventListener("cursor", ((message: MessageEvent) => setState((s) => advanceCursor(s, JSON.parse(message.data).cursor))) as EventListener);
         // The cursor expired: only a new snapshot can be complete.
-        es.addEventListener("reset", restart);
+        es.addEventListener("reset", () => restart(gen));
         es.onopen = () => setConnection("live");
         es.onerror = () => {
           if (es.readyState !== EventSource.CLOSED) { setConnection("reconnecting"); return; }
           // EventSource gave up (e.g. 401): find out whether the login ended.
           void request<{ authenticated: boolean }>("/auth/session").then(
-            (auth) => (auth.authenticated ? restart() : handlers.onUnauthorized()),
-            restart,
+            (auth) => (auth.authenticated ? restart(gen) : gen === generation && handlers.onUnauthorized()),
+            () => restart(gen),
           );
         };
       } catch (cause) {
-        if (closed) return;
+        if (closed || gen !== generation) return;
         if (cause instanceof ApiError && cause.status === 401) return handlers.onUnauthorized();
         if (cause instanceof ApiError && cause.status === 404 && sessionId) return handlers.onMissingSession();
         handlers.onError(cause);
-        restart();
+        restart(gen);
       }
     };
     setConnection("connecting");

@@ -5,6 +5,9 @@ import websocket from "@fastify/websocket";
 import rateLimit from "@fastify/rate-limit";
 import argon2 from "argon2";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { existsSync, readdirSync, rmSync, statfsSync } from "node:fs";
+import { join } from "node:path";
+import type { ModelConfig } from "./config.js";
 import { DEFAULT_BUDGET, ExecutionCoordinator, workspaceCurrent, type Budget, type Resolution, type ScriptStep } from "./execution.js";
 import { mainFault } from "./fault.js";
 import { createJob, mainSession } from "./jobs.js";
@@ -20,6 +23,8 @@ import type { WorkerFrame } from "@worker-plane/protocol";
 const digest = (value: string) =>
   createHash("sha256").update(value).digest("hex");
 const secret = () => randomBytes(32).toString("base64url");
+/** The public name of a worker token: a prefix of its digest. */
+const tokenId = (tokenDigest: string) => tokenDigest.slice(0, 16);
 export async function createApp(
   db: Database.Database,
   origin: string,
@@ -29,12 +34,21 @@ export async function createApp(
     logStream?: FastifyLoggerOptions["stream"];
     runJob?: (job:unknown)=>Promise<void>;
     dataDir?: string;
+    model?: ModelConfig;
     fakeScript?: (job: any, messages: any[]) => ScriptStep[];
     toolResultTimeoutMs?: number;
     waitSweepMs?: number;
     logCapacityBytes?: number;
     budget?: Partial<Budget>;
     feed?: { pollMs?: number; pruneMs?: number; keep?: number; maxAgeMs?: number };
+    /** Terminal jobs older than this lose stored output and their Pi session files. */
+    retentionMs?: number;
+    /** Below this much free space in dataDir, dispatch pauses until space returns. */
+    minFreeBytes?: number;
+    /** How often retention and the disk check run. */
+    maintenanceMs?: number;
+    /** Free bytes of the data directory; replaceable so tests can simulate a full disk. */
+    freeBytes?: (dir: string) => number;
   } = {},
 ) {
   const now = options.now ?? Date.now;
@@ -67,7 +81,7 @@ export async function createApp(
     }
   >();
   const budget = { ...DEFAULT_BUDGET, ...options.budget };
-  const coordinator = new ExecutionCoordinator(db, connections, now, options.runJob as ((job:any)=>Promise<void>)|undefined, { budget, dataDir: options.dataDir, fakeScript: options.fakeScript, toolResultTimeoutMs: options.toolResultTimeoutMs, logCapacityBytes: options.logCapacityBytes });
+  const coordinator = new ExecutionCoordinator(db, connections, now, options.runJob as ((job:any)=>Promise<void>)|undefined, { budget, dataDir: options.dataDir, model: options.model, fakeScript: options.fakeScript, toolResultTimeoutMs: options.toolResultTimeoutMs, logCapacityBytes: options.logCapacityBytes });
   let shuttingDown = false;
   let recovered = false;
   // Main jobs need no worker: a restart resumes them right away.
@@ -75,7 +89,26 @@ export async function createApp(
   /** Scheduling is ready once the startup recovery pass ran, the database answers and shutdown has not begun. */
   const schedulingReady = () => {
     if (!recovered || shuttingDown) return false;
-    try { return db.prepare("SELECT 1").pluck().get() === 1; } catch { return false; }
+    try { return db.prepare("SELECT 1").pluck().get() === 1 && !coordinator.paused(); } catch { return false; }
+  };
+  const dispatchState = () =>
+    db.prepare("SELECT paused,reason,note,since FROM dispatch_state WHERE id=1").get() as { paused: number; reason: string | null; note: string | null; since: number | null };
+  const pause = (reason: string, note: string | null) =>
+    db.prepare("UPDATE dispatch_state SET paused=1,reason=?,note=?,since=? WHERE id=1 AND paused=0").run(reason, note, now()).changes === 1;
+  /** Everything a pause held back gets its chance again. */
+  const resume = (note: string, unreconciled: string[]) => {
+    const resumed = db.transaction(() => {
+      const state = dispatchState();
+      if (!state.paused) return false;
+      db.prepare("UPDATE dispatch_state SET paused=0,reason=NULL,note=NULL,since=NULL WHERE id=1").run();
+      db.prepare("INSERT INTO events(created_at,content_json) VALUES(?,?)").run(now(), JSON.stringify({ type: "dispatch_resumed", paused_for: state.reason, note, unreconciled }));
+      return true;
+    })();
+    if (!resumed) return false;
+    coordinator.advance();
+    void coordinator.pumpMain();
+    for (const { worker_id } of db.prepare("SELECT worker_id FROM workers").all() as Array<{ worker_id: string }>) void coordinator.pump(worker_id);
+    return true;
   };
   /** Inside a transaction: a new job with its own budget root, at the back of its worker's queue. */
   const insertJob = (session: any, clientRequestId: string, message: string, requestHash: string) =>
@@ -121,11 +154,36 @@ export async function createApp(
         return reply.code(403).send({ error: "csrf" });
     }
   });
-  app.get("/health", async () => ({
-    alive: true,
-    scheduling_ready: schedulingReady(),
-    phase: "P6",
-  }));
+  app.get("/health", async () => {
+    let paused: string | null = null;
+    try { paused = dispatchState().reason; } catch { /* reported as not ready */ }
+    return { alive: true, scheduling_ready: schedulingReady(), dispatch_paused: paused, phase: "P7" };
+  });
+  app.get("/api/ops/dispatch", async () => dispatchState());
+  app.post("/api/ops/pause", async (req, reply) => {
+    const note = (req.body as { note?: unknown } | null)?.note;
+    if (typeof note !== "string" || !note.trim() || note.length > 4000) return reply.code(400).send({ error: "note_required" });
+    if (!pause("operator", note)) return reply.code(409).send({ error: "already_paused", ...dispatchState() });
+    return dispatchState();
+  });
+  /**
+   * After a restore the backup may lack calls a worker ran later. Every known
+   * worker must have reconciled its ledger against this database first, unless
+   * the operator states why a worker that cannot connect is accounted for.
+   */
+  app.post("/api/ops/resume", async (req, reply) => {
+    const body = req.body as { note?: unknown; force?: unknown } | null;
+    const note = body?.note;
+    if (typeof note !== "string" || !note.trim() || note.length > 4000) return reply.code(400).send({ error: "note_required" });
+    const state = dispatchState();
+    if (!state.paused) return reply.code(409).send({ error: "not_paused" });
+    if (state.reason === "disk_low") return reply.code(409).send({ error: "disk_low", note: state.note });
+    const unreconciled = db.prepare("SELECT worker_id FROM workers WHERE reconciled=0 ORDER BY worker_id").pluck().all() as string[];
+    if (state.reason === "restored" && unreconciled.length && body?.force !== true)
+      return reply.code(409).send({ error: "workers_not_reconciled", workers: unreconciled });
+    resume(note, unreconciled);
+    return dispatchState();
+  });
   app.post(
     "/auth/login",
     { config: { rateLimit: { max: 5, timeWindow: 60000 } } },
@@ -342,13 +400,21 @@ export async function createApp(
       digest(token),
       id,
     );
-    return { token, worker_id: id };
+    return { token, token_id: tokenId(digest(token)), worker_id: id };
   });
+  /** Tokens by public ID; neither the token nor its digest leaves this node. */
+  app.get("/api/worker-tokens", async () =>
+    (db.prepare("SELECT digest,worker_id,revoked_at FROM worker_tokens ORDER BY worker_id,digest").all() as Array<{ digest: string; worker_id: string; revoked_at: number | null }>)
+      .map((t) => ({ token_id: tokenId(t.digest), worker_id: t.worker_id, revoked_at: t.revoked_at, in_use: connections.get(t.worker_id)?.tokenDigest === t.digest })));
   app.post("/api/worker-tokens/revoke", async (req, reply) => {
-    const token = (req.body as { token?: unknown } | null)?.token;
-    if (typeof token !== "string")
-      return reply.code(400).send({ error: "token" });
-    const tokenDigest = digest(token);
+    const body = req.body as { token?: unknown; token_id?: unknown } | null;
+    let tokenDigest: string;
+    if (typeof body?.token_id === "string" && /^[0-9a-f]{16}$/.test(body.token_id)) {
+      const rows = db.prepare("SELECT digest FROM worker_tokens WHERE substr(digest,1,16)=?").pluck().all(body.token_id) as string[];
+      if (rows.length !== 1) return reply.code(404).send({ error: "token_not_found" });
+      tokenDigest = rows[0];
+    } else if (typeof body?.token === "string") tokenDigest = digest(body.token);
+    else return reply.code(400).send({ error: "token" });
     const row = db
       .prepare(
         "SELECT worker_id FROM worker_tokens WHERE digest=? AND revoked_at IS NULL",
@@ -589,6 +655,35 @@ export async function createApp(
       });
     },
   );
+  /**
+   * Retention and the disk check. Old sessions are those whose jobs all ended
+   * before the cutoff; their Pi files are rebuilt from SQLite if ever needed.
+   */
+  const maintain = () => {
+    db.prepare("DELETE FROM auth_sessions WHERE expires_at<=?").run(now());
+    const retention = options.retentionMs;
+    if (retention !== undefined) {
+      const cutoff = now() - retention;
+      coordinator.pruneLogs(cutoff);
+      const sessionsDir = options.dataDir && join(options.dataDir, "pi-sessions");
+      if (sessionsDir && existsSync(sessionsDir))
+        for (const sessionId of readdirSync(sessionsDir)) {
+          const open = db.prepare("SELECT 1 FROM jobs WHERE session_id=? AND (state NOT IN ('succeeded','failed','cancelled') OR COALESCE(started_at,created_at)>=?)").get(sessionId, cutoff);
+          if (!open) rmSync(join(sessionsDir, sessionId), { recursive: true, force: true });
+        }
+    }
+    if (options.dataDir && options.minFreeBytes !== undefined) {
+      const free = (options.freeBytes ?? ((dir: string) => { const s = statfsSync(dir); return s.bavail * s.bsize; }))(options.dataDir);
+      const state = dispatchState();
+      if (free < options.minFreeBytes) pause("disk_low", `free ${free} < ${options.minFreeBytes} bytes`);
+      // Only the pause the disk check made is lifted by it.
+      else if (state.paused && state.reason === "disk_low") resume(`free ${free} bytes`, []);
+    }
+  };
+  const runMaintenance = () => { if (shuttingDown) return; try { maintain(); } catch (error) { app.log.error({ err: error }, "maintenance failed"); } };
+  setImmediate(runMaintenance);
+  const maintenanceTimer = setInterval(runMaintenance, options.maintenanceMs ?? 3600_000);
+  maintenanceTimer.unref();
   const timer = setInterval(() => {
     for (const [id, c] of connections) {
       const row = db
@@ -611,6 +706,7 @@ export async function createApp(
     coordinator.close();
     clearInterval(timer);
     clearInterval(expiryTimer);
+    clearInterval(maintenanceTimer);
     for (const [id, c] of connections) offline(id, c.epoch);
     shuttingDown = true;
     for (const c of connections.values()) c.socket.terminate();

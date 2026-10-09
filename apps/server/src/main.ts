@@ -3,7 +3,9 @@ import argon2 from "argon2";
 import { openDatabase } from "./storage.js";
 import { createApp } from "./app.js";
 import { acquireOwnerLock } from "./lock.js";
-const dir = process.env.DATA_DIR ?? "./data";
+import { loadConfig } from "./config.js";
+const config = loadConfig(process.env);
+const dir = config.dataDir;
 mkdirSync(dir, { recursive: true, mode: 0o700 });
 chmodSync(dir, 0o700);
 const release = acquireOwnerLock(dir);
@@ -22,23 +24,17 @@ try {
   }
   delete process.env.INITIAL_ADMIN_PASSWORD;
   // Fault acceptance runs this process with scripted model turns keyed by the user message.
-  const scriptFile = process.env.P3_FAKE_SCRIPT_FILE;
-  const scripts = scriptFile ? JSON.parse(readFileSync(scriptFile, "utf8")) : undefined;
-  const logCapacity = process.env.MAIN_LOG_CAPACITY_BYTES;
-  const app = await createApp(
-    db,
-    process.env.PUBLIC_BASE_URL ?? "https://localhost:8443",
-    {
-      ...(scripts ? { fakeScript: (job: any) => scripts[job.input_text] } : {}),
-      ...(logCapacity ? { logCapacityBytes: Number(logCapacity) } : {}),
-      budget: {
-        ...(process.env.MAX_JOB_TOOL_CALLS ? { maxToolCalls: Number(process.env.MAX_JOB_TOOL_CALLS) } : {}),
-        ...(process.env.MAX_JOB_TOKENS ? { maxTokens: Number(process.env.MAX_JOB_TOKENS) } : {}),
-        ...(process.env.MAX_JOB_RUNTIME_SECS ? { maxRuntimeSecs: Number(process.env.MAX_JOB_RUNTIME_SECS) } : {}),
-      },
-    },
-  );
-  await app.listen({ host: "127.0.0.1", port: Number(process.env.PORT ?? 3000) });
+  const scripts = config.scriptFile ? JSON.parse(readFileSync(config.scriptFile, "utf8")) : undefined;
+  const app = await createApp(db, config.publicBaseUrl, {
+    dataDir: dir,
+    model: config.model,
+    ...(scripts ? { fakeScript: (job: any) => scripts[job.input_text] } : {}),
+    ...(config.logCapacityBytes !== undefined ? { logCapacityBytes: config.logCapacityBytes } : {}),
+    budget: config.budget,
+    retentionMs: config.retentionDays * 24 * 3600 * 1000,
+    minFreeBytes: config.minFreeBytes,
+  });
+  await app.listen({ host: "127.0.0.1", port: config.port });
   for (const signal of ["SIGINT", "SIGTERM"] as const)
     process.once(signal, () => {
       void app.close().then(() => {

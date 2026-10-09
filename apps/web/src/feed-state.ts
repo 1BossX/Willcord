@@ -12,10 +12,13 @@ export type FeedEvent = {
 };
 
 type Row = Record<string, any>;
+export type Dispatch = { paused: number; reason: string | null; note: string | null; since: number | null };
 export type Snapshot = {
   cursor: number;
   main_session_id: string;
   workers: Row[];
+  /** Whether the main node starts work; paused after a restore, on low disk or by an operator. */
+  dispatch?: Dispatch;
   sessions: Row[];
   session: { session: Row; messages: Row[]; jobs: Row[]; calls: Row[]; logs: Row[]; drafts: Row[] } | null;
 };
@@ -26,6 +29,7 @@ export type FeedState = {
   sessionId: string | null;
   mainSessionId: string | null;
   workers: Record<string, Row>;
+  dispatch: Dispatch | null;
   sessions: Record<string, Row>;
   messages: Record<string, Row>;
   jobs: Record<string, Row>;
@@ -39,7 +43,7 @@ export type FeedState = {
 };
 
 export const emptyFeed = (sessionId: string | null = null): FeedState => ({
-  cursor: 0, sessionId, mainSessionId: null, workers: {}, sessions: {}, messages: {}, jobs: {}, calls: {}, logs: {}, drafts: {}, attentionVersion: 0,
+  cursor: 0, sessionId, mainSessionId: null, workers: {}, dispatch: null, sessions: {}, messages: {}, jobs: {}, calls: {}, logs: {}, drafts: {}, attentionVersion: 0,
 });
 
 const byKey = (rows: Row[], key: (row: Row) => string) => Object.fromEntries(rows.map((row) => [key(row), row]));
@@ -53,6 +57,7 @@ export function fromSnapshot(snapshot: Snapshot, sessionId: string | null, atten
     sessionId: s ? sessionId : null,
     mainSessionId: snapshot.main_session_id,
     workers: byKey(snapshot.workers, (w) => w.worker_id),
+    dispatch: snapshot.dispatch ?? null,
     sessions: byKey(snapshot.sessions, (x) => x.session_id),
     messages: s ? byKey(s.messages, (m) => m.message_id) : {},
     jobs: s ? byKey(s.jobs, (j) => j.job_id) : {},
@@ -77,6 +82,8 @@ export function applyEvent(state: FeedState, e: FeedEvent): FeedState {
   switch (e.kind) {
     case "worker":
       return { ...next, workers: put(state.workers, e.entity_id, e.data), attentionVersion: state.attentionVersion + 1 };
+    case "dispatch":
+      return { ...next, dispatch: e.data };
     case "session":
       return { ...next, sessions: put(state.sessions, e.entity_id, e.data) };
     case "attention":

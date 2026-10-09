@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { marked } from "marked";
 import { ApiError, request } from "./api";
-import { AttentionPanel, BudgetRows, CancelButton, LogViewer, RetryButton, type JobControl } from "./control";
+import { AttentionPanel, BudgetRows, CancelButton, DispatchBanner, LogViewer, RetryButton, type JobControl } from "./control";
 import { useFeed } from "./feed";
 import "./style.css";
 
@@ -1524,6 +1524,11 @@ function App() {
             </button>
           </div>
         )}
+        <DispatchBanner
+          dispatch={feed.state.dispatch}
+          unreconciled={workers.filter((w) => !w.reconciled).map((w) => w.worker_id)}
+          onError={(e) => setError(e instanceof Error ? e.message : String(e))}
+        />
         {feed.connection === "reconnecting" && (
           <div className="connection-banner" role="status">
             <span className="loading-indicator" />

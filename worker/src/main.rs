@@ -257,9 +257,14 @@ async fn main() -> Result<(), Error> {
     let (live_logs, mut live_logs_rx) = mpsc::channel(64);
     let shutdown = Arc::new(Notify::new());
     let listener = shutdown.clone();
+    // SIGINT from a terminal and SIGTERM from systemd/launchd stop the same way.
     let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     tokio::spawn(async move {
-        interrupt.recv().await;
+        tokio::select! {
+            _ = interrupt.recv() => {}
+            _ = terminate.recv() => {}
+        }
         listener.notify_one();
     });
     let token = TokenSource::new(config.token_file, std::env::var("WORKER_TOKEN").ok())?;

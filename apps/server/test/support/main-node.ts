@@ -22,6 +22,8 @@ export async function startScenario(options: {
   drop?: (direction: Direction, frame: any) => boolean;
   duplicate?: (direction: Direction, frame: any) => boolean;
   app?: AppOptions;
+  /** Worker identities; the first is "w" by default and owns `workspace`. */
+  workers?: string[];
 }) {
   const dir = mkdtempSync(join(tmpdir(), "worker-plane-p3c-"));
   const certs = createCertificates(dir);
@@ -29,7 +31,11 @@ export async function startScenario(options: {
   const workspace = join(dir, "workspace");
   const marker = join(workspace, "marker.log");
   let main: { db: ReturnType<typeof openDatabase>; app: Awaited<ReturnType<typeof createApp>>; port: number } | undefined;
-  let worker: WorkerProcess | undefined;
+  const ids = options.workers ?? ["w"];
+  const workers = new Map<string, WorkerProcess>();
+  /** Each worker has its own token, data directory and workspace. */
+  const tokenOf = (id: string) => (id === ids[0] ? workerToken : `${workerToken}-${id}`);
+  const workspaceOf = (id: string) => (id === ids[0] ? workspace : join(dir, `workspace-${id}`));
   /** `app` replaces the scenario's app options for this start, e.g. other budgets. */
   const startMain = async (app: AppOptions = options.app) => {
     const db = openDatabase(dbPath);
@@ -40,7 +46,7 @@ export async function startScenario(options: {
   const stopMain = async () => { await main!.app.close(); main!.db.close(); main = undefined; };
   const proxy = await startTlsProxy(certs, () => main!.port, { drop: options.drop, duplicate: options.duplicate });
   await startMain();
-  main!.db.prepare("INSERT INTO worker_tokens VALUES (?,'w',NULL)").run(createHash("sha256").update(workerToken).digest("hex"));
+  for (const id of ids) main!.db.prepare("INSERT INTO worker_tokens VALUES (?,?,NULL)").run(createHash("sha256").update(tokenOf(id)).digest("hex"), id);
   main!.db.prepare("INSERT INTO administrators VALUES (1,?)").run(await argon2.hash(password, { type: argon2.argon2id }));
   const login = await main!.app.inject({ method: "POST", url: "/auth/login", headers: { origin }, payload: { password } });
   const headers = { cookie: login.headers["set-cookie"]!.toString().split(";")[0], origin, "x-csrf-token": login.json().csrf };
@@ -48,20 +54,26 @@ export async function startScenario(options: {
   const one = (sql: string, ...params: unknown[]) => main!.db.prepare(sql).get(...params) as any;
   const all = (sql: string, ...params: unknown[]) => main!.db.prepare(sql).all(...params) as any[];
   const until = (check: () => boolean, timeoutMs = 20000) => waitFor(() => {
-    if (worker && worker.child.exitCode !== null && worker.child.signalCode === null) throw new Error(`worker exited: ${worker.stderr()}`);
+    for (const worker of workers.values()) if (worker.child.exitCode !== null && worker.child.signalCode === null) throw new Error(`worker exited: ${worker.stderr()}`);
     return check();
   }, timeoutMs);
   const s = {
     dir, workspace, proxy,
     get main() { return main!; },
-    get worker() { return worker; },
+    get worker() { return workers.get(ids[0]); },
+    workerOf: (id: string) => workers.get(id),
+    workspaceOf,
     startMain, stopMain, one, all, until,
     /** Lines in the workspace marker file equal to `tag`: the side-effect count. */
-    count: (tag: string) => existsSync(marker) ? readFileSync(marker, "utf8").split("\n").filter((l) => l === tag).length : 0,
-    startWorker: (extra: { binary?: string; env?: Record<string, string>; configVersion?: number; extraConfig?: string } = {}) =>
-      (worker = startWorker({ dir, id: "w", url: proxy.url, ca: certs.ca, token: workerToken, workspace, ...extra })),
-    stopWorker: async (signal: NodeJS.Signals = "SIGKILL") => { if (worker) await stopWorker(worker, signal); worker = undefined; },
-    ready: () => until(() => { const w = one("SELECT online,reconciled FROM workers WHERE worker_id='w'"); return w?.online === 1 && w?.reconciled === 1; }),
+    count: (tag: string, id = ids[0]) => { const m = id === ids[0] ? marker : join(workspaceOf(id), "marker.log"); return existsSync(m) ? readFileSync(m, "utf8").split("\n").filter((l) => l === tag).length : 0; },
+    startWorker: (extra: { id?: string; binary?: string; env?: Record<string, string>; configVersion?: number; extraConfig?: string } = {}) => {
+      const id = extra.id ?? ids[0];
+      const started = startWorker({ dir, url: proxy.url, ca: certs.ca, token: tokenOf(id), workspace: workspaceOf(id), ...extra, id });
+      workers.set(id, started);
+      return started;
+    },
+    stopWorker: async (signal: NodeJS.Signals = "SIGKILL", id = ids[0]) => { const w = workers.get(id); if (w) await stopWorker(w, signal); workers.delete(id); },
+    ready: (id = ids[0]) => until(() => { const w = one("SELECT online,reconciled FROM workers WHERE worker_id=?", id); return w?.online === 1 && w?.reconciled === 1; }),
     createSession: async () => {
       const response = await main!.app.inject({ method: "POST", url: "/api/sessions", headers, payload: { worker_id: "w", workspace_id: "repo" } });
       assert.equal(response.statusCode, 201, response.body);
@@ -79,7 +91,7 @@ export async function startScenario(options: {
     state: (jobId: string) => one("SELECT state FROM jobs WHERE job_id=?", jobId).state as string,
     callStatus: (callId: string) => one("SELECT status FROM runtime_calls WHERE call_id=?", callId)?.status as string | undefined,
     close: async () => {
-      if (worker) await stopWorker(worker);
+      for (const worker of workers.values()) await stopWorker(worker);
       if (main) await stopMain();
       await proxy.close();
       rmSync(dir, { recursive: true, force: true });

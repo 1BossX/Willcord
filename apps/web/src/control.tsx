@@ -14,6 +14,8 @@ export type JobControl = {
   deadline_at?: number | null;
   tool_calls_used?: number | null;
   tokens_used?: number | null;
+  /** Set on a job a Main Agent delegated; it shares its parent's budget and is retried through the parent. */
+  parent_job_id?: string | null;
 };
 type AttentionCall = {
   job_id: string;
@@ -112,6 +114,7 @@ export function CancelButton({ job, onDone, onError }: { job: JobControl; onDone
 export function RetryButton({ job, onDone, onError }: { job: JobControl; onDone: (jobId: string, notice: string) => void; onError: (e: unknown) => void }) {
   const [busy, setBusy] = useState(false);
   if (!["succeeded", "failed", "cancelled"].includes(job.state)) return null;
+  if (job.parent_job_id) return <span className="subtle-text">委派任务由 Main Agent 决定是否重新委派</span>;
   return (
     <button
       type="button"

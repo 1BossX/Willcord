@@ -5,44 +5,31 @@ on:
   pull_request:
 permissions:
   contents: read
+# Both platforms run ci/verify.sh: every check, then the release acceptance
+# from the built artifacts behind the production Caddyfile.
 jobs:
-  verify:
-    name: verify (${{ matrix.name }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: self-hosted
-            runs-on: '["self-hosted", "macOS"]'
-          - name: self-hosted-linux
-            runs-on: '["self-hosted", "Linux"]'
-    runs-on: ${{ fromJSON(matrix.runs-on) }}
+  verify-macos:
+    name: verify (self-hosted)
+    runs-on: [self-hosted, macOS]
     steps:
       - uses: actions/checkout@v4
+      # Homebrew first, so setup-node's Node wins: OpenSSL 3 for test
+      # certificates, and caddy for the release acceptance.
+      - run: if [ -d /opt/homebrew/bin ]; then echo /opt/homebrew/bin >> "$GITHUB_PATH"; fi
       - uses: actions/setup-node@v4
         with:
           node-version: '24.12.0'
       - run: corepack enable
-      - run: pnpm install --frozen-lockfile
       - uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           toolchain: stable
           components: rustfmt
-      - run: pnpm protocol:generate
-      - run: git diff --exit-code -- packages/protocol/src/generated.ts worker/src/generated.rs
-      - run: cargo fmt --manifest-path worker/Cargo.toml -- --check
-      - run: cargo test --locked --manifest-path worker/Cargo.toml
-      - run: cargo test --locked --manifest-path worker/Cargo.toml --features fault-injection
-      - run: cargo build --locked --manifest-path worker/Cargo.toml
-      # The P3-C fault tests use this binary; building it here keeps the
-      # cold compile from competing with the timed end-to-end tests.
-      - run: cargo build --locked --manifest-path worker/Cargo.toml --features fault-injection --target-dir worker/target/fault
-      - run: pnpm check
-      - run: pnpm test
-      - run: pnpm build
-      # The main node as deployed: a release directory outside the checkout,
-      # started the way the systemd unit starts it.
-      - run: deploy/build-main.sh "$RUNNER_TEMP/worker-plane-main-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --skip-build
-      - run: deploy/smoke-main.sh "$RUNNER_TEMP/worker-plane-main-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-      - run: cargo build --locked --release --manifest-path worker/Cargo.toml
-      - run: git diff --check
+      - run: ci/verify.sh
+  verify-linux:
+    name: verify (self-hosted-linux)
+    runs-on: [self-hosted, Linux]
+    steps:
+      - uses: actions/checkout@v4
+      # Ubuntu 24.04 (the main host's distribution) with pinned Node, pnpm,
+      # Rust and Caddy: ci/linux.Dockerfile.
+      - run: ci/in-docker.sh ci/verify.sh

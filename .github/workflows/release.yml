@@ -1,23 +1,16 @@
 name: Release
 # A v* tag builds native binaries on each platform's runner (no cross-compiling)
 # and attaches them to a draft GitHub Release, published by hand after review.
+# The Linux files are built in the Ubuntu 24.04 CI image, the main host's
+# distribution, so the main node's native modules match its glibc.
 on:
   push:
     tags: ['v*']
 permissions:
   contents: write
 jobs:
-  build:
-    name: build (${{ matrix.name }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: macos
-            runs-on: '["self-hosted", "macOS"]'
-          - name: linux
-            runs-on: '["self-hosted", "Linux"]'
-    runs-on: ${{ fromJSON(matrix.runs-on) }}
+  build-macos:
+    runs-on: [self-hosted, macOS]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -27,36 +20,25 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           toolchain: stable
-      - run: cargo build --locked --release --manifest-path worker/Cargo.toml
-      - name: Package worker
-        run: |
-          os=$(uname -s | tr '[:upper:]' '[:lower:]')
-          arch=$(uname -m)
-          name="worker-plane-worker-${GITHUB_REF_NAME}-${os}-${arch}"
-          mkdir -p release
-          cp worker/target/release/worker-plane-worker "release/$name"
-      # The main node runs on Linux; its native modules are built for this
-      # runner's architecture and Node 24.
-      - name: Package main node
-        if: runner.os == 'Linux'
-        run: |
-          arch=$(uname -m)
-          dir="$RUNNER_TEMP/worker-plane-main-${GITHUB_REF_NAME}"
-          rm -rf "$dir"
-          deploy/build-main.sh "$dir"
-          deploy/smoke-main.sh "$dir"
-          tar -C "$RUNNER_TEMP" -czf "release/worker-plane-main-${GITHUB_REF_NAME}-linux-${arch}-node24.tar.gz" "worker-plane-main-${GITHUB_REF_NAME}"
-      - name: Checksums
-        working-directory: release
-        run: for f in *; do shasum -a 256 "$f" > "$f.sha256"; done
+      - run: ci/package-release.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: release-${{ matrix.name }}
+          name: release-macos
+          path: release/*
+          if-no-files-found: error
+  build-linux:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - uses: actions/checkout@v4
+      - run: ci/in-docker.sh ci/package-release.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-linux
           path: release/*
           if-no-files-found: error
   publish:
-    needs: build
-    runs-on: ["self-hosted", "Linux"]
+    needs: [build-macos, build-linux]
+    runs-on: [self-hosted, Linux]
     steps:
       - uses: actions/download-artifact@v4
         with:

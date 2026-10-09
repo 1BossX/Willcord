@@ -122,7 +122,8 @@ test("P4-A real Rust worker: process-group cancel and timeout, bounded output, l
     assert.equal((await peer.next("log_status", 15000, (f) => f.call_id === "c6")).state, "expired");
 
     // 5. Output written while disconnected is fetched afterwards, in order.
-    const chatty = peer.call(1, "c7", 7, "bash", { command: "for i in 1 2 3 4 5; do echo line$i; sleep 0.3; done" });
+    // Long enough to still be running after the reconnect, which alone waits a 1 s backoff.
+    const chatty = peer.call(1, "c7", 7, "bash", { command: "for i in 1 2 3 4 5; do echo line$i; sleep 0.8; done" });
     await peer.next("tool_accepted");
     peer.socket.terminate();
     peer = await nextPeer();

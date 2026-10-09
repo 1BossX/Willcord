@@ -16,7 +16,7 @@ P3 已实现 worker 账本去重、重连对账与主节点重启恢复，无法
 
 P4 已实现取消全链路、进程组控制与超时、任务预算、分块输出与补读、磁盘拒绝、人工处置接口和基础 UI；11 条验收与故障程序见 [P4 开发记录](docs/p4-development.md)。
 
-P5（Main Agent 与持久化委派）进行中：P5-A 已实现 Main session、list_workers/get_job/delegate、委派与用户任务共用 FIFO 和前置依赖校验；进度见 [P5 开发记录](docs/p5-development.md)。
+P5（Main Agent 与持久化委派）进行中：已实现 Main session、list_workers/get_job/delegate、委派与用户任务共用 FIFO、前置依赖、等待子任务、重启恢复、父取消传播、根预算和结构化结果；进度见 [P5 开发记录](docs/p5-development.md)。
 
 工作台 UI 按原文档重组为机器/会话导航、固定目标聊天与任务时间线，设计映射、状态边界和浏览器证据见 [UI 设计记录](docs/ui-design.md)。
 

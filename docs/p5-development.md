@@ -5,7 +5,7 @@
 | 步骤 | 内容 | 状态 |
 |---|---|---|
 | P5-A | 数据迁移、Main session、Main 工具（list_workers、get_job、delegate）、共用 FIFO 入队、前置依赖校验 | 完成 |
-| P5-B | 等待集合与 `waiting_children`、依赖满足后入队、重启扫描恢复、父取消传播、根预算、结构化最终结果 | 未开始 |
+| P5-B | 等待集合与 `waiting_children`、依赖满足后入队、重启扫描恢复、父取消传播、根预算、结构化最终结果 | 完成 |
 | P5-C | Main 入口 UI、双 worker 测试工具、故障程序与全量验收记录 | 未开始 |
 
 已定决策：
@@ -76,8 +76,58 @@ Main 工具在主节点本地执行：效果、调用结果和工具消息在同
 | 用户 u1 运行中，Main 委派 b，用户再交 u2 | 执行顺序 u1 → b → u2，同一时刻只有一个；Main job 没有 `queue_seq`，不占执行槽 |
 | A、B（依赖 A）；依赖不存在的 key；依赖其他任务的 job；`get_job` 读其他任务 | 前两个非法依赖都被拒为 `dependency_not_in_task`；`get_job` 返回 `job_not_found`；A 运行期间 B 没有 `queue_seq`，A 之后提交的用户任务照常先执行，B 没有运行 |
 
-P5-A 已知缺口，由 P5-B 补上：
+P5-A 提交时留下的缺口（依赖满足后入队、等待集合、父取消传播）已由 P5-B 补上。
 
-- 依赖满足后还不会给 B 分配队列序号。
-- 父任务在子任务完成前就会结束：委派结果只是创建回执，还没有等待集合。
-- 父取消还不会传播到子任务。
+## P5-B：等待、依赖推进、取消与预算
+
+### 等待
+
+- Main job 每轮工具执行完后，如果还有未终态的子任务，就在一个事务里把它们写进 `job_waits`，转为 `waiting_children` 并结束这次执行：不再调用模型，也不占任何执行槽。Main session 的下一条消息排在它后面。
+- 等待集合是该父任务所有未终态的子任务，全部终态后父任务才回到 `running`。
+- 恢复执行时，每个子任务的结构化结果以一条 `child:<job_id>` 历史消息加入父任务（`runtime_history` 唯一键保证只加一次），然后才进行下一次模型调用。
+- 有未结束子任务时，父任务即使给出最终回答也不会标为 `succeeded`，而是回到等待。
+- 脚本模型新增 `{calls: [...]}`：一轮里发出多个调用。同一轮委派的任务一起等待，A → B 这样的依赖应在同一轮里声明。
+
+### `advance()`：只看数据库的推进
+
+每次任务状态变化（执行结束、取消、放弃、等待过期等）后，以及启动时和 `waitSweepMs` 定时扫描时，都会调用 `advance()`。它只依据 SQLite 推进，所以丢失的唤醒和重启都不影响结果：
+
+1. 给终态 job 写 `result_json`。
+2. 等待依赖的 job：前置任务全部成功，才分配 `queue_seq`（排在当时 FIFO 的最后），并按 worker 状态设为 `queued` 或 `waiting_worker`；任一前置任务失败或取消，就以 `failed` + `dependency_failed` 结束，并逐级传递。前置任务是 `needs_attention` 时继续等待。
+3. 父任务的子任务全部终态且已有结果，就恢复 `running`。
+4. 正在取消的父任务：子任务全部终态，就收尾；剩下的未终态子任务全是 `needs_attention` 时，父任务也转为 `needs_attention`。
+
+### 父取消
+
+- 取消 Main job 时先标记 `cancel_requested`，再用同一原因取消所有未终态子任务：排队的直接取消，运行中的走 P4 的取消链路，`needs_attention` 的只记录请求。
+- `finalizeCancel` 要等子任务全部终态才收尾。子任务执行情况不明时，父任务进入 `needs_attention`，不会宣称已经安全取消。
+- 放弃 Main job 时，没有 worker 可记的操作写成 `job_abandoned` 事件。
+
+### 根预算
+
+- 委派 job 用父任务的 `root_job_id`，复制根任务的上限和 `deadline_at`；工具次数和 token 都累加到同一个 `budget_roots` 行。delegate 本身也算一次工具调用。
+- 用新 key 再次委派不会得到新预算；委派出来的 job 也不能单独重试。
+- 时限扫描同时覆盖 `waiting_children` 的父任务。
+
+### 结构化结果
+
+`result_json`：`{outcome, summary, evidence_call_ids, exit_code?, error, failed_call_ids, truncated, children?}`。
+
+- `summary` 取最后一条回答，`evidence_call_ids` 是已完成的调用，`exit_code` 取最后一次 bash 的退出码，`truncated` 表示有输出流被截断。
+- Main job 的结果额外列出 `children`。
+- 委派出来的步骤只有最后一条命令退出码为 0 才算成功，否则以 `failed` + `last_command_failed` 结束，测试失败不会放行下一步。用户自己的任务不受这条规则影响。
+
+### 验证
+
+`apps/server/test/p5-wait.test.ts`，真实 Rust worker 加脚本模型：
+
+| 场景 | 结果 |
+|---|---|
+| A 测试成功 → B 写说明 | 父任务 `waiting_children`，不占执行槽，等待期间模型轮次不增加；B 在 A 结束前没有 `queue_seq`；执行顺序 test-start、test-end、doc；子任务和父任务都有结构化结果；两条子任务结果各进入父任务历史一次 |
+| A 以退出码 3 失败；A 运行中被取消 | A 为 `failed`/`last_command_failed`，`exit_code=3`；两种情况下 B 都是 `failed`/`dependency_failed`，doc 为 0，被取消的命令没有后续副作用 |
+| 父任务等待期间取消 | 立即返回 `cancel_requested`，子命令确认终止后父子都变为 `cancelled`；doc 和 late 都为 0；worker 随后能正常执行用户任务 |
+| worker 离线时委派，主节点重启，再启动 worker | 父任务从数据库恢复；子任务只执行一次；只有一个子 job 和一个 delegate 调用 |
+| 直接改库让子任务结束（模拟丢失的唤醒） | 定时扫描让父任务恢复并完成，结果里子任务为 `cancelled` |
+| 工具次数上限 3：委派 c1、c2、c3 | c1 执行；c2 的命令超过共享上限，以 `budget_tool_calls` 结束；父任务随后同样结束，c3 没有创建；只有一个 `budget_roots` 行，计数为 5 |
+
+`p5-delegate.test.ts` 的依赖场景同时验证了：A 成功后，B 排在 A 运行期间提交的用户任务之后。

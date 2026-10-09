@@ -68,7 +68,7 @@ export async function createApp(
   const coordinator = new ExecutionCoordinator(db, connections, now, options.runJob as ((job:any)=>Promise<void>)|undefined, { budget, dataDir: options.dataDir, fakeScript: options.fakeScript, toolResultTimeoutMs: options.toolResultTimeoutMs, logCapacityBytes: options.logCapacityBytes });
   let shuttingDown = false;
   // Main jobs need no worker: a restart resumes them right away.
-  setImmediate(() => void coordinator.pumpMain());
+  setImmediate(() => { coordinator.advance(); void coordinator.pumpMain(); });
   /** Inside a transaction: a new job with its own budget root, at the back of its worker's queue. */
   const insertJob = (session: any, clientRequestId: string, message: string, requestHash: string) =>
     createJob(db, now, { session, clientRequestId, message, requestHash, budget });

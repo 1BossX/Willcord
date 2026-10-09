@@ -8,7 +8,7 @@ import http from "node:http";
 import { extname, join, normalize } from "node:path";
 import type { ScriptStep } from "../../src/execution.js";
 import { origin, startScenario } from "./main-node.js";
-import { repoRoot } from "./worker-harness.js";
+import { buildFaultWorker, repoRoot } from "./worker-harness.js";
 
 const port = Number(process.env.WALK_PORT ?? 8105);
 const bash = (id: string, command: string, answer: string): ScriptStep[] => [{ tool: "bash", arguments: { command }, id }, { text: answer, tokens_per_second: 12 }];
@@ -36,11 +36,17 @@ const scripts: Record<string, () => ScriptStep[]> = {
   "test-ok": () => bash("ok", "echo test-start >> marker.log; sleep 3; echo test-end >> marker.log", "测试通过。"),
   "test-claims-ok": () => bash("claims", "echo test-start >> marker.log", "测试应该通过了。"),
   doc: () => bash("doc", "echo doc >> marker.log; ls > NOTES.txt", "说明已写入 NOTES.txt。"),
+  // On x the worker dies after the command ran and before it recorded the result.
+  "崩溃任务": () => bash("crash", "echo crash >> marker.log", "不会到这里。"),
 };
 
-const s = await startScenario({ workers: ["w", "v"], scripts: new Proxy({}, { get: (_t, key: string) => scripts[key] ? fresh(scripts[key]()) : [{ text: `（走查脚本里没有这条消息：${key}）` }] }) as any });
+const s = await startScenario({ workers: ["w", "v", "x"], scripts: new Proxy({}, { get: (_t, key: string) => scripts[key] ? fresh(scripts[key]()) : [{ text: `（走查脚本里没有这条消息：${key}）` }] }) as any });
 s.startWorker({ id: "w" }); s.startWorker({ id: "v" });
-await s.ready("w"); await s.ready("v");
+// x: a worker built with fault injection that dies at after_effect once, then comes back.
+const faultWorker = buildFaultWorker();
+const x = s.startWorker({ id: "x", binary: faultWorker, env: { WP_FAULT: "after_effect" } });
+void x.exited.then(() => s.startWorker({ id: "x", binary: faultWorker }));
+await s.ready("w"); await s.ready("v"); await s.ready("x");
 
 const dist = join(repoRoot, "apps/web/dist");
 const types: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml" };

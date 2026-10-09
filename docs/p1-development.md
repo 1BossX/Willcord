@@ -40,7 +40,7 @@ Caddy 对外提供 HTTPS/WSS 与静态 UI，Fastify 仅监听 127.0.0.1:3000。�
 
 `POST /api/worker-tokens` 的 JSON 为 `{worker_id}`，仅管理员会话可调用；响应一次返回高熵 token，数据库只保存 SHA-256 校验值。`POST /api/worker-tokens/revoke` 的 JSON 为 `{token}`；立即标记离线并关闭该 worker 的当前连接，保留执行槽。重新启用必须签发新 token 并对账。
 
-复制 `worker/config.example.toml` 到本地私有配置，填写稳定 worker_id、绝对数据目录、WSS 地址与 workspace。WORKER_TOKEN 通过进程环境注入，不存 TOML。必须恰好配置一个默认 workspace，workspace ID 不重复，路径存在且为绝对目录。
+复制 `worker/config.example.toml` 到本地私有配置，填写稳定 worker_id、绝对数据目录、WSS 地址与 workspace。token 不存 TOML：通过进程环境 WORKER_TOKEN 注入，或在 TOML 中用 `token_file` 指向仅属主可读（0600）的文件，二者只能选一。`token_file` 在每次重连前重读，轮换 token 后无需重启 worker。必须恰好配置一个默认 workspace，workspace ID 不重复，路径存在且为绝对目录。
 
 ```sh
 cargo run --locked --manifest-path worker/Cargo.toml -- /absolute/private/worker.toml

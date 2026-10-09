@@ -301,6 +301,31 @@ SSE 用单调 event_id 补放，支持 Last-Event-ID 或 after。UI 先取带游
 
 Worker token 高熵、独立、可撤销，数据库只存安全校验值。撤销立即关闭现有连接并禁止新派发，不代表在途命令已结束；恢复对账需显式配置新的有效 token。模型密钥仅存在主节点配置中。
 
+### 12.1 数据外流边界
+
+“执行在本地”不等于数据不出机器：工具参数、输出和转写都会到主节点并发往模型供应商。中心数据按源码级敏感数据管理（高 = 含源码、命令输出或凭据；中 = 机器拓扑与元数据；低 = 计数与状态）。
+
+| 边界 | 数据 | 中心存储 | 级别 |
+|---|---|---|---|
+| worker → 主节点（WSS） | register 帧：worker_id、boot_id、ledger_id、workspace path 与 repo_id | workers、workspaces、sessions.path/repo_id | 中 |
+| | tool_result：read 返回的文件内容、write 的 hash/字节数、bash 退出码与每流前 64 KiB（`MODEL_STREAM_BYTES`） | runtime_calls.result_json | 高 |
+| | tool_log / log_fetch：bash 完整 stdout/stderr，worker 每调用最多 10 MiB（`CALL_LOG_LIMIT`） | call_logs.data，主节点总量默认 1 GiB（`MAIN_LOG_CAPACITY_BYTES`），超出部分只记 main_truncated | 高 |
+| | Worker token（连接认证） | worker_tokens 只存 digest | 高 |
+| 主节点 → worker | tool_call：工具名与参数（命令、路径、写入全文） | runtime_calls.arguments_json | 高 |
+| 主节点 → 模型供应商 | 系统提示、用户输入、完整历史（含工具参数与 64 KiB 结果视图）；模型密钥作为 API key | messages/runtime_turns/runtime_history、jobs.input_text、runtime_checkpoints；`DATA_DIR/pi-sessions/<session>` 由 Pi SessionManager 管理（是否落盘全文 待核实） | 高 |
+| | 供应商默认 openrouter（`MODEL_PROVIDER`/`MODEL_NAME`），密钥来自 `MODEL_API_KEY` 环境变量；Pi 另有 `DATA_DIR/pi-auth.json` 路径（是否写入密钥 待核实）。供应商侧留存策略 待核实 | 不入库 | 高 |
+| 浏览器 ↔ 主节点（HTTPS/SSE） | 管理员密码（仅登录请求）、session Cookie 与 CSRF；会话、消息、工具结果、日志、事件 | administrators.password_hash（Argon2id）、auth_sessions.digest/csrf、events.content_json | 高 |
+| 磁盘：主节点 | `DATA_DIR` 下 SQLite（含 WAL）及其备份即全部上述中心数据 | 同上；备份权限与保留期见 6.1，具体策略 待核实 | 高 |
+| 磁盘：worker | 账本与 `data_dir/logs/<sha256(call_id)>/{stream}.log/.idx` | 不外流，按保留期清理 | 高 |
+| 进程日志 | Fastify 请求日志脱敏 authorization、cookie；execution 失败 console.error 只打印错误串（是否可能含工具内容 待核实） | 由 systemd/journald 收集 | 中 |
+
+不离开 worker 的数据：
+
+- Worker token：从 `WORKER_TOKEN` 读取（`token_file` 与重连重读见 feat/worker-token-file，合入前 待核实），只在连接认证时发送，主节点存 digest。
+- 工具子进程环境：bash 以 `env_clear()` 启动，只保留固定 PATH 与 HOME（worker/src/process.rs、worker/src/tools.rs），worker 自身环境变量不会进入命令输出。
+- 超出 10 MiB 的输出只计数不存；workspace 中未被 read 或命令打印的文件内容不上传，但模型可经 read/bash 读取任意 workspace 内文件，因此 workspace 内全部内容都应视为可外流。
+- 模型密钥与管理员凭据不下发给 worker。
+
 ## 13. 部署与运维
 
 主节点：Caddy + 常驻 Node 应用 + 本地 SQLite 和日志目录。Caddy 配置 WSS 升级、SSE 无缓冲及合适的长连接超时。应用受 systemd 管理，健康检查区分进程存活与调度就绪。

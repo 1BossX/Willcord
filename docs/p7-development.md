@@ -130,6 +130,7 @@
   - Linux runner 额外构建并 smoke `worker-plane-main-<tag>-linux-<arch>-node24.tar.gz`。
   - 每个文件附带 `.sha256`。
   - 最后用 `gh` 建一个 **draft** release，人工检查后再发布。publish 这一步要求 Linux runner 上装有 `gh`。
+- P7-C 起，这些步骤移到 `ci/verify.sh` 和 `ci/package-release.sh`，Linux 那一路改在 Ubuntu 24.04 镜像里运行，见 [P7-C 的 CI 一节](#cilinux-在-ubuntu-2404-镜像里两个平台同一个脚本)。
 
 ### 部署模板（`deploy/`）
 
@@ -200,6 +201,19 @@
   - `admin {$CADDY_ADMIN:localhost:2019}`：可以通过环境变量改 admin 地址。
   - 改完后的文件通过 `caddy validate` 和 `caddy fmt` 检查。
 
+### CI：Linux 在 Ubuntu 24.04 镜像里，两个平台同一个脚本
+
+- `ci/verify.sh` 是全部 CI 检查，按顺序：协议生成漂移、Rust fmt/test/build、`pnpm check/test/build`、发布目录构建和 smoke、release 版 worker、从产物安装的端到端测试（强制经过 Caddy，没有 `caddy` 直接失败），最后 `git diff --check`。
+- macOS 那一路在 self-hosted Mac 上原生运行这个脚本。Homebrew 的 `bin` 放在 setup-node 之前加入 PATH，这样 OpenSSL 3 和 Caddy 来自 Homebrew，Node 仍是 24.12.0。
+- Linux 那一路用 `ci/in-docker.sh ci/verify.sh`，在 `ci/linux.Dockerfile` 的镜像里运行：
+  - 基础镜像是 `ubuntu:24.04`，和主节点主机相同，所以主节点的原生模块和主机的 glibc 一致；
+  - Node 24.12.0、pnpm 10.18.3、Caddy 2.11.7 都固定版本，并按官方发布的 SHA-256/SHA-512 校验；Rust 用 rustup 安装 stable，和 macOS 那一路一致；
+  - 每台 runner 按 Dockerfile 的哈希给镜像打标签，Dockerfile 不变就不重建；依赖缓存放在按 runner 用户区分的 Docker volume；
+  - `--init` 负责回收测试停掉的进程组，"进程已经不存在"的断言才成立；
+  - 容器在检出目录里建的文件，结束时交还给 runner 用户，下次 checkout 能正常清理。
+- release：`ci/package-release.sh` 生成本平台的 worker 二进制，在 Linux 上另外生成并 smoke 主节点 tarball，每个文件附 `.sha256`。macOS 原生运行它，Linux 在同一个镜像里运行。
+- 本机用 OrbStack（arm64）在镜像里完整跑了一遍：Rust 25+25、server 105、web 7、protocol 3、发布产物端到端 9/9（经 Caddy 保持 75 秒），全部通过。第一次在容器里跑时，P4-A 里一个 1.5 秒的命令在 worker 重连（本身有 1 秒退避）完成前就结束了，测试期望它仍在运行；把命令延长到约 4 秒后稳定通过。
+
 ### 真实环境向导（`deploy/acceptance-wizard.sh`）
 
 - 在运维人员的电脑上运行，共 16 步：
@@ -224,12 +238,16 @@
 
 ### 总验收
 
-自动化环境：macOS arm64（本机），Node 22.22.3，Caddy 2.11.7，release 版 worker。CI 在 self-hosted macOS 和 Linux 上跑全量测试和产物 smoke。
+自动化环境：
+- macOS arm64（本机），Node 22.22.3，Caddy 2.11.7，release 版 worker；
+- Ubuntu 24.04 容器（`ci/linux.Dockerfile`，本机 arm64），Node 24.12.0，Caddy 2.11.7，release 版 worker。
+
+CI 在两个平台上都运行 `ci/verify.sh`，包括从产物安装的端到端测试。
 
 | # | 验收标准 | 证据 | 结果 |
 |---|---|---|---|
-| 1 | 两个平台从干净机器按文档安装，注册、执行、超时、取消和重启恢复通过 | 发布产物端到端测试第 1–6 项：本机 macOS 通过 | macOS 通过；Linux 待 CI 接入、待真实环境（向导第 7–10 步） |
-| 2 | 主节点常驻，WSS/SSE 经 Caddy 长连接可用；健康检查区分存活与调度就绪 | 端到端测试第 8 项（经生产 Caddyfile 保持 75 秒）；`health.test.ts`；`p7-ops` 第 1 条 | 本机通过；10 分钟真实环境待运行（向导第 12 步） |
+| 1 | 两个平台从干净机器按文档安装，注册、执行、超时、取消和重启恢复通过 | 发布产物端到端测试第 1–6 项：macOS 原生和 Ubuntu 24.04 容器都通过 | 自动化通过；真实机器待运行（向导第 7–10 步） |
+| 2 | 主节点常驻，WSS/SSE 经 Caddy 长连接可用；健康检查区分存活与调度就绪 | 端到端测试第 8 项（经生产 Caddyfile 保持 75 秒，两个平台）；`health.test.ts`；`p7-ops` 第 1 条 | 自动化通过；10 分钟真实环境待运行（向导第 12 步） |
 | 3 | 在线备份和迁移可验证；升级不丢失未确认调用、去重水位和父子等待关系 | `p7-ops`：在线备份（第 2 条）、从 011 升级（第 3 条）；端到端测试第 7 项 | 通过 |
 | 4 | 恢复旧备份先停止自动调度并核对 worker 账本，不因主库缺少记录启动重复执行 | `p7-ops`：执行途中备份后恢复，分 worker 已确认和未确认两种情况；恢复不覆盖现有库；磁盘不足时启动即暂停 | 通过；恢复演练待真实环境（向导第 15 步） |
 | 5 | token 撤销、更新 token 后对账、数据目录锁、磁盘预算与日志保留在部署环境生效 | `p7-ops`：token 轮换、保留与磁盘；`p7-deploy`：SIGTERM 后释放锁；端到端测试第 6 项；`wss.test.ts`：目录锁与吊销 | 通过；部署环境的轮换待运行（向导第 13 步） |
@@ -253,4 +271,4 @@
 | 13 | 新连接替换、先对账再派发 | `wss.test.ts`、`p3-recovery.test.ts` | 通过 |
 | 14 | 模型/工具隔离与认证 | P0 spike、`p7-ops` 第 7–9 条 | 通过 |
 
-全部自动化测试在本机通过：server 105、web 7、protocol 3，另有 release 端到端测试 9/9。发布条件：上表中"待运行"的各项通过向导完成，Linux 平台的端到端测试接入 CI 并通过，然后打 `v0.1.0`。
+全部自动化测试在本机 macOS 和 Ubuntu 24.04 容器里通过：server 105、web 7、protocol 3，另有 release 端到端测试 9/9。发布条件：CI 两个平台通过，上表中"待运行"的各项通过向导完成，然后打 `v0.1.0`。

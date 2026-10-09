@@ -35,7 +35,7 @@ worker 机器上的目录（macOS 用 `/usr/local/etc/worker-plane/` 代替 `/et
 
 ## 2. 安装主节点（Linux）
 
-前提：Node 24（`node --version` 显示 v24.x）、Caddy 2、`curl`。产物里的原生模块按 Node 24 和 runner 的架构构建，主机必须是同一架构。
+前提：Ubuntu 24.04、Node 24（`node --version` 显示 v24.x）、Caddy 2、`curl`。主节点产物在 Ubuntu 24.04 镜像里按 Node 24 构建，原生模块依赖它的 glibc：主机用 Ubuntu 24.04（或 glibc 不更旧的发行版），并且和产物同一架构。
 
 ```bash
 sudo useradd --system --home /var/lib/worker-plane --shell /usr/sbin/nologin worker-plane

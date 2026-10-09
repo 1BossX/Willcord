@@ -31,8 +31,11 @@ const hash = (v: unknown) => createHash("sha256").update(JSON.stringify(v)).dige
 const TOOL_RESULT_TIMEOUT_MS = 1_800_000;
 /** Beyond a bash time limit: the worker's TERM grace (at most 30 s) and stop confirmation. */
 const STOP_MARGIN_MS = 60_000;
-/** Output of one stream the model sees; the rest stays in the call log. */
+/** Output of one stream kept in the result; the rest stays in the call log. */
 export const MODEL_STREAM_BYTES = 64 * 1024;
+/** Of a stream's kept output the model reads its start and, when nothing was cut, its end. */
+export const MODEL_VIEW_HEAD_BYTES = 8 * 1024;
+export const MODEL_VIEW_TAIL_BYTES = 8 * 1024;
 const LOG_CHUNK_BYTES = 16 * 1024;
 const DEFAULT_LOG_CAPACITY_BYTES = 1024 ** 3;
 const STREAMS = ["stdout", "stderr"] as const;
@@ -68,9 +71,37 @@ const workerRecord = (record: ToolRecord): ToolRecord => {
   return { ok: record.ok, result };
 };
 
+/** Back off to a UTF-8 character boundary, so a cut never splits a character. */
+const charBoundary = (buf: Buffer, at: number) => { while (at > 0 && at < buf.length && (buf[at] & 0xc0) === 0x80) at--; return at; };
+
+/**
+ * What the model reads of one kept stream. Complete output longer than the
+ * head and tail together shows both, since errors and summaries come last.
+ * Output that ran past what was kept has no end to show, so it shows the head
+ * and says how to see more. Derived from the stored result alone.
+ */
+function streamView(stream: any) {
+  if (typeof stream?.text !== "string") return stream;
+  const buf = Buffer.from(stream.text, "utf8");
+  const total = typeof stream.bytes_total === "number" ? stream.bytes_total : buf.length;
+  const cut = total > (stream.bytes_shown ?? buf.length);
+  if (buf.length <= MODEL_VIEW_HEAD_BYTES + MODEL_VIEW_TAIL_BYTES && !cut) return stream;
+  if (cut) {
+    const head = charBoundary(buf, Math.min(buf.length, MODEL_VIEW_HEAD_BYTES + MODEL_VIEW_TAIL_BYTES));
+    const text = `${buf.subarray(0, head).toString("utf8")}\n[… output continues: ${total - head} more bytes not shown. To see a part of it, run the command again with its output filtered, e.g. | tail -n 100 or | grep …]`;
+    return { ...stream, text, bytes_shown: head, truncated: true };
+  }
+  const head = charBoundary(buf, MODEL_VIEW_HEAD_BYTES), tail = charBoundary(buf, buf.length - MODEL_VIEW_TAIL_BYTES);
+  const text = `${buf.subarray(0, head).toString("utf8")}\n[… ${tail - head} bytes in the middle not shown …]\n${buf.subarray(tail).toString("utf8")}`;
+  return { ...stream, text, bytes_shown: head + buf.length - tail, truncated: true };
+}
+
 /** Pi-visible output of a worker result. Live execution and SQLite recovery must agree. */
 export function toolOutput(record: ToolRecord) {
-  return { content: [{ type: "text" as const, text: JSON.stringify(record.result) }], details: record.result, isError: !record.ok };
+  const result = record.result?.output && typeof record.result.output === "object"
+    ? { ...record.result, output: Object.fromEntries(Object.entries(record.result.output).map(([name, stream]) => [name, streamView(stream)])) }
+    : record.result;
+  return { content: [{ type: "text" as const, text: JSON.stringify(result) }], details: record.result, isError: !record.ok };
 }
 
 export class ExecutionCoordinator {

@@ -6,7 +6,7 @@
 |---|---|---|
 | P7-A | 主节点运维语义：配置校验、调度暂停、在线备份与恢复、升级快照、token 列表与轮换、保留策略与磁盘检查、worker 优雅停止、认证与隔离测试 | 完成 |
 | P7-B | 打包与部署产物：release 构建、systemd/launchd、生产 Caddy、运维 runbook | 完成 |
-| P7-C | 发布验收：从产物安装的端到端测试、真实环境向导、总验收 | 未开始 |
+| P7-C | 发布验收：从产物安装的端到端测试、真实环境向导、总验收 | 进行中：自动化部分完成，真实环境待运行，见 [总验收](#总验收) |
 
 已定决策：
 
@@ -166,3 +166,91 @@
 - `apps/server/test/p7-deploy.test.ts`：`command_path` 含相对路径时 worker 拒绝启动（退出码 1，有错误说明）；改用一个额外目录后，命令能调用该目录里的工具，并且命令看到的 PATH 和配置完全一致。
 - 本机：`deploy/build-main.sh <临时目录> --skip-build` 后跑 `deploy/smoke-main.sh`，健康检查、备份和停止三步都通过。`cargo build --release` 通过。`plutil -lint` 检查 plist 通过。
 - 本机没有装 Caddy 和 systemd，所以 Caddyfile 和 systemd 单元还没有经过 `caddy validate` 和 `systemd-analyze verify`；它们在 P7-C 的安装验收里实际运行。release workflow 要推一个 tag 才会运行，在 P7-C 里征得同意后验证。
+
+## P7-C：发布验收
+
+### 从产物安装的端到端测试（`apps/server/release-test/release.test.ts`）
+
+- 被测对象只有发布产物：`WP_RELEASE_DIR` 指向 `deploy/build-main.sh` 生成的目录，`WP_WORKER_BIN` 指向 release 版 worker 二进制。源码树只提供测试本身和测试证书。
+- 安装方式与运维手册一致：
+  - 主节点用 `node dist/main.js` 启动，第一次启动带 `INITIAL_ADMIN_PASSWORD`；
+  - 通过 API 签发 token，写进 0600 的 `token_file`；
+  - worker 的环境里没有 token，`SSL_CERT_FILE` 只指向部署用的 CA；
+  - 两个进程都用 SIGTERM 停止。
+- 用 `pnpm --filter @worker-plane/server test:release` 运行，依次检查：
+  1. 安装、登录、签发 token、注册；
+  2. 执行；
+  3. 超时：1 秒的时间限制终止了 30 秒的 sleep，后续命令没有执行；
+  4. 取消：被取消命令的进程已经不存在；
+  5. worker 重启（SIGTERM）后恢复；
+  6. 主节点重启：停机时排队的任务在重启后只执行一次，SIGTERM 释放了 `main.lock`；
+  7. 用 release 里的 `admin.js` 在线备份；
+  8. 设置 `CADDY_BIN` 时：把 release 里未改动的 `Caddyfile.production`（内部 CA）放在主节点前面，`/health`、UI 和前端路由回退都经过 Caddy。SSE 和 worker 的 WSS 连续保持 `WP_LONG_SECS`（默认 75 秒），期间心跳经 Caddy 到达，worker 的连接 epoch 不变，之后的任务和事件照常通过。
+- 本机结果（macOS arm64，Node 22，Caddy 2.11.7）：9/9 通过，包括经 Caddy 的 75 秒长连接。
+
+### 这一步发现并修复的问题
+
+- **主节点在 SIGTERM 下可能直接被杀，`main.lock` 留在原地。**
+  - 原因：Pi SDK 依赖的 `proper-lockfile` 会装入 `signal-exit` 3.0.7。原来的处理函数用 `process.once` 注册，触发时会先移除自己；`signal-exit` 随后发现没有其他监听者，就把信号重新发给进程。
+  - 后果：只要有任务运行过，`systemctl stop` 就会让下次启动因为锁存在而被拒绝。
+  - 修复：`main.ts` 改用 `process.on`，并让关闭流程只执行一次。
+  - 回归测试：`p7-deploy.test.ts` 里先让主进程跑完一个任务再发 SIGTERM，断言以 0 退出且锁已释放。去掉修复后这个测试失败。
+- **`deploy/Caddyfile.production` 补了两项全局设置。**
+  - `skip_install_trust`：根证书由人工分发，不尝试写入主机的信任库。
+  - `admin {$CADDY_ADMIN:localhost:2019}`：可以通过环境变量改 admin 地址。
+  - 改完后的文件通过 `caddy validate` 和 `caddy fmt` 检查。
+
+### 真实环境向导（`deploy/acceptance-wizard.sh`）
+
+- 在运维人员的电脑上运行，共 16 步：
+  1. 准备机器和地址；
+  2. 下载并校验产物；
+  3. 安装主节点；
+  4. 配置 Caddy 和内部 CA，并自动检查 `/health`；
+  5. 浏览器信任证书并登录；
+  6. 签发 token；
+  7. 安装 Linux worker，并自动检查可执行状态；
+  8. 安装 macOS worker，并自动检查可执行状态；
+  9. Linux worker：执行、超时、取消、重启；
+  10. macOS worker：执行、超时、取消、重启；
+  11. 主节点重启恢复；
+  12. 经 Caddy 保持 10 分钟，自动比较连接 epoch；
+  13. token 轮换，自动检查；
+  14. 真实模型双机委派：是否同一轮委派、是否带 verify、最终结果；
+  15. 备份和恢复演练；
+  16. 汇总。
+- 结果写在 `~/.worker-plane-acceptance/results.env`，不在仓库里。
+- 模型 key 和管理员初始密码只在主机上输入。向导自己用到的管理员密码是隐藏输入，用完就丢弃。token 只写入本机 0600 文件，装好 worker 后删除。
+
+### 总验收
+
+自动化环境：macOS arm64（本机），Node 22.22.3，Caddy 2.11.7，release 版 worker。CI 在 self-hosted macOS 和 Linux 上跑全量测试和产物 smoke。
+
+| # | 验收标准 | 证据 | 结果 |
+|---|---|---|---|
+| 1 | 两个平台从干净机器按文档安装，注册、执行、超时、取消和重启恢复通过 | 发布产物端到端测试第 1–6 项：本机 macOS 通过 | macOS 通过；Linux 待 CI 接入、待真实环境（向导第 7–10 步） |
+| 2 | 主节点常驻，WSS/SSE 经 Caddy 长连接可用；健康检查区分存活与调度就绪 | 端到端测试第 8 项（经生产 Caddyfile 保持 75 秒）；`health.test.ts`；`p7-ops` 第 1 条 | 本机通过；10 分钟真实环境待运行（向导第 12 步） |
+| 3 | 在线备份和迁移可验证；升级不丢失未确认调用、去重水位和父子等待关系 | `p7-ops`：在线备份（第 2 条）、从 011 升级（第 3 条）；端到端测试第 7 项 | 通过 |
+| 4 | 恢复旧备份先停止自动调度并核对 worker 账本，不因主库缺少记录启动重复执行 | `p7-ops`：执行途中备份后恢复，分 worker 已确认和未确认两种情况；恢复不覆盖现有库；磁盘不足时启动即暂停 | 通过；恢复演练待真实环境（向导第 15 步） |
+| 5 | token 撤销、更新 token 后对账、数据目录锁、磁盘预算与日志保留在部署环境生效 | `p7-ops`：token 轮换、保留与磁盘；`p7-deploy`：SIGTERM 后释放锁；端到端测试第 6 项；`wss.test.ts`：目录锁与吊销 | 通过；部署环境的轮换待运行（向导第 13 步） |
+| 6 | worker 无模型进程/密钥；主节点 runtime 无本地执行工具；所有公开入口通过认证 | `p7-ops` 第 7–9 条 | 通过 |
+| 7 | Spec v2 对照表全部通过，故障场景不以 happy-path 代替 | 下表 | 见下表 |
+
+| Spec v2 | 内容 | 证据 | 结果 |
+|---|---|---|---|
+| 1 | 双 worker、离线队列、token 撤销 | `wss.test.ts`（两个真实 worker、吊销）、P2 离线排队、`p7-ops` 轮换 | 通过；真实双机待运行 |
+| 2 | 指定目标执行与拒绝误路由 | [P2](p2-development.md)、`p2.test.ts` | 通过 |
+| 3 | remote 规范化、多 workspace | [P1](p1-development.md)、[P2](p2-development.md) | 通过 |
+| 4 | 成功后依赖委派、失败阻止 | `p5-wait.test.ts`、`p5-delegate.test.ts` | 脚本模型通过；真实模型待运行（向导第 14 步） |
+| 5 | 子会话隔离、追问与固定目标 | [P5](p5-development.md)、`p6-conversation.test.ts` | 通过 |
+| 6 | 用户与委派共同 FIFO、每机串行 | [P2](p2-development.md)、[P5](p5-development.md) | 通过 |
+| 7 | 结果丢失后副作用不重复 | `worker-ledger.test.ts`、`p3-faults.test.ts` | 通过 |
+| 8 | 调用/ACK/结果/取消重复帧 | `p3-faults.test.ts`、`p4-faults.test.ts` | 通过 |
+| 9 | worker 重启不确定状态阻塞 | `p3-recovery.test.ts` | 通过 |
+| 10 | 主节点各提交窗口恢复 | `p3-main-process.test.ts`、`p5-faults.test.ts` | 通过 |
+| 11 | 全状态取消并确认旧执行结束 | `p4-control.test.ts`、`p5-wait.test.ts`、端到端测试第 4 项 | 通过 |
+| 12 | 大输出、超时与进程终止核查 | `worker-process.test.ts`（P4-A）、`p4-output.test.ts`、端到端测试第 3 项 | 通过 |
+| 13 | 新连接替换、先对账再派发 | `wss.test.ts`、`p3-recovery.test.ts` | 通过 |
+| 14 | 模型/工具隔离与认证 | P0 spike、`p7-ops` 第 7–9 条 | 通过 |
+
+全部自动化测试在本机通过：server 105、web 7、protocol 3，另有 release 端到端测试 9/9。发布条件：上表中"待运行"的各项通过向导完成，Linux 平台的端到端测试接入 CI 并通过，然后打 `v0.1.0`。

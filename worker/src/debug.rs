@@ -93,6 +93,14 @@ fn token(config: &Config) -> Result<String, Error> {
 
 /// Lock state without creating anything: a held lock means a worker is running here.
 fn data_dir(dir: &Path) -> Result<String, Error> {
+    match fs::symlink_metadata(dir) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("{}: {e}", dir.display()).into()),
+        Ok(_) if !dir.is_dir() => {
+            return Err(format!("{} exists but is not a directory", dir.display()).into());
+        }
+        Ok(_) => {}
+    }
     if !dir.is_dir() {
         return Ok(format!(
             "{} does not exist yet; the worker creates it",

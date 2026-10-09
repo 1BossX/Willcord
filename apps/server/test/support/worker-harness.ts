@@ -115,6 +115,8 @@ export async function startTlsProxy(certs: ReturnType<typeof createCertificates>
   const gateway = new WebSocketServer({ noServer: true, maxPayload: 65536 });
   const pairs = new Set<{ client: WebSocket; upstream: WebSocket }>();
   server.on("upgrade", (req, socket, head) => {
+    // A refused client may reset right after reading the 401; that is not a test failure.
+    socket.on("error", () => socket.destroy());
     const upstream = new WebSocket(`ws://127.0.0.1:${target()}${req.url}`, { headers: { authorization: req.headers.authorization ?? "" } });
     upstream.on("unexpected-response", (_req, res) => socket.end(`HTTP/1.1 ${res.statusCode} Unauthorized\r\nConnection: close\r\n\r\n`));
     upstream.on("error", () => socket.destroy());

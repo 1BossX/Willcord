@@ -215,11 +215,15 @@ export function AttentionPanel({ job, workerId, workerBlocked, refreshKey, onDon
   );
 }
 
-type LogPage = { chunks: number | null; bytes_total: number | null; worker_truncated: number; main_truncated: number; state: string; items: { seq: number; data: string }[] };
+type LogGap = { from_seq: number; to_seq: number | null; from_offset: number; missing_bytes: number | null };
+type LogPage = { chunks: number | null; bytes_total: number | null; worker_truncated: number; main_truncated: number; state: string; gaps: LogGap[]; items: { seq: number; offset: number; data: string }[] };
 const decode = (b64: string) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
 
-/** The stored output of one command, fetched page by page. */
-export function LogViewer({ jobId, callId }: { jobId: string; callId: string }) {
+/**
+ * The stored output of one command, fetched page by page. `version` changes
+ * as more output is stored, so a running command's log follows along.
+ */
+export function LogViewer({ jobId, callId, version }: { jobId: string; callId: string; version?: number }) {
   const [stream, setStream] = useState<"stdout" | "stderr">("stdout");
   const [text, setText] = useState(""), [next, setNext] = useState(0);
   const [page, setPage] = useState<LogPage | null>(null), [error, setError] = useState("");
@@ -236,6 +240,8 @@ export function LogViewer({ jobId, callId }: { jobId: string; callId: string }) 
     } catch (e) { setError(e instanceof Error ? e.message : "无法读取日志"); }
   };
   useEffect(() => { setText(""); void load(0, stream, false); }, [stream, jobId, callId]);
+  // New output while streaming: re-read the first page so it never repeats a chunk.
+  useEffect(() => { if (version !== undefined && page) void load(0, stream, false); }, [version]);
   const more = page && page.chunks !== null && next < page.chunks && page.items.length > 0;
   return (
     <div className="log-viewer">
@@ -251,7 +257,18 @@ export function LogViewer({ jobId, callId }: { jobId: string; callId: string }) 
           {page.worker_truncated ? " · 机器只保存了前 10 MiB" : ""}
           {page.main_truncated ? " · 主节点容量已满，超出部分未保存" : ""}
           {page.state === "expired" ? " · 机器已不再保留缺失部分" : ""}
+          {page.state === "streaming" ? " · 仍在接收" : ""}
         </p>
+      )}
+      {page && page.gaps?.length > 0 && (
+        <ul className="log-gaps" aria-label="日志缺口">
+          {page.gaps.map((g) => (
+            <li key={g.from_seq}>
+              缺口：第 {g.from_seq}{g.to_seq !== null && g.to_seq !== g.from_seq ? `–${g.to_seq}` : ""} 块，从第 {g.from_offset.toLocaleString()} 字节起
+              {g.missing_bytes !== null ? `，缺 ${g.missing_bytes.toLocaleString()} 字节` : ""}。这部分输出主节点没有收到，下方内容在此处不连续。
+            </li>
+          ))}
+        </ul>
       )}
       {more && <button type="button" className="secondary-button" onClick={() => load(next)}>加载更多</button>}
     </div>

@@ -51,4 +51,4 @@ TypeScript 检查、Vite 生产构建和服务端 14 项回归覆盖该改动。
 
 ## 后续阶段边界
 
-持久委派已在 P5 实现，UI 提供 Main Agent 入口、委派卡片和子会话跳转（见 [P5 开发记录](p5-development.md#ui)）；取消、人工核对和完整日志查看已在 P4 实现（见 [P4 开发记录](p4-development.md#ui)）；快照游标和 SSE 补放仍需后续实现。本次继续使用认证轮询，不将 UI 重设计标为 P6 全量通过。
+持久委派已在 P5 实现，UI 提供 Main Agent 入口、委派卡片和子会话跳转（见 [P5 开发记录](p5-development.md#ui)）；取消、人工核对和完整日志查看已在 P4 实现（见 [P4 开发记录](p4-development.md#ui)）；快照游标和 SSE 补放已在 P6 实现，UI 不再轮询（见 [P6 开发记录](p6-development.md#p6-bui-改为快照--sse)）。P6 全量验收以 P6-C 的记录为准。

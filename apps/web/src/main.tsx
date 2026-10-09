@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { marked } from "marked";
 import { ApiError, request } from "./api";
 import { AttentionPanel, BudgetRows, CancelButton, LogViewer, RetryButton, type JobControl } from "./control";
+import { useFeed } from "./feed";
 import "./style.css";
 
 type Worker = {
@@ -11,6 +12,10 @@ type Worker = {
   reconciled: number;
   blocked: number;
   active_job_id: string | null;
+  /** Online, reconciled and not blocked: the only state in which it starts work. */
+  schedulable?: boolean;
+  queued_jobs?: number;
+  unblock_pending?: number;
 };
 type Workspace = {
   workspace_id: string;
@@ -32,9 +37,22 @@ type Session = {
   parent_job_id?: string | null;
   delegation_id?: string | null;
 };
+type Child = {
+  job_id: string;
+  session_id: string;
+  delegation_id: string | null;
+  worker_id: string;
+  state: string;
+  end_reason: string | null;
+  cancel_requested: number;
+  result: { outcome: string; summary: string; error: string | null; exit_code?: number; verification?: { status: string; exit_code: number | null } } | null;
+};
 type Job = JobControl & {
   job_id: string;
+  session_id: string;
   state: string;
+  children?: Child[];
+  children_summary?: { total: number; succeeded: number; failed: number; needs_attention: number; open: number };
   input_text: string;
   created_at: number;
   started_at: number | null;
@@ -220,12 +238,13 @@ function time(value: number | null, full = false) {
       })
     : "—";
 }
+/** Whether a machine can start work. Connection is shown separately: online alone is not "可执行". */
 function workerStatus(worker: Worker) {
-  if (worker.blocked) return { label: "需要核对", tone: "danger" };
+  if (worker.blocked) return { label: worker.unblock_pending ? "等待机器确认" : "需要核对", tone: "danger" };
   if (worker.active_job_id) return { label: "忙碌", tone: "active" };
-  if (!worker.online) return { label: "未就绪", tone: "muted" };
-  if (!worker.reconciled) return { label: "等待对账", tone: "warning" };
-  return { label: "空闲", tone: "success" };
+  if (!worker.online) return { label: "不可执行", tone: "muted" };
+  if (!(worker.schedulable ?? worker.reconciled)) return { label: "等待对账", tone: "warning" };
+  return { label: "可执行", tone: "success" };
 }
 function Status({ state }: { state: string }) {
   return (
@@ -493,7 +512,25 @@ function MarkdownMessage({ value }: { value: string }) {
   return <MarkdownBlocks tokens={tokens} />;
 }
 
-function ToolCard({ value, jobId, onOpenSession }: { value: Content; jobId: string; onOpenSession?: (sessionId: string) => void }) {
+const childEnd: Record<string, string> = {
+  dependency_failed: "前置任务未成功，没有执行",
+  verification_failed: "验证命令未通过",
+};
+/** The live state of a delegated child, from the parent job's view. */
+function DelegationStatus({ child }: { child: Child }) {
+  const r = child.result;
+  const unsuccessful = ["failed", "cancelled"].includes(child.state);
+  return (
+    <div className={`delegation-status ${unsuccessful ? "is-failed" : child.state === "needs_attention" ? "is-attention" : ""}`}>
+      <Status state={child.state} />
+      {child.cancel_requested && !["cancelled", "failed", "succeeded"].includes(child.state) ? <span>已请求取消</span> : null}
+      {child.end_reason && childEnd[child.end_reason] ? <span>{childEnd[child.end_reason]}</span> : null}
+      {r?.verification ? <span>验证{r.verification.status === "completed" && r.verification.exit_code === 0 ? "通过" : `未通过（退出码 ${r.verification.exit_code ?? "未知"}）`}</span> : null}
+      {r && r.summary !== child.end_reason && r.summary !== child.state && <p className="delegation-result">{r.summary}</p>}
+    </div>
+  );
+}
+function ToolCard({ value, jobId, onOpenSession, delegations }: { value: Content; jobId: string; onOpenSession?: (sessionId: string) => void; delegations?: Child[] }) {
   const [showLog, setShowLog] = useState(false);
   const result = (
     value.content &&
@@ -530,6 +567,7 @@ function ToolCard({ value, jobId, onOpenSession }: { value: Content; jobId: stri
         ? "已超时停止"
         : "";
   const failed = value.ok === false || Boolean(result.error) || nonzeroExit;
+  const child = tool === "delegate" ? delegations?.find((c) => c.job_id === result.job_id) : undefined;
   const titles: Record<string, string> = {
     read: "读取文件",
     write: "写入文件",
@@ -546,14 +584,14 @@ function ToolCard({ value, jobId, onOpenSession }: { value: Content; jobId: stri
       : tool === "write"
         ? `${(result.bytes ?? 0).toLocaleString()} 字节`
         : tool === "delegate"
-          ? `${result.worker_id ?? "机器"} · ${result.duplicate ? "沿用已有委派" : result.waiting_for_dependencies ? "已委派，排在前置任务之后" : "已委派"}`
+          ? `${result.worker_id ?? "机器"} · ${child ? (jobLabels[child.state] ?? child.state) : result.duplicate ? "沿用已有委派" : result.waiting_for_dependencies ? "已委派，排在前置任务之后" : "已委派"}`
         : tool === "list_workers"
           ? `${result.workers?.length ?? 0} 台机器`
         : tool === "bash"
           ? `${stopped ? `${stopped} · 信号 ${result.signal ?? "未知"}` : `退出码 ${result.exit_code ?? "未知"}`}${result.truncated || outputCut ? " · 输出已截断" : ""}`
           : "查看结果";
   return (
-    <details className={`tool-card ${failed ? "tool-failed" : ""}`}>
+    <details className={`tool-card ${failed || (child && ["failed", "cancelled", "needs_attention"].includes(child.state)) ? "tool-failed" : ""}`} open={tool === "delegate" ? true : undefined}>
       <summary>
         <span className="tool-icon">
           <Icon
@@ -606,8 +644,10 @@ function ToolCard({ value, jobId, onOpenSession }: { value: Content; jobId: stri
                 )}
               </>
             )}
+            {child && <DelegationStatus child={child} />}
             {tool === "delegate" && (
               <dl className="delegation-facts">
+                <dt>来源</dt><dd>Main Agent 任务 {jobId.slice(0, 8)}</dd>
                 <dt>目标</dt><dd>{result.worker_id} / {String((result as Record<string, unknown>).workspace_id ?? "默认工作目录")}</dd>
                 <dt>委派 ID</dt><dd>{result.delegation_id}</dd>
                 {result.depends_on?.length ? (<><dt>前置任务</dt><dd>{result.depends_on.join("、")}</dd></>) : null}
@@ -654,9 +694,9 @@ function ToolCard({ value, jobId, onOpenSession }: { value: Content; jobId: stri
     </details>
   );
 }
-function ChatMessage({ message, agent = "Worker Agent", onOpenSession }: { message: Message; agent?: string; onOpenSession?: (sessionId: string) => void }) {
+function ChatMessage({ message, agent = "Worker Agent", onOpenSession, delegations }: { message: Message; agent?: string; onOpenSession?: (sessionId: string) => void; delegations?: Child[] }) {
   const value = parseMessage(message);
-  if (value.role === "tool") return <ToolCard value={value} jobId={message.job_id} onOpenSession={onOpenSession} />;
+  if (value.role === "tool") return <ToolCard value={value} jobId={message.job_id} onOpenSession={onOpenSession} delegations={delegations} />;
   return (
     <div
       className={`chat-message ${value.role === "user" ? "from-user" : "from-agent"}`}
@@ -676,19 +716,83 @@ function ChatMessage({ message, agent = "Worker Agent", onOpenSession }: { messa
   );
 }
 
+type Draft = { draft_id: string; job_id: string; text: string; state: "streaming" | "interrupted"; created_at: number };
+type Call = { job_id: string; call_id: string; tool_name: string; arguments: { command?: string; path?: string; prompt?: string }; status: string };
+type LogState = { job_id: string; call_id: string; stream: string; bytes_held: number; state: string };
+
+/**
+ * Why a job is where it is and what can be done, in words: queue place, the
+ * machine it waits for, children, a stop in progress, a check it needs.
+ */
+function JobNotes({ job, worker }: { job: Job; worker?: Worker }) {
+  const notes: { tone: string; text: string }[] = [];
+  const summary = job.children_summary;
+  if (job.state === "waiting_worker" || (queuedStates.has(job.state) && worker && !worker.online))
+    notes.push({ tone: "warning", text: `等待 ${job.worker_id} 上线后执行${job.queue_position ? `，队列第 ${job.queue_position} 位` : ""}${job.wait_until ? `；${time(job.wait_until, true)} 前未上线将放弃` : ""}` });
+  else if (queuedStates.has(job.state) && worker?.blocked)
+    notes.push({ tone: "warning", text: `${job.worker_id} 需要核对，核对完成前不会开始${job.queue_position ? `；队列第 ${job.queue_position} 位` : ""}` });
+  else if (job.state === "queued" && job.worker_id && job.queue_position == null)
+    notes.push({ tone: "muted", text: "等待前置任务成功后才进入机器队列" });
+  else if (job.state === "queued" && job.queue_position)
+    notes.push({ tone: "muted", text: job.queue_position === 1 && !worker?.active_job_id ? "即将开始" : `排在 ${job.worker_id} 队列第 ${job.queue_position} 位，前面的任务结束后开始` });
+  if (job.state === "waiting_children" && summary)
+    notes.push({ tone: "active", text: `等待 ${summary.open + summary.needs_attention} 个子任务结束，期间不调用模型` });
+  if (job.state === "cancel_requested")
+    notes.push({ tone: "warning", text: job.worker_id ? "已请求取消：正在等待命令确认结束，确认前这台机器不会开始下一个任务" : "已请求取消：正在停止生成，并等待子任务结束" });
+  if (job.state === "needs_attention")
+    notes.push({ tone: "danger", text: `需要核对：执行情况无法确认，不会自动重跑${job.cancel_requested ? "；取消请求已记录，但不能宣称已安全停止" : ""}。请在任务详情中处理` });
+  if (summary && summary.failed + summary.needs_attention > 0 && !activeStates.has(job.state))
+    notes.push({ tone: "danger", text: `${summary.failed + summary.needs_attention} 个子任务未成功${summary.needs_attention ? `（其中 ${summary.needs_attention} 个需要核对）` : ""}，请查看委派卡片` });
+  if (!notes.length) return null;
+  return (
+    <ul className="job-notes">
+      {notes.map((n) => <li key={n.text} className={`tone-${n.tone}`}>{n.text}</li>)}
+    </ul>
+  );
+}
+
+/** A call that was sent but has no result yet, with its output as it arrives. */
+function PendingCall({ call, log }: { call: Call; log?: LogState }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className={`pending-call ${call.status === "unknown" ? "is-unknown" : ""}`}>
+      <span className="working-dots"><i /><i /><i /></span>
+      <span>
+        {call.status === "unknown" ? "执行情况未知" : call.status === "committed" ? "等待发送" : "正在执行"} ·{" "}
+        <code>{call.arguments.command ?? call.arguments.path ?? call.tool_name}</code>
+      </span>
+      {call.tool_name === "bash" && log && (open
+        ? <LogViewer jobId={call.job_id} callId={call.call_id} version={log.bytes_held} />
+        : <button type="button" className="secondary-button" onClick={() => setOpen(true)}>查看实时输出</button>)}
+    </div>
+  );
+}
+
+/** Model text before it commits. An interrupted draft is never presented as an answer. */
+function DraftMessage({ draft, agent }: { draft: Draft; agent: string }) {
+  return (
+    <div className={`chat-message from-agent draft-message ${draft.state === "interrupted" ? "is-interrupted" : ""}`}>
+      <span className="message-avatar"><Icon name="plane" /></span>
+      <div className="message-body">
+        <div className="message-author">
+          {agent}
+          <span className="draft-label">{draft.state === "interrupted" ? "生成中断，未提交" : "正在生成…"}</span>
+        </div>
+        <div className="message-copy"><MarkdownMessage value={draft.text} /></div>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [auth, setAuth] = useState<"checking" | "logged-out" | "logged-in">(
     "checking",
   );
-  const [workers, setWorkers] = useState<Worker[]>([]),
-    [sessions, setSessions] = useState<Session[]>([]);
   const [selectedWorker, setSelectedWorker] = useState<string | null>(null),
     [sessionId, setSessionId] = useState<string | null>(null);
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null),
     [editingTitle, setEditingTitle] = useState("");
-  const [messages, setMessages] = useState<Message[]>([]),
-    [jobs, setJobs] = useState<Job[]>([]),
-    [selectedJobId, setSelectedJobId] = useState<string | null>(null);
+  const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>(() => {
     try {
       const saved = JSON.parse(
@@ -709,8 +813,7 @@ function App() {
   const [password, setPassword] = useState(""),
     [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false),
-    [loggingIn, setLoggingIn] = useState(false),
-    [loadingConversation, setLoadingConversation] = useState(false);
+    [loggingIn, setLoggingIn] = useState(false);
   const [modalOpen, setModalOpen] = useState(false),
     [modalWorker, setModalWorker] = useState(""),
     [modalWorkspace, setModalWorkspace] = useState("");
@@ -735,10 +838,19 @@ function App() {
   const [refreshKey, setRefreshKey] = useState(0);
   /** The side-effect warning of a retry, shown on the job it created. */
   const [retryNotice, setRetryNotice] = useState<{ jobId: string; text: string } | null>(null);
-  const lastSession = useRef<string | null>(null);
   const restored = useRef(false),
     dialog = useRef<HTMLDialogElement>(null),
     composer = useRef<HTMLTextAreaElement>(null);
+  const feed = useFeed(auth === "logged-in", sessionId, {
+    onUnauthorized: () => setAuth("logged-out"),
+    onError: (cause) => report(cause),
+    onMissingSession: () => { localStorage.removeItem("worker-plane-session"); setSessionId(null); setSelectedWorker(null); },
+  });
+  const workers = (Object.values(feed.state.workers) as Worker[]).sort((a, b) => a.worker_id.localeCompare(b.worker_id));
+  const sessions = (Object.values(feed.state.sessions) as Session[]).sort((a, b) => b.created_at - a.created_at);
+  const messages = (Object.values(feed.state.messages) as (Message & { seq: number })[]).sort((a, b) => a.seq - b.seq);
+  const jobs = (Object.values(feed.state.jobs) as Job[]).sort((a, b) => a.created_at - b.created_at);
+  const loadingConversation = Boolean(sessionId) && !feed.loaded;
   const activeSession = sessions.find(
     (session) => session.session_id === sessionId,
   );
@@ -776,42 +888,38 @@ function App() {
     const generation = ++navigation.current;
     setError("");
     setEditingSessionId(null);
-    localStorage.removeItem("worker-plane-session");
     setSelectedWorker(null);
+    setSelectedJobId(null);
+    setNavOpen(false);
     try {
-      const main = await request<Session>("/api/main");
+      const main = feed.state.mainSessionId ?? (await request<Session>("/api/main")).session_id;
       if (generation !== navigation.current) return;
-      setSessions((current) => current.some((s) => s.session_id === main.session_id) ? current : [main, ...current]);
-      setSessionId(main.session_id);
+      setSessionId(main);
+      // A refresh reopens Main too.
+      localStorage.setItem("worker-plane-session", main);
     } catch (cause) {
       if (generation !== navigation.current) return;
       report(cause);
       setSessionId(null);
     }
-    setMessages([]);
-    setJobs([]);
-    setSelectedJobId(null);
-    setNavOpen(false);
   }
   const agentName = activeSession?.kind === "main" ? "Main Agent" : "Worker Agent";
   /** A delegation card opens its child session, which is an ordinary worker session. */
   function openSessionById(id: string) {
     const session = sessions.find((s) => s.session_id === id);
     if (session) return selectSession(session);
-    void request<Session[]>("/api/sessions").then((next) => {
-      setSessions(next);
-      const found = next.find((s) => s.session_id === id);
-      if (found) selectSession(found);
-    }, report);
+    // Not delivered yet: the snapshot of that session brings it.
+    navigation.current++;
+    setSessionId(id);
+    setSelectedJobId(null);
+    localStorage.setItem("worker-plane-session", id);
   }
   function selectSession(session: Session) {
     navigation.current++;
     setError("");
     setEditingSessionId(null);
-    setSelectedWorker(session.worker_id);
+    setSelectedWorker(session.kind === "main" ? null : session.worker_id);
     setSessionId(session.session_id);
-    setMessages([]);
-    setJobs([]);
     setSelectedJobId(null);
     setNavOpen(false);
     localStorage.setItem("worker-plane-session", session.session_id);
@@ -826,8 +934,6 @@ function App() {
     else {
       setSelectedWorker(worker.worker_id);
       setSessionId(null);
-      setMessages([]);
-      setJobs([]);
       setSelectedJobId(null);
       setNavOpen(false);
     }
@@ -858,98 +964,20 @@ function App() {
       });
     return () => controller.abort();
   }, []);
+  // After login, reopen the session the browser had open, Main included.
   useEffect(() => {
-    if (auth !== "logged-in") return;
-    const controller = new AbortController();
-    let polling = false;
-    const refresh = async () => {
-      if (polling) return;
-      polling = true;
-      try {
-        const [nextWorkers, nextSessions] = await Promise.all([
-          request<Worker[]>("/api/workers", { signal: controller.signal }),
-          request<Session[]>("/api/sessions", { signal: controller.signal }),
-        ]);
-        if (controller.signal.aborted) return;
-        setWorkers(nextWorkers);
-        setSessions(nextSessions);
-        if (!restored.current) {
-          restored.current = true;
-          const saved = nextSessions.find(
-            (session) =>
-              session.kind === "worker" &&
-              session.session_id ===
-                localStorage.getItem("worker-plane-session"),
-          );
-          if (saved) {
-            setSelectedWorker(saved.worker_id);
-            setSessionId(saved.session_id);
-          }
-        }
-      } catch (cause) {
-        if (!controller.signal.aborted) report(cause);
-      } finally {
-        polling = false;
-      }
-    };
-    void refresh();
-    const timer = setInterval(() => void refresh(), 5000);
-    return () => {
-      clearInterval(timer);
-      controller.abort();
-    };
-  }, [auth, refreshKey]);
+    if (restored.current || !feed.state.mainSessionId) return;
+    restored.current = true;
+    const saved = sessions.find((session) => session.session_id === localStorage.getItem("worker-plane-session"));
+    if (saved) {
+      setSelectedWorker(saved.kind === "main" ? null : saved.worker_id);
+      setSessionId(saved.session_id);
+    }
+  }, [feed.state.mainSessionId]);
+  // A child session opened before its record arrived gets its machine once it does.
   useEffect(() => {
-    const changingSession = lastSession.current !== sessionId;
-    lastSession.current = sessionId;
-    if (changingSession) {
-      setMessages([]);
-      setJobs([]);
-      setSelectedJobId(null);
-    }
-    if (!sessionId || auth !== "logged-in") {
-      setLoadingConversation(false);
-      return;
-    }
-    const controller = new AbortController();
-    let polling = false;
-    if (changingSession) setLoadingConversation(true);
-    const refresh = async () => {
-      if (polling) return;
-      polling = true;
-      try {
-        const [nextMessages, nextJobs] = await Promise.all([
-          request<Message[]>(
-            `/api/sessions/${encodeURIComponent(sessionId)}/messages`,
-            { signal: controller.signal },
-          ),
-          request<Job[]>(
-            `/api/sessions/${encodeURIComponent(sessionId)}/jobs`,
-            { signal: controller.signal },
-          ),
-        ]);
-        if (controller.signal.aborted) return;
-        setMessages(nextMessages);
-        setJobs(nextJobs);
-        setSelectedJobId((current) =>
-          nextJobs.some((job) => job.job_id === current)
-            ? current
-            : (nextJobs.at(-1)?.job_id ?? null),
-        );
-      } catch (cause) {
-        if (!controller.signal.aborted) report(cause);
-      } finally {
-        if (!controller.signal.aborted) setLoadingConversation(false);
-        polling = false;
-      }
-    };
-    void refresh();
-    const timer = setInterval(() => void refresh(), 2000);
-    return () => {
-      clearInterval(timer);
-      controller.abort();
-    };
-  }, [auth, sessionId, refreshKey]);
+    if (activeSession?.kind === "worker" && selectedWorker !== activeSession.worker_id) setSelectedWorker(activeSession.worker_id);
+  }, [activeSession?.session_id]);
   useEffect(() => {
     if (!modalOpen || !modalWorker) return;
     const controller = new AbortController();
@@ -1046,8 +1074,6 @@ function App() {
     try {
       await request("/auth/logout", { method: "POST" });
       setAuth("logged-out");
-      setWorkers([]);
-      setSessions([]);
       setSelectedWorker(null);
       setSessionId(null);
       restored.current = false;
@@ -1071,7 +1097,6 @@ function App() {
           repo_id: workspace.repo_id,
         }),
       });
-      setSessions((current) => [created, ...current]);
       selectSession(created);
       setModalOpen(false);
       setError("");
@@ -1094,14 +1119,9 @@ function App() {
       return;
     }
     try {
-      const updated = await request<Session>(
+      await request<Session>(
         `/api/sessions/${encodeURIComponent(session.session_id)}`,
         { method: "PATCH", body: JSON.stringify({ title }) },
-      );
-      setSessions((current) =>
-        current.map((item) =>
-          item.session_id === updated.session_id ? updated : item,
-        ),
       );
       setEditingSessionId(null);
       setError("");
@@ -1117,7 +1137,7 @@ function App() {
     setSubmitting(true);
     setError("");
     try {
-      const result = await request<{ existing?: boolean }>(
+      await request<{ existing?: boolean }>(
         `/api/sessions/${encodeURIComponent(target)}/messages`,
         {
           method: "POST",
@@ -1127,18 +1147,6 @@ function App() {
           }),
         },
       );
-      if (!result.existing && !activeSession?.title) {
-        const title = Array.from(message.trim().replace(/\s+/g, " "))
-          .slice(0, 80)
-          .join("");
-        setSessions((current) =>
-          current.map((item) =>
-            item.session_id === target && !item.title
-              ? { ...item, title }
-              : item,
-          ),
-        );
-      }
       setDrafts((current) => {
         if (current[target] !== message) return current;
         const next = { ...current };
@@ -1146,7 +1154,6 @@ function App() {
         return next;
       });
       setSelectedJobId(null);
-      setRefreshKey((value) => value + 1);
     } catch (cause) {
       report(cause);
     } finally {
@@ -1505,6 +1512,12 @@ function App() {
             </button>
           </div>
         )}
+        {feed.connection === "reconnecting" && (
+          <div className="connection-banner" role="status">
+            <span className="loading-indicator" />
+            与主节点的实时连接已断开，正在重连并补齐断线期间的变化…
+          </div>
+        )}
         {selectedWorker === null && !sessionId ? (
           <div className="main-agent-home">
             <div className="welcome-topline">
@@ -1729,11 +1742,22 @@ function App() {
                                   message={message}
                                   agent={agentName}
                                   onOpenSession={openSessionById}
+                                  delegations={group.job.children}
                                 />
                               ))}
                             </div>
                           </details>
                         )}
+                        {(Object.values(feed.state.calls) as Call[])
+                          .filter((call) => call.job_id === group.job.job_id && ["committed", "dispatched", "unknown"].includes(call.status))
+                          .map((call) => (
+                            <PendingCall key={call.call_id} call={call} log={feed.state.logs[`${call.job_id}/${call.call_id}/stdout`] as LogState | undefined} />
+                          ))}
+                        {(Object.values(feed.state.drafts) as Draft[])
+                          .filter((draft) => draft.job_id === group.job.job_id)
+                          .sort((a, b) => a.created_at - b.created_at)
+                          .map((draft) => <DraftMessage key={draft.draft_id} draft={draft} agent={agentName} />)}
+                        <JobNotes job={group.job} worker={workers.find((w) => w.worker_id === group.job.worker_id)} />
                       </section>
                     );
                   })}
@@ -1937,7 +1961,7 @@ function App() {
                 job={selectedJob}
                 workerId={selectedJob.worker_id}
                 workerBlocked={Boolean(activeWorker?.blocked)}
-                refreshKey={refreshKey}
+                refreshKey={refreshKey + feed.state.attentionVersion}
                 onDone={() => setRefreshKey((value) => value + 1)}
                 onError={report}
               />

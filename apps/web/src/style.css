@@ -2332,3 +2332,105 @@ summary:focus-visible {
   min-height: 0;
   overflow-y: auto;
 }
+/* P6: live state from the event feed */
+.connection-banner {
+  margin: 12px 30px 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 9px;
+  font-size: 12px;
+  color: #4b79a3;
+  background: #e9f0f8;
+}
+.job-notes {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+.job-notes li {
+  font-size: 12px;
+  line-height: 1.6;
+  padding: 7px 11px;
+  border-radius: 7px;
+  white-space: normal;
+}
+.pending-call {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border: 1px dashed #c9d6dd;
+  border-radius: 8px;
+  font-size: 12px;
+  color: #4f6371;
+}
+.pending-call code {
+  overflow-wrap: anywhere;
+}
+.pending-call.is-unknown {
+  border-color: #e6b9af;
+  color: #a94e42;
+}
+.pending-call .log-viewer {
+  flex-basis: 100%;
+}
+.draft-message .message-copy {
+  border: 1px dashed #c9d6dd;
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+.draft-message.is-interrupted .message-copy {
+  opacity: 0.7;
+  text-decoration: line-through;
+  text-decoration-color: #c9a39b;
+}
+.draft-label {
+  margin-left: 8px;
+  font-size: 11px;
+  font-weight: 500;
+  color: #a28545;
+}
+.draft-message.is-interrupted .draft-label {
+  color: #b3594f;
+}
+.delegation-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 9px 11px;
+  border-radius: 8px;
+  background: #f4f7f9;
+  font-size: 12px;
+  color: #4f6371;
+}
+.delegation-status.is-failed,
+.delegation-status.is-attention {
+  background: #fae9e5;
+  color: #a94e42;
+}
+.delegation-result {
+  flex-basis: 100%;
+  margin: 2px 0 0;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.log-gaps {
+  margin: 6px 0;
+  padding-left: 18px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: #b3594f;
+}
+@media (max-width: 640px) {
+  .connection-banner {
+    margin: 10px 16px 0;
+  }
+}

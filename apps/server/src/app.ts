@@ -5,8 +5,9 @@ import websocket from "@fastify/websocket";
 import rateLimit from "@fastify/rate-limit";
 import argon2 from "argon2";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { DEFAULT_BUDGET, ExecutionCoordinator, newJobId, workspaceCurrent, type Budget, type Resolution, type ScriptStep } from "./execution.js";
+import { DEFAULT_BUDGET, ExecutionCoordinator, workspaceCurrent, type Budget, type Resolution, type ScriptStep } from "./execution.js";
 import { mainFault } from "./fault.js";
+import { createJob, mainSession } from "./jobs.js";
 import type Database from "better-sqlite3";
 import {
   parseFrame,
@@ -63,21 +64,17 @@ export async function createApp(
       tokenDigest: string;
     }
   >();
-  const coordinator = new ExecutionCoordinator(db, connections, now, options.runJob as ((job:any)=>Promise<void>)|undefined, { dataDir: options.dataDir, fakeScript: options.fakeScript, toolResultTimeoutMs: options.toolResultTimeoutMs, logCapacityBytes: options.logCapacityBytes });
   const budget = { ...DEFAULT_BUDGET, ...options.budget };
+  const coordinator = new ExecutionCoordinator(db, connections, now, options.runJob as ((job:any)=>Promise<void>)|undefined, { budget, dataDir: options.dataDir, fakeScript: options.fakeScript, toolResultTimeoutMs: options.toolResultTimeoutMs, logCapacityBytes: options.logCapacityBytes });
   let shuttingDown = false;
+  // Main jobs need no worker: a restart resumes them right away.
+  setImmediate(() => void coordinator.pumpMain());
   /** Inside a transaction: a new job with its own budget root, at the back of its worker's queue. */
-  const insertJob = (session: any, clientRequestId: string, message: string, requestHash: string) => {
-    const worker=db.prepare("SELECT * FROM workers WHERE worker_id=?").get(session.worker_id) as any;
-    const waiting=(worker?.online&&worker?.reconciled&&!worker?.blocked)?"queued":"waiting_worker";
-    const waitMs=Number(process.env.WORKER_WAIT_MS??86400000);
-    const jobId=newJobId(),queueSeq=Number((db.prepare("SELECT COALESCE(MAX(queue_seq),0)+1 n FROM jobs").get() as any).n);
-    db.prepare("INSERT INTO jobs(job_id,session_id,client_request_id,request_hash,input_text,worker_id,queue_seq,state,created_at,wait_until,root_job_id,max_tool_calls,max_tokens,max_runtime_secs) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)").run(jobId,session.session_id,clientRequestId,requestHash,message,session.worker_id,queueSeq,waiting,now(),now()+waitMs,jobId,budget.maxToolCalls,budget.maxTokens,budget.maxRuntimeSecs);
-    db.prepare("INSERT INTO budget_roots(root_job_id) VALUES(?)").run(jobId);
-    db.prepare("INSERT INTO messages(message_id,session_id,job_id,seq,content_json) SELECT ?,?,?,COALESCE(MAX(seq),0)+1,? FROM messages WHERE session_id=?").run(randomBytes(16).toString("hex"),session.session_id,jobId,JSON.stringify({role:"user",content:message}),session.session_id);
-    db.prepare("INSERT INTO worker_slots(worker_id) VALUES (?) ON CONFLICT(worker_id) DO NOTHING").run(session.worker_id);
-    return {job_id:jobId,state:waiting};
-  };
+  const insertJob = (session: any, clientRequestId: string, message: string, requestHash: string) =>
+    createJob(db, now, { session, clientRequestId, message, requestHash, budget });
+  /** After commit: start whatever the new job can start. */
+  const wake = (session: { kind: string; worker_id: string | null }) =>
+    session.kind === "main" ? void coordinator.pumpMain() : void coordinator.pump(session.worker_id!);
   const offline = (id: string, epoch: number) => {
     if (shuttingDown) return;
     return db
@@ -117,7 +114,7 @@ export async function createApp(
   app.get("/health", async () => ({
     alive: true,
     scheduling_ready: true,
-    phase: "P4",
+    phase: "P5",
   }));
   app.post(
     "/auth/login",
@@ -169,6 +166,7 @@ export async function createApp(
   app.get("/api/workers", async () =>
     db.prepare("SELECT w.*,s.active_job_id FROM workers w LEFT JOIN worker_slots s USING(worker_id) ORDER BY w.worker_id").all(),
   );
+  app.get("/api/main", async () => mainSession(db, now));
   app.get("/api/sessions", async () => db.prepare("SELECT * FROM sessions ORDER BY created_at DESC").all());
   app.post("/api/sessions", async (req, reply) => {
     const body=req.body as {worker_id?:unknown;workspace_id?:unknown;repo_id?:unknown}|null;
@@ -213,8 +211,9 @@ export async function createApp(
       j.cancel_requested,j.cancel_reason,j.end_reason,j.max_tool_calls,j.max_tokens,j.max_runtime_secs,j.deadline_at,
       (SELECT r.tool_calls_used FROM budget_roots r WHERE r.root_job_id=j.root_job_id) AS tool_calls_used,
       (SELECT r.tokens_used FROM budget_roots r WHERE r.root_job_id=j.root_job_id) AS tokens_used,
-      CASE WHEN j.state IN ('queued','waiting_worker') THEN (SELECT COUNT(*) FROM jobs q WHERE q.worker_id=j.worker_id AND q.state IN ('queued','waiting_worker') AND q.queue_seq<=j.queue_seq) ELSE NULL END AS queue_position
-      FROM jobs j WHERE j.session_id=? ORDER BY j.queue_seq`).all(req.params.session_id);
+      j.parent_job_id,j.delegation_id,j.result_json,
+      CASE WHEN j.state IN ('queued','waiting_worker') AND j.queue_seq IS NOT NULL THEN (SELECT COUNT(*) FROM jobs q WHERE q.worker_id=j.worker_id AND q.state IN ('queued','waiting_worker') AND q.queue_seq<=j.queue_seq) ELSE NULL END AS queue_position
+      FROM jobs j WHERE j.session_id=? ORDER BY j.created_at,j.rowid`).all(req.params.session_id);
   });
   app.post<{Params:{session_id:string}}>("/api/sessions/:session_id/messages",async(req,reply)=>{
     const body=req.body as {client_request_id?:unknown;message?:unknown}|null;
@@ -226,7 +225,7 @@ export async function createApp(
       const existing=db.prepare("SELECT job_id,request_hash,state FROM jobs WHERE session_id=? AND client_request_id=?").get(session.session_id,body.client_request_id) as any;
       if(existing) return existing.request_hash===requestHash?{existing:true,conflict:false,job_id:existing.job_id,state:existing.state}:{existing:true,conflict:true};
       // Checked after the idempotency lookup: a retry of an accepted message returns its job.
-      if(!workspaceCurrent(db,session.session_id)) return {existing:false,conflict:false,stale:true};
+      if(session.kind==="worker"&&!workspaceCurrent(db,session.session_id)) return {existing:false,conflict:false,stale:true};
       const defaultTitle = Array.from(
         (body.message as string).trim().replace(/\s+/g, " "),
       )
@@ -249,7 +248,7 @@ export async function createApp(
     if(outcome.conflict) return reply.code(409).send({error:"idempotency_conflict"});
     if("stale" in outcome) return reply.code(409).send({error:"workspace_version_changed"});
     if(outcome.existing) return outcome;
-    if(outcome.state==="queued") void coordinator.pump(session.worker_id);
+    if(outcome.state==="queued") wake(session);
     return reply.code(202).send({job_id:outcome.job_id,state:outcome.state});
   });
   app.post<{Params:{job_id:string}}>("/api/jobs/:job_id/cancel",async(req,reply)=>{
@@ -279,14 +278,18 @@ export async function createApp(
       const job=db.prepare("SELECT j.*,s.session_id FROM jobs j JOIN sessions s USING(session_id) WHERE j.job_id=?").get(req.params.job_id) as any;
       if(!job) return {code:404,error:"job_not_found"};
       if(!["succeeded","failed","cancelled"].includes(job.state)) return {code:409,error:"job_not_terminal"};
+      // A delegated job shares its parent's budget root; a retry would escape it.
+      if(job.parent_job_id) return {code:409,error:"delegated_job_retry_not_allowed"};
       const session=db.prepare("SELECT * FROM sessions WHERE session_id=?").get(job.session_id) as any;
-      if(!workspaceCurrent(db,session.session_id)) return {code:409,error:"workspace_version_changed"};
+      if(session.kind==="worker"&&!workspaceCurrent(db,session.session_id)) return {code:409,error:"workspace_version_changed"};
       const created=insertJob(session,`retry:${job.job_id}:${randomBytes(8).toString("hex")}`,job.input_text,job.request_hash);
-      db.prepare("INSERT INTO attention_actions(action_id,worker_id,job_id,action,evidence,created_at) VALUES(?,?,?,'retry',?,?)").run(randomBytes(16).toString("hex"),job.worker_id,job.job_id,JSON.stringify({new_job_id:created.job_id}),now());
-      return {code:202,...created,worker_id:session.worker_id};
+      // attention_actions is per worker; a Main job retry is recorded as an event.
+      if(job.worker_id) db.prepare("INSERT INTO attention_actions(action_id,worker_id,job_id,action,evidence,created_at) VALUES(?,?,?,'retry',?,?)").run(randomBytes(16).toString("hex"),job.worker_id,job.job_id,JSON.stringify({new_job_id:created.job_id}),now());
+      else db.prepare("INSERT INTO events(created_at,content_json) VALUES(?,?)").run(now(),JSON.stringify({type:"job_retried",job_id:job.job_id,new_job_id:created.job_id}));
+      return {code:202,...created,session};
     }).immediate();
     if("error" in outcome) return reply.code(outcome.code).send({error:outcome.error});
-    if(outcome.state==="queued") void coordinator.pump(outcome.worker_id);
+    if(outcome.state==="queued") wake(outcome.session);
     return reply.code(202).send({job_id:outcome.job_id,state:outcome.state,retry_of:req.params.job_id,notice:"新任务不会知道原任务做过什么；请先核对原任务已产生的副作用。"});
   });
   app.get<{Params:{job_id:string;call_id:string};Querystring:{stream?:string;from_seq?:string}}>("/api/jobs/:job_id/calls/:call_id/logs",async(req,reply)=>{

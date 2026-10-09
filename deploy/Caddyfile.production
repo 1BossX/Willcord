@@ -1,0 +1,34 @@
+# Worker Plane main node behind Caddy with Caddy's internal CA.
+#   WORKER_PLANE_SITE  address browsers and workers use, e.g. plane.internal:8443
+#                      or 10.0.0.5:8443; PUBLIC_BASE_URL must be https://<this>
+#   WORKER_PLANE_ROOT  release directory, e.g. /opt/worker-plane/current
+# Workers trust the internal root: copy Caddy's root.crt (see docs/operations.md)
+# to each worker and point SSL_CERT_FILE at it.
+{
+	pki {
+		ca local {
+			name "Worker Plane"
+		}
+	}
+}
+
+{$WORKER_PLANE_SITE} {
+	tls internal
+
+	# API, login, the worker socket (WSS) and the event stream (SSE) go to the
+	# main node. Responses are flushed as written, and a config reload keeps
+	# open sockets for a while instead of cutting every worker off at once.
+	@server path /api/* /auth/* /ws/worker /health
+	handle @server {
+		reverse_proxy 127.0.0.1:3000 {
+			flush_interval -1
+			stream_close_delay 5m
+		}
+	}
+
+	handle {
+		root * {$WORKER_PLANE_ROOT}/apps/web/dist
+		try_files {path} /index.html
+		file_server
+	}
+}

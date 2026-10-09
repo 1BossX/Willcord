@@ -46,6 +46,8 @@ const MAX_KILL_GRACE_SECS: u64 = 30;
 const STOP_CONFIRM: Duration = Duration::from_secs(5);
 const DEFAULT_LOG_DISK_BUDGET: u64 = 2 * 1024 * 1024 * 1024;
 const DEFAULT_MIN_FREE_BYTES: u64 = 1024 * 1024 * 1024;
+/// PATH of every command; the worker's own environment is never passed on.
+const DEFAULT_COMMAND_PATH: &str = "/usr/local/bin:/usr/bin:/bin";
 /// Chunks answered per log_fetch; the main node asks again for more.
 const LOG_FETCH_BATCH: u64 = 64;
 
@@ -75,6 +77,9 @@ struct Config {
     /// New calls are refused when less space than this is free.
     #[serde(default)]
     min_free_bytes: Option<u64>,
+    /// PATH for commands, e.g. with /opt/homebrew/bin on Apple Silicon.
+    #[serde(default)]
+    command_path: Option<String>,
 }
 
 /// A connection-level failure. The process keeps its ledger and running calls
@@ -249,6 +254,16 @@ async fn main() -> Result<(), Error> {
     if kill_grace_secs > MAX_KILL_GRACE_SECS {
         return Err("kill_grace_secs must be at most 30".into());
     }
+    let command_path = config
+        .command_path
+        .clone()
+        .unwrap_or_else(|| DEFAULT_COMMAND_PATH.to_string());
+    if command_path
+        .split(':')
+        .any(|dir| !std::path::Path::new(dir).is_absolute())
+    {
+        return Err("command_path must list absolute directories separated by ':'".into());
+    }
     ledger.retire_acknowledged(retention_ms)?;
     let log_root = config.data_dir.join("logs");
     fs::create_dir_all(&log_root)?;
@@ -283,6 +298,7 @@ async fn main() -> Result<(), Error> {
         limits: Arc::new(process::Limits {
             grace: Duration::from_secs(kill_grace_secs),
             confirm: STOP_CONFIRM,
+            command_path,
         }),
         max_tool_timeout_secs,
         log_disk_budget: config

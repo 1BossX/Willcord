@@ -20,6 +20,8 @@ P5 已实现 Main Agent 与持久化委派：Main session，list_workers/get_job
 
 P6 已实现事件流与完整 UI：带游标快照、SSE 补放与游标过期、模型草稿、日志缺口，UI 改为快照 + SSE，实时显示机器可执行状态、委派子任务、排队与等待原因、取消和人工核对；9 条验收、故障程序和浏览器走查见 [P6 开发记录](docs/p6-development.md)。
 
+P7 进行中：调度暂停、在线备份与恢复、升级快照、token 轮换、保留策略与磁盘检查见 [P7 开发记录](docs/p7-development.md)；安装、升级与恢复步骤见 [运维手册](docs/operations.md)。
+
 工作台 UI 按原文档重组为机器/会话导航、固定目标聊天与任务时间线，设计映射、状态边界和浏览器证据见 [UI 设计记录](docs/ui-design.md)。
 
 外部调研、最佳实践与经验教训沉淀在 [docs/research](docs/research/README.md)，供后续阶段设计参考。

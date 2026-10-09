@@ -2,6 +2,9 @@
   "name": "@worker-plane/protocol",
   "private": true,
   "type": "module",
+  "files": [
+    "dist"
+  ],
   "exports": "./dist/src/index.js",
   "scripts": {
     "build": "tsc && cp schema.json dist/schema.json",

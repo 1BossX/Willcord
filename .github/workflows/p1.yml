@@ -40,4 +40,9 @@ jobs:
       - run: pnpm check
       - run: pnpm test
       - run: pnpm build
+      # The main node as deployed: a release directory outside the checkout,
+      # started the way the systemd unit starts it.
+      - run: deploy/build-main.sh "$RUNNER_TEMP/worker-plane-main-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --skip-build
+      - run: deploy/smoke-main.sh "$RUNNER_TEMP/worker-plane-main-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+      - run: cargo build --locked --release --manifest-path worker/Cargo.toml
       - run: git diff --check

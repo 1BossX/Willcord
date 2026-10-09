@@ -2,6 +2,9 @@
   "name": "@worker-plane/server",
   "private": true,
   "type": "module",
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc",
     "check": "tsc --noEmit",

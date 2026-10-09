@@ -21,3 +21,9 @@ uuid = { version = "=1.18.1", features = ["v4"] }
 toml = "=0.9.8"
 jsonschema = { version = "=0.33.0", default-features = false }
 rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
+
+# Release binaries are built natively on each platform's runner and published as-is.
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

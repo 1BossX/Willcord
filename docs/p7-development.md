@@ -5,7 +5,7 @@
 | 步骤 | 内容 | 状态 |
 |---|---|---|
 | P7-A | 主节点运维语义：配置校验、调度暂停、在线备份与恢复、升级快照、token 列表与轮换、保留策略与磁盘检查、worker 优雅停止、认证与隔离测试 | 完成 |
-| P7-B | 打包与部署产物：release 构建、systemd/launchd、生产 Caddy、运维 runbook | 未开始 |
+| P7-B | 打包与部署产物：release 构建、systemd/launchd、生产 Caddy、运维 runbook | 完成 |
 | P7-C | 发布验收：从产物安装的端到端测试、真实环境向导、总验收 | 未开始 |
 
 已定决策：
@@ -81,6 +81,9 @@
    - 持有 `main.lock` 时拒绝恢复；
    - 启动后处于 `restored` 暂停，worker 对账前拒绝恢复调度，对账后到恢复调度前也不重发；
    - 恢复调度后调用以 `completed` 结束，两个任务的 marker 都只有一行。
+   - 停止 worker 前先读它的账本，确认要测的状态已经落盘。第二个用例丢掉 `after-1` 的 ACK，让 worker 账本保留一个已完成但未确认、而备份里没有的调用：恢复后 worker 以 `ledger_contradiction` 阻塞，`slow-1` 不再发送，新任务不执行，所有 marker 不变。
+
+   CI 上这条测试最初偶发超时。诊断输出显示，SIGKILL 有时在 worker 记下 `after-1` 的 ACK 之前到达，于是出现了第二种情况。这是预期的安全行为，原测试错误地假设 ACK 已经落盘，因此拆成了两个确定的用例。
 3. 用 011 版本的库构造未结清调用、调用序号水位、队列水位和父子等待。升级后各项计数不变，留下一份 011 的快照；再次打开不再复制。
 4. 用 `token_file` 启动 worker，签发第二个 token 写入文件，按 ID 吊销第一个。worker 不退出，用新 token 重连，列表正确，之后的任务能执行。
 5. 保留期设为 0：输出分块被删、日志接口显示 `pruned_at` 和缺口，提交的结果仍在，Pi 会话目录和过期登录被清理。模拟磁盘不足时暂停，手动恢复被拒，空间恢复后自动恢复，新任务完成。
@@ -96,3 +99,70 @@
 浏览器检查：在走查环境（`test/support/walkthrough.ts`）里通过 API 暂停调度，页面显示暂停横幅和说明。在横幅里填写说明并点"恢复调度"后，横幅随 `dispatch` 事件消失；再次通过 API 暂停，横幅不刷新页面就出现。web 的 SSE 订阅加上了 `dispatch` 这一类事件。
 
 测试：server 98、web 7、protocol 3 项全部通过。
+
+## P7-B：打包与部署产物
+
+### 主节点产物（`deploy/build-main.sh`、`deploy/smoke-main.sh`）
+
+- `build-main.sh <目录>` 生成一个独立于仓库的发布目录：
+  - `apps/server`：编译结果、生产依赖和 `package.json`，由 `pnpm deploy --prod` 生成；
+  - `apps/web/dist`；
+  - `migrations`：按 `apps/server/dist` 的相对位置查找，所以目录结构和仓库保持一致；
+  - `deploy`：Caddy、systemd 模板和示例配置；
+  - `REVISION`：构建所用的 commit。
+- `better-sqlite3`、`argon2` 是原生模块，所以主节点产物要在和目标主机相同的 OS、架构和 Node 主版本上构建。release 只构建 Linux 版本。
+- `apps/server` 和 `packages/protocol` 加了 `files: ["dist"]`，这样 `pnpm deploy` 只带编译结果。`apps/server` 增加了 `start` 和 `admin` 两个脚本。
+- `smoke-main.sh <目录>` 按 systemd 单元的方式（`node dist/main.js`）启动发布目录，然后依次检查：
+  1. `/health` 就绪且没有暂停；
+  2. 在线备份和 verify 都通过；
+  3. SIGTERM 后以 0 退出，并释放 `main.lock`。
+
+### worker 二进制
+
+- `worker/Cargo.toml` 增加 `[profile.release]`（`lto`、`codegen-units = 1`、`strip`）。本机 arm64 macOS 的 release 二进制为 6.7 MB，只依赖系统库（Security、CoreFoundation、libiconv、libSystem）。SQLite 是静态链接的，TLS 用 rustls，不依赖系统 OpenSSL。
+- 新配置项 `command_path`：命令的 PATH，默认值仍是 `/usr/local/bin:/usr/bin:/bin`，每一项都必须是绝对路径。在 Apple Silicon 上用它加入 `/opt/homebrew/bin`。worker 自己的环境变量照旧不会传给命令。
+
+### CI 与 release
+
+- `p1.yml`：`pnpm build` 之后，在两个平台上从 release 目录启动主节点并跑一遍 smoke，再构建 worker 的 release 二进制。
+- 新增 `release.yml`：推送 `v*` tag 时触发。
+  - 在 macOS 和 Linux 两台 self-hosted runner 上各自原生构建 `worker-plane-worker-<tag>-<os>-<arch>`。
+  - Linux runner 额外构建并 smoke `worker-plane-main-<tag>-linux-<arch>-node24.tar.gz`。
+  - 每个文件附带 `.sha256`。
+  - 最后用 `gh` 建一个 **draft** release，人工检查后再发布。publish 这一步要求 Linux runner 上装有 `gh`。
+
+### 部署模板（`deploy/`）
+
+| 文件 | 要点 |
+|---|---|
+| `Caddyfile.production` | 内部 CA（`tls internal`）。`/api`、`/auth`、`/ws/worker`、`/health` 转发给主节点，其余路径提供 UI。`flush_interval -1` 让 SSE 不经缓冲；`stream_close_delay 5m` 让配置重载时不会一次断开所有 worker。站点地址和发布目录通过环境变量 `WORKER_PLANE_SITE`、`WORKER_PLANE_ROOT` 指定 |
+| `systemd/worker-plane-main.service` | 专用用户；`EnvironmentFile` 权限 0600；`ProtectSystem=strict`，只有数据目录可写。`Restart=no`：崩溃后 `main.lock` 会故意留下，需要人工确认后删除（运维手册 §10） |
+| `systemd/worker-plane-worker.service` | 停止信号 SIGTERM，等待 60 s，大于 `kill_grace_secs + 7`；`KillMode=control-group`；`StartLimitBurst=5`，避免被吊销的 token 导致无限重启 |
+| `systemd/worker-plane-backup.{service,timer}` | 每天在线备份一次，删除 14 天前的备份 |
+| `launchd/com.workerplane.worker.plist` | LaunchDaemon，`KeepAlive` 只在非正常退出时重启，`ThrottleInterval` 60 s，`ExitTimeOut` 60 s；日志写入文件。launchd 一直持有这个文件，newsyslog 无法正确轮转它，所以运维手册改为停止服务后移走文件 |
+| `main.env.example`、`worker.config.toml` | 生产配置示例：worker 使用 `token_file`，`data_dir` 放在持久目录 |
+
+### 文档
+
+- 新增 [运维手册](operations.md)，内容包括：
+  - 组成和目录；
+  - 安装主节点和 Caddy、分发 CA；
+  - 签发 token（密码从终端读取，token 直接写进文件）；
+  - 安装两个平台的 worker；
+  - 监控；
+  - 升级与回滚；
+  - 备份和恢复；
+  - token 轮换；
+  - 主节点异常退出后处理 `main.lock`；
+  - 保留策略；
+  - 故障排查表。
+- 修正过时的说明：
+  - `p1-development.md` 里"连接断开后退出"的描述；
+  - `architecture.md` 里 `token_file` 标着"待核实"，命令 PATH 也写成固定值。
+- `resources-and-todos.md` 的配置模板改成实际使用的变量名，"域名与证书"一项改为已决定（内部 CA）。
+
+### 验证
+
+- `apps/server/test/p7-deploy.test.ts`：`command_path` 含相对路径时 worker 拒绝启动（退出码 1，有错误说明）；改用一个额外目录后，命令能调用该目录里的工具，并且命令看到的 PATH 和配置完全一致。
+- 本机：`deploy/build-main.sh <临时目录> --skip-build` 后跑 `deploy/smoke-main.sh`，健康检查、备份和停止三步都通过。`cargo build --release` 通过。`plutil -lint` 检查 plist 通过。
+- 本机没有装 Caddy 和 systemd，所以 Caddyfile 和 systemd 单元还没有经过 `caddy validate` 和 `systemd-analyze verify`；它们在 P7-C 的安装验收里实际运行。release workflow 要推一个 tag 才会运行，在 P7-C 里征得同意后验证。

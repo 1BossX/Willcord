@@ -323,14 +323,14 @@ Worker token 高熵、独立、可撤销，数据库只存安全校验值。撤�
 
 不离开 worker 的数据：
 
-- Worker token：从 `WORKER_TOKEN` 读取（`token_file` 与重连重读见 feat/worker-token-file，合入前 待核实），只在连接认证时发送，主节点存 digest。
-- 工具子进程环境：bash 以 `env_clear()` 启动，只保留固定 PATH 与 HOME（worker/src/process.rs、worker/src/tools.rs），worker 自身环境变量不会进入命令输出。
+- Worker token：从 `token_file`（0600，每次重连重读，轮换不需重启）或 `WORKER_TOKEN` 读取，二者只能选一；只在连接认证时发送，主节点存 digest。
+- 工具子进程环境：bash 以 `env_clear()` 启动，只保留 PATH（默认 `/usr/local/bin:/usr/bin:/bin`，可用配置 `command_path` 改）与 HOME（worker/src/process.rs），worker 自身环境变量不会进入命令输出。
 - 超出 10 MiB 的输出只计数不存；workspace 中未被 read 或命令打印的文件内容不上传，但模型可经 read/bash 读取任意 workspace 内文件，因此 workspace 内全部内容都应视为可外流。
 - 模型密钥与管理员凭据不下发给 worker。
 
 ## 13. 部署与运维
 
-主节点：Caddy + 常驻 Node 应用 + 本地 SQLite 和日志目录。Caddy 配置 WSS 升级、SSE 无缓冲及合适的长连接超时。应用受 systemd 管理，健康检查区分进程存活与调度就绪。
+主节点：Caddy + 常驻 Node 应用 + 本地 SQLite 和日志目录。Caddy 配置 WSS 升级、SSE 无缓冲及合适的长连接超时。应用受 systemd 管理，健康检查区分进程存活与调度就绪。安装、升级、备份恢复与 token 轮换的操作步骤见 [运维手册](operations.md)。
 
 Worker：Linux systemd、macOS launchd；配置、账本与日志分目录保存，账号使用必要权限。Rust 发布各平台原生二进制，使用平台 CI 构建；不依赖未经验证的跨平台交叉编译。
 

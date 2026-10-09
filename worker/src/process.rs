@@ -27,6 +27,8 @@ pub struct Limits {
     pub grace: Duration,
     /// After KILL, and for pipes to close, before stopping is declared unconfirmed.
     pub confirm: Duration,
+    /// PATH the command runs with.
+    pub command_path: String,
 }
 
 pub enum Outcome {
@@ -130,7 +132,7 @@ pub async fn run_bash(
         .args(["--noprofile", "--norc", "-c", command])
         .current_dir(cwd)
         .env_clear()
-        .env("PATH", "/usr/local/bin:/usr/bin:/bin")
+        .env("PATH", &limits.command_path)
         .env("HOME", std::env::var("HOME").unwrap_or_default())
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -215,6 +217,7 @@ mod tests {
         Limits {
             grace: Duration::from_millis(500),
             confirm: Duration::from_secs(3),
+            command_path: "/usr/local/bin:/usr/bin:/bin".to_string(),
         }
     }
 

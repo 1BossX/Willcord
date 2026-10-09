@@ -58,7 +58,7 @@ export function mainSession(db: Database.Database, now: () => number) {
   }).immediate();
 }
 
-export type DelegateArgs = { worker_id?: unknown; workspace_id?: unknown; prompt?: unknown; delegation_key?: unknown; depends_on?: unknown };
+export type DelegateArgs = { worker_id?: unknown; workspace_id?: unknown; prompt?: unknown; delegation_key?: unknown; depends_on?: unknown; verify?: unknown };
 export type Delegated = { record: ToolRecord; workerId?: string; queued?: boolean };
 
 const refuse = (error: string, extra: Record<string, unknown> = {}): Delegated => ({ record: { ok: false, result: { error, ...extra } } });
@@ -74,6 +74,7 @@ export function delegate(db: Database.Database, now: () => number, budget: Budge
   if (typeof args.prompt !== "string" || !args.prompt.trim() || args.prompt.length > MAX_PROMPT) return refuse("invalid_prompt");
   if (args.workspace_id !== undefined && (typeof args.workspace_id !== "string" || !args.workspace_id)) return refuse("invalid_workspace_id");
   if (args.delegation_key !== undefined && (typeof args.delegation_key !== "string" || !args.delegation_key || args.delegation_key.length > 128)) return refuse("invalid_delegation_key");
+  if (args.verify !== undefined && (typeof args.verify !== "string" || !args.verify.trim() || args.verify.length > 4000)) return refuse("invalid_verify");
   const dependsOn = args.depends_on ?? [];
   if (!Array.isArray(dependsOn) || dependsOn.length > MAX_DEPENDENCIES || dependsOn.some((d) => typeof d !== "string" || !d) || new Set(dependsOn).size !== dependsOn.length) return refuse("invalid_depends_on");
   const workspace = db.prepare(args.workspace_id === undefined
@@ -91,7 +92,8 @@ export function delegate(db: Database.Database, now: () => number, budget: Budge
     prerequisites.push(job);
   }
   const prerequisiteIds = [...new Set(prerequisites.map((p) => p.job_id))].sort();
-  const requestHash = hash({ worker_id: args.worker_id, workspace_id: workspace.workspace_id, prompt: args.prompt, depends_on: prerequisiteIds });
+  const verify = args.verify as string | undefined;
+  const requestHash = hash({ worker_id: args.worker_id, workspace_id: workspace.workspace_id, prompt: args.prompt, depends_on: prerequisiteIds, verify: verify ?? null });
 
   const existing = db.prepare("SELECT job_id,session_id,state,request_hash,worker_id FROM jobs WHERE parent_job_id=? AND delegation_id=?").get(parent.job_id, delegationId) as any;
   if (existing) {
@@ -111,10 +113,11 @@ export function delegate(db: Database.Database, now: () => number, budget: Budge
     session: { session_id: sessionId, kind: "worker", worker_id: args.worker_id }, clientRequestId: `delegation:${parent.job_id}:${delegationId}`,
     message: args.prompt, requestHash, budget, root, parentJobId: parent.job_id, delegationId, ready,
   });
+  if (verify) db.prepare("UPDATE jobs SET verify_command=? WHERE job_id=?").run(verify, created.job_id);
   for (const id of prerequisiteIds) db.prepare("INSERT INTO job_dependencies(job_id,depends_on_job_id) VALUES(?,?)").run(created.job_id, id);
   db.prepare("INSERT INTO events(created_at,content_json) VALUES(?,?)").run(now(), JSON.stringify({ type: "job_delegated", parent_job_id: parent.job_id, job_id: created.job_id, session_id: sessionId, delegation_id: delegationId, worker_id: args.worker_id, depends_on: prerequisiteIds }));
   return {
-    record: { ok: true, result: { job_id: created.job_id, session_id: sessionId, delegation_id: delegationId, worker_id: args.worker_id, workspace_id: workspace.workspace_id, state: created.state, depends_on: prerequisiteIds, waiting_for_dependencies: !ready } },
+    record: { ok: true, result: { job_id: created.job_id, session_id: sessionId, delegation_id: delegationId, worker_id: args.worker_id, workspace_id: workspace.workspace_id, state: created.state, depends_on: prerequisiteIds, verify: verify ?? null, waiting_for_dependencies: !ready } },
     workerId: args.worker_id, queued: created.state === "queued" && ready,
   };
 }

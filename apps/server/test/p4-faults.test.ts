@@ -118,12 +118,14 @@ test("P4-C main SIGKILL after the cancel commits: restart still sends the stop a
 // repeats the stop before anything else and the job still ends cancelled.
 for (const [direction, type] of [["to_worker", "cancel_call"], ["to_main", "cancel_ack"]] as const) {
   test(`P4-C ${type} lost with its connection: reconnect repeats the stop and the command still ends`, { timeout: 60000 }, async (t) => {
-    let lost = false;
+    let lost = false, lostEpoch: number | undefined;
     const s = await startScenario({
       scripts: { long: long("long-1"), next: bash("next-1", "echo next >> marker.log") },
       drop: (d, frame) => {
-        if (lost || d !== direction || frame.type !== type) return false;
-        lost = true;
+        // Nothing more passes on the connection that lost the frame, so a fast result cannot beat the cut.
+        if (lost) return frame.connection_epoch === lostEpoch;
+        if (d !== direction || frame.type !== type) return false;
+        lost = true; lostEpoch = frame.connection_epoch;
         setImmediate(() => s.proxy.dropAll());
         return true;
       },

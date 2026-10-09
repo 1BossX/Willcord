@@ -6,7 +6,7 @@ import type Database from "better-sqlite3";
 import type { WorkerFrame } from "@worker-plane/protocol";
 import { requestHash } from "@worker-plane/protocol";
 import { mainFault } from "./fault.js";
-import { delegate } from "./jobs.js";
+import { delegate, nextQueueSeq, readyState } from "./jobs.js";
 
 type Socket = { readyState: number; send(data: string): void };
 type Connection = { epoch: number; socket: Socket; tokenDigest: string };
@@ -15,7 +15,9 @@ type Pending = { workerId: string; jobId: string; callId: string; promise: Promi
 type CallRow = { job_id: string; turn_key: string; call_id: string; call_seq: number; request_hash: string; tool_name: string; arguments_json: string; status: string; result_json: string | null; completed_at: number | null; worker_id: string; workspace_id: string; workspace_version: number };
 type CallReport = { job_id: string; call_id: string; call_seq: number; request_hash: string; status: string; boot_id: string };
 /** Scripted model turns for isolated acceptance; never a real provider. */
-export type ScriptStep = ({ tool: "read" | "write" | "bash" | "list_workers" | "get_job" | "delegate"; arguments: Record<string, unknown>; id?: string } | { text: string }) & { delay_ms?: number };
+type ScriptCall = { tool: "read" | "write" | "bash" | "list_workers" | "get_job" | "delegate"; arguments: Record<string, unknown>; id?: string };
+/** One model turn: a single call, several calls in one batch, or a final text. */
+export type ScriptStep = (ScriptCall | { calls: ScriptCall[] } | { text: string }) & { delay_ms?: number };
 /** Per-job limits written at creation. Counts come from SQLite, so a restart never resets them. */
 export type Budget = { maxToolCalls: number; maxTokens: number; maxRuntimeSecs: number };
 export const DEFAULT_BUDGET: Budget = { maxToolCalls: 200, maxTokens: 2_000_000, maxRuntimeSecs: 4 * 3600 };
@@ -515,8 +517,8 @@ export class ExecutionCoordinator {
         }
         const job = this.db.prepare("SELECT job_id,session_id,wait_until FROM jobs WHERE worker_id=? AND state IN ('queued','waiting_worker') AND queue_seq IS NOT NULL ORDER BY queue_seq LIMIT 1").get(workerId) as any;
         if (!job) return;
-        if (job.wait_until && job.wait_until < this.now()) { this.db.prepare("UPDATE jobs SET state='failed',end_reason='worker_wait_expired' WHERE job_id=?").run(job.job_id); continue; }
-        if (!workspaceCurrent(this.db, job.session_id)) { this.failStaleWorkspace(job.job_id, job.session_id); continue; }
+        if (job.wait_until && job.wait_until < this.now()) { this.db.prepare("UPDATE jobs SET state='failed',end_reason='worker_wait_expired' WHERE job_id=?").run(job.job_id); this.advance(); continue; }
+        if (!workspaceCurrent(this.db, job.session_id)) { this.failStaleWorkspace(job.job_id, job.session_id); this.advance(); continue; }
         const claimed = this.db.transaction(() => {
           if (this.db.prepare("UPDATE worker_slots SET active_job_id=? WHERE worker_id=? AND active_job_id IS NULL").run(job.job_id, workerId).changes !== 1) return false;
           this.db.prepare("UPDATE jobs SET state='running',started_at=?,deadline_at=COALESCE(deadline_at,?+max_runtime_secs*1000) WHERE job_id=?").run(this.now(), this.now(), job.job_id);
@@ -586,9 +588,12 @@ export class ExecutionCoordinator {
     const unresolved = this.db.prepare("SELECT call_id FROM runtime_calls WHERE job_id=? AND status IN ('dispatched','unknown')").all(jobId);
     if (job.session_kind === "main") {
       // Main tools run inside their commit, so a main job never has an unresolved call.
+      // A run that ended without an outcome stops its children first, like a cancel.
+      if (this.openChildren(jobId) && (this.db.prepare("SELECT state FROM jobs WHERE job_id=?").get(jobId) as { state: string }).state === "running") this.cancel(jobId, "run_ended");
       this.db.prepare("UPDATE jobs SET state='failed',end_reason=COALESCE(end_reason,'run_ended') WHERE job_id=? AND state='running'").run(jobId);
       if (failure) console.error("main execution failed", String(failure));
       this.finalizeCancel(jobId);
+      this.advance();
       return;
     }
     const state = (this.db.prepare("SELECT state FROM jobs WHERE job_id=?").get(jobId) as { state: string }).state;
@@ -597,6 +602,7 @@ export class ExecutionCoordinator {
     if (failure && state !== "cancel_requested") console.error("execution failed", String(failure));
     if (state === "cancel_requested") this.finalizeCancel(jobId);
     else this.release(job.worker_id, jobId);
+    this.advance();
   }
 
   private current(job: any) {
@@ -633,7 +639,7 @@ export class ExecutionCoordinator {
     const modelName = fakeMode ? "gpt-4o-mini" : (process.env.MODEL_NAME ?? "deepseek/deepseek-v4.1-flash");
     const apiKey = fakeMode ? "p2-scripted-provider" : (process.env.MODEL_API_KEY ?? process.env.OPENROUTER_API_KEY);
     if (!apiKey) throw new Error("MODEL_API_KEY (or OPENROUTER_API_KEY) is required to execute jobs");
-    this.db.prepare("INSERT OR IGNORE INTO runtime_history(job_id,entry_key,message_json) VALUES(?,?,?)").run(job.job_id, `user:${job.job_id}`, JSON.stringify({ role: "user", content: [{ type: "text", text: job.input_text }], timestamp: job.created_at }));
+    this.db.prepare("INSERT OR IGNORE INTO runtime_history(job_id,entry_key,message_json) VALUES(?,?,?)").run(job.job_id, `user:${job.job_id}`, JSON.stringify({ role: "user", content: [{ type: "text", text: job.verify_command ? `${job.input_text}\n\nWhen you finish, the main node runs this verification command in this workspace; the step succeeds only if it exits 0:\n${job.verify_command}` : job.input_text }], timestamp: job.created_at }));
     // Committed intents from an earlier run finish first, in order, with their original IDs.
     const open = this.db.prepare("SELECT call_id FROM runtime_calls WHERE job_id=? AND status IN ('committed','dispatched','unknown') ORDER BY call_seq").all(job.job_id) as Array<{ call_id: string }>;
     const main = job.session_kind === "main";
@@ -642,6 +648,9 @@ export class ExecutionCoordinator {
       if (main) this.localTool(job, call_id); else await this.dispatch(job.job_id, call_id);
     }
     if (!this.current(job)) return;
+    // After the final answer only the verification remains; the model is not asked again.
+    if (job.verify_command && this.db.prepare("SELECT 1 FROM runtime_history WHERE job_id=? AND entry_key=?").get(job.job_id, `final:${job.job_id}`)) return this.settleVerification(job);
+    if (main) this.recordChildResults(job.job_id);
     const messages = this.transcript(job.job_id);
     const pi = await import("@earendil-works/pi-coding-agent");
     const ai = await import("@earendil-works/pi-ai/compat");
@@ -656,7 +665,7 @@ export class ExecutionCoordinator {
     const tools = main ? [
       { name: "list_workers", label: "list_workers", description: "List worker machines, whether each can run work now, its queue length and its workspaces.", parameters: typebox.Type.Object({}), execute: local },
       { name: "get_job", label: "get_job", description: "Read the state and final result of a job of this task.", parameters: typebox.Type.Object({ job_id: typebox.Type.String() }), execute: local },
-      { name: "delegate", label: "delegate", description: "Start a task on one worker machine in a new, independent session. It queues behind that machine's other work. depends_on lists delegation keys or job IDs of this task that must succeed first. A repeated delegation_key returns the original task. Files are never copied between machines.", parameters: typebox.Type.Object({ worker_id: typebox.Type.String(), workspace_id: typebox.Type.Optional(typebox.Type.String()), prompt: typebox.Type.String(), delegation_key: typebox.Type.Optional(typebox.Type.String()), depends_on: typebox.Type.Optional(typebox.Type.Array(typebox.Type.String())) }), execute: local },
+      { name: "delegate", label: "delegate", description: "Start a task on one worker machine in a new, independent session. It queues behind that machine's other work. depends_on lists delegation keys or job IDs of this task that must succeed first. A repeated delegation_key returns the original task. Files are never copied between machines. verify is a shell command the main node runs in that workspace after the task's final answer; the task succeeds only if it exits 0, so give it to any step others depend on. After this turn you wait until every delegated task has finished, so delegate dependent steps together in one turn.", parameters: typebox.Type.Object({ worker_id: typebox.Type.String(), workspace_id: typebox.Type.Optional(typebox.Type.String()), prompt: typebox.Type.String(), delegation_key: typebox.Type.Optional(typebox.Type.String()), depends_on: typebox.Type.Optional(typebox.Type.Array(typebox.Type.String())), verify: typebox.Type.Optional(typebox.Type.String()) }), execute: local },
     ] : [
       { name: "read", label: "read", description: "Read bounded UTF-8 text from the fixed remote workspace.", parameters: typebox.Type.Object({ path: typebox.Type.String(), offset: typebox.Type.Optional(typebox.Type.Integer({ minimum: 0 })), limit: typebox.Type.Optional(typebox.Type.Integer({ minimum: 1, maximum: 16384 })) }), execute: async (id: string) => this.piTool(job, id) },
       { name: "write", label: "write", description: "Atomically write a UTF-8 file in the fixed remote workspace. expected_hash is the current SHA-256 or 'missing'.", parameters: typebox.Type.Object({ path: typebox.Type.String(), content: typebox.Type.String(), expected_hash: typebox.Type.String() }), execute: async (id: string) => this.piTool(job, id) },
@@ -687,9 +696,10 @@ export class ExecutionCoordinator {
         const core = faux.createFauxCore({ provider: "openai", api: "openai", models: [{ id: "gpt-4o-mini" }] });
         const committedTurns = messages.filter((m) => m.role === "assistant").length;
         const steps = (this.options.fakeScript?.(job) ?? p2Script(job)).slice(committedTurns);
+        const call = (c: ScriptCall) => faux.fauxToolCall(c.tool, c.arguments as any, { id: c.id ?? `${job.job_id}-${c.tool}-${randomUUID()}` });
         core.setResponses(steps.map((step) => "text" in step
           ? faux.fauxAssistantMessage(step.text)
-          : faux.fauxAssistantMessage(faux.fauxToolCall(step.tool, step.arguments as any, { id: step.id ?? `${job.job_id}-${step.tool}-${randomUUID()}` }), { stopReason: "toolUse" })));
+          : faux.fauxAssistantMessage("calls" in step ? step.calls.map(call) : call(step), { stopReason: "toolUse" })));
         // A step may hold its response back, so a test can cancel mid-generation.
         let index = 0;
         session.agent.streamFunction = async (...args: any[]) => {
@@ -700,12 +710,30 @@ export class ExecutionCoordinator {
       }
       // Every generation passes the gate first; its counts come from SQLite.
       while (!finished && !modelError && this.current(job)) {
+        // Children still running: wait without a model call, holding no slot.
+        if (main && this.enterWait(job)) break;
         const exceeded = this.budgetExceeded(job.job_id);
         if (exceeded) { this.cancel(job.job_id, exceeded); break; }
         await session.agent.continue();
       }
       if (modelError && this.current(job)) throw new Error(`model_error: ${modelError}`);
     } finally { this.sessions.delete(job.job_id); session?.dispose(); await (runtime as any).dispose?.(); }
+    if (finished && job.verify_command && this.current(job)) {
+      await this.dispatch(job.job_id, `verify-${job.job_id}`);
+      this.settleVerification(job);
+    }
+  }
+
+  /** The verification's exit code alone decides whether a delegated step succeeded. */
+  private settleVerification(job: any) {
+    this.db.transaction(() => {
+      if (!this.current(job)) return;
+      const row = this.call(job.job_id, `verify-${job.job_id}`);
+      if (!row || !SETTLED.has(row.status)) return;
+      const record = JSON.parse(row.result_json!) as ToolRecord;
+      const passed = row.status === "completed" && record.ok && record.result?.exit_code === 0;
+      this.db.prepare("UPDATE jobs SET state=?,end_reason=? WHERE job_id=? AND state='running'").run(passed ? "succeeded" : "failed", passed ? "completed" : "verification_failed", job.job_id);
+    })();
   }
 
   private commitTurn(job: any, turnKey: string, assistantMessage: any, calls: any[]) {
@@ -742,10 +770,22 @@ export class ExecutionCoordinator {
   private commitFinal(job: any, message: any) {
     return this.db.transaction(() => {
       if (!this.current(job)) return false;
+      // A parent never succeeds while a child it started is unfinished.
+      if (this.openChildren(job.job_id)) { this.db.prepare("UPDATE jobs SET state='waiting_children' WHERE job_id=? AND state='running'").run(job.job_id); return false; }
       this.db.prepare("INSERT INTO runtime_history(job_id,entry_key,message_json) VALUES(?,?,?)").run(job.job_id, `final:${job.job_id}`, JSON.stringify(message));
       this.db.prepare("INSERT INTO messages(message_id,session_id,job_id,seq,content_json) SELECT ?,?,?,COALESCE(MAX(seq),0)+1,? FROM messages WHERE session_id=?").run(randomUUID(), job.session_id, job.job_id, JSON.stringify({ role: "assistant", content: message.content }), job.session_id);
-      this.db.prepare("UPDATE jobs SET state='succeeded',end_reason='completed' WHERE job_id=? AND state='running'").run(job.job_id);
       this.recordUsage(job, `final:${job.job_id}`, message);
+      if (job.verify_command) {
+        // The step is not done yet: the verification call commits with the answer and runs next.
+        const callId = `verify-${job.job_id}`, turnKey = `verify:${job.job_id}`, args = { command: job.verify_command };
+        const assistant = { role: "assistant", content: [{ type: "toolCall", id: callId, name: "bash", arguments: args }], timestamp: this.now() };
+        const seq = (this.db.prepare("SELECT COALESCE(MAX(call_seq),0)+1 n FROM runtime_calls WHERE job_id=?").get(job.job_id) as { n: number }).n;
+        const request = { worker_id: job.worker_id, job_id: job.job_id, call_id: callId, call_seq: seq, workspace_id: job.workspace_id, config_version: job.workspace_version, tool: "bash", arguments: args };
+        this.db.prepare("INSERT INTO runtime_turns VALUES(?,?,?,?,?)").run(job.job_id, turnKey, JSON.stringify(assistant), hash(assistant), this.now());
+        this.db.prepare("INSERT INTO runtime_calls(job_id,turn_key,call_id,call_seq,request_hash,tool_name,arguments_json,status) VALUES(?,?,?,?,?,'bash',?,'committed')").run(job.job_id, turnKey, callId, seq, requestHash(request), JSON.stringify(args));
+        return true;
+      }
+      this.db.prepare("UPDATE jobs SET state='succeeded',end_reason='completed' WHERE job_id=? AND state='running'").run(job.job_id);
       return true;
     })();
   }
@@ -781,8 +821,10 @@ export class ExecutionCoordinator {
 
   /** Periodic backstop for deadlines whose timer did not run (a restart, a clock jump). */
   sweepDeadlines() {
-    const due = this.db.prepare("SELECT job_id FROM jobs WHERE state='running' AND deadline_at IS NOT NULL AND deadline_at<=?").all(this.now()) as Array<{ job_id: string }>;
+    const due = this.db.prepare("SELECT job_id FROM jobs WHERE state IN ('running','waiting_children') AND deadline_at IS NOT NULL AND deadline_at<=?").all(this.now()) as Array<{ job_id: string }>;
     for (const { job_id } of due) this.cancel(job_id, "deadline_exceeded");
+    // Backstop for a lost wake-up: the database alone decides what can move.
+    this.advance();
   }
 
   /**
@@ -809,9 +851,15 @@ export class ExecutionCoordinator {
       for (const row of unsent) this.writeNotExecuted(row, reason);
       return "cancel_requested";
     })();
+    if (state === "cancelled") this.advance();
     if (state !== "cancel_requested") return state;
     mainFault("after_cancel_commit");
     this.sessions.get(jobId)?.agent.abort();
+    // Every unfinished child stops too; the parent ends only once they have.
+    const reason_ = (this.db.prepare("SELECT cancel_reason FROM jobs WHERE job_id=?").get(jobId) as { cancel_reason: string }).cancel_reason;
+    for (const { job_id } of this.db.prepare("SELECT job_id FROM jobs WHERE parent_job_id=? AND state NOT IN ('succeeded','failed','cancelled')").all(jobId) as Array<{ job_id: string }>) this.cancel(job_id, reason_);
+    // Children left needing attention move the parent there now, not at the next sweep.
+    this.advance();
     const worker = (this.db.prepare("SELECT worker_id FROM jobs WHERE job_id=?").get(jobId) as { worker_id: string | null }).worker_id;
     if (worker) this.sendCancels(worker);
     this.finalizeCancel(jobId);
@@ -836,12 +884,14 @@ export class ExecutionCoordinator {
       const job = this.db.prepare("SELECT state,cancel_reason,worker_id FROM jobs WHERE job_id=?").get(jobId) as { state: string; cancel_reason: string | null; worker_id: string | null } | undefined;
       if (job?.state !== "cancel_requested") return undefined;
       if (this.db.prepare("SELECT 1 FROM runtime_calls WHERE job_id=? AND status IN ('dispatched','unknown')").get(jobId)) return undefined;
+      if (this.openChildren(jobId)) return undefined;
       const reason = job.cancel_reason ?? "cancelled_by_user";
       for (const row of this.db.prepare("SELECT job_id,call_id,tool_name,arguments_json FROM runtime_calls WHERE job_id=? AND status='committed'").all(jobId) as CallRow[]) this.writeNotExecuted(row, reason);
       this.db.prepare("UPDATE jobs SET state=?,end_reason=? WHERE job_id=?").run(reason === "cancelled_by_user" ? "cancelled" : "failed", reason, jobId);
       return { workerId: job.worker_id };
     })();
     if (!ended) return false;
+    this.advance();
     if (ended.workerId === null) { void this.pumpMain(); return true; }
     this.release(ended.workerId, jobId);
     void this.pump(ended.workerId);
@@ -850,14 +900,17 @@ export class ExecutionCoordinator {
 
   /** Give up on a job that needs attention. Its unknown calls stay unknown and keep the slot. */
   abandon(jobId: string, note: string) {
-    return this.db.transaction(() => {
-      const job = this.db.prepare("SELECT state,worker_id FROM jobs WHERE job_id=?").get(jobId) as { state: string; worker_id: string } | undefined;
+    const outcome = this.db.transaction(() => {
+      const job = this.db.prepare("SELECT state,worker_id FROM jobs WHERE job_id=?").get(jobId) as { state: string; worker_id: string | null } | undefined;
       if (!job) return { error: "job_not_found" as const };
       if (job.state !== "needs_attention") return { error: "job_not_needing_attention" as const };
       this.db.prepare("UPDATE jobs SET state='cancelled',end_reason='abandoned' WHERE job_id=?").run(jobId);
-      this.db.prepare("INSERT INTO attention_actions(action_id,worker_id,job_id,action,evidence,created_at) VALUES(?,?,?,'abandon',?,?)").run(randomUUID(), job.worker_id, jobId, JSON.stringify({ note }), this.now());
+      if (job.worker_id) this.db.prepare("INSERT INTO attention_actions(action_id,worker_id,job_id,action,evidence,created_at) VALUES(?,?,?,'abandon',?,?)").run(randomUUID(), job.worker_id, jobId, JSON.stringify({ note }), this.now());
+      else this.db.prepare("INSERT INTO events(created_at,content_json) VALUES(?,?)").run(this.now(), JSON.stringify({ type: "job_abandoned", job_id: jobId, note }));
       return { state: "cancelled" };
     })();
+    if (!("error" in outcome)) this.advance();
+    return outcome;
   }
 
   /**
@@ -960,6 +1013,7 @@ export class ExecutionCoordinator {
       this.db.prepare(MESSAGE_INSERT).run(randomUUID(), JSON.stringify({ role: "tool", call_id: callId, tool: row.tool_name, arguments: args, content: record.result, ok: record.ok }), job.job_id);
       return record;
     }).immediate();
+    if (this.call(job.job_id, callId)?.tool_name === "delegate") mainFault("after_delegate_commit");
     if (wake) void this.pump(wake);
     return record;
   }
@@ -984,6 +1038,98 @@ export class ExecutionCoordinator {
     return { ok: true, result: { ...rest, depends_on: (this.db.prepare("SELECT depends_on_job_id FROM job_dependencies WHERE job_id=? ORDER BY depends_on_job_id").all(target.job_id) as any[]).map((d) => d.depends_on_job_id), result: result_json ? JSON.parse(result_json) : null, final_message: final ? JSON.parse(final.content_json).content : null } };
   }
 
+  private openChildren(jobId: string) {
+    return Boolean(this.db.prepare("SELECT 1 FROM jobs WHERE parent_job_id=? AND state NOT IN ('succeeded','failed','cancelled')").get(jobId));
+  }
+
+  /** Inside the run: park the job on its unfinished children. */
+  private enterWait(job: any) {
+    return this.db.transaction(() => {
+      if (!this.current(job) || !this.openChildren(job.job_id)) return false;
+      this.db.prepare("INSERT OR IGNORE INTO job_waits(parent_job_id,child_job_id,call_id) SELECT parent_job_id,job_id,delegation_id FROM jobs WHERE parent_job_id=? AND state NOT IN ('succeeded','failed','cancelled')").run(job.job_id);
+      this.db.prepare("UPDATE jobs SET state='waiting_children' WHERE job_id=?").run(job.job_id);
+      this.db.prepare("INSERT INTO events(created_at,content_json) VALUES(?,?)").run(this.now(), JSON.stringify({ type: "job_waiting_children", job_id: job.job_id }));
+      return true;
+    })();
+  }
+
+  /** Finished children enter the parent's history once each, before its next turn. */
+  private recordChildResults(jobId: string) {
+    const done = this.db.prepare("SELECT job_id,delegation_id,worker_id,session_id,result_json FROM jobs WHERE parent_job_id=? AND state IN ('succeeded','failed','cancelled') AND result_json IS NOT NULL ORDER BY created_at,rowid").all(jobId) as any[];
+    const add = this.db.prepare("INSERT OR IGNORE INTO runtime_history(job_id,entry_key,message_json) VALUES(?,?,?)");
+    for (const c of done) {
+      const text = `Delegated task finished: ${JSON.stringify({ job_id: c.job_id, delegation_id: c.delegation_id, worker_id: c.worker_id, session_id: c.session_id, result: JSON.parse(c.result_json) })}`;
+      add.run(jobId, `child:${c.job_id}`, JSON.stringify({ role: "user", content: [{ type: "text", text }], timestamp: this.now() }));
+    }
+  }
+
+  private advancing = false;
+  private advanceAgain = false;
+
+  /**
+   * Move delegation state forward from SQLite alone, so a lost wake-up or a
+   * restart changes nothing: write final results, queue dependents whose
+   * prerequisites all succeeded, fail those with a failed prerequisite, resume
+   * parents whose children all finished, and end cancelling parents.
+   */
+  advance() {
+    if (this.closed) return;
+    if (this.advancing) { this.advanceAgain = true; return; }
+    this.advancing = true;
+    const workers = new Set<string>(), cancelling = new Set<string>();
+    let main = false, movedAny = false;
+    try {
+      let changed: boolean;
+      do {
+        this.advanceAgain = false;
+        changed = this.db.transaction(() => {
+          let moved = false;
+          for (const { job_id } of this.db.prepare("SELECT job_id FROM jobs WHERE state IN ('succeeded','failed','cancelled') AND result_json IS NULL").all() as Array<{ job_id: string }>) {
+            this.db.prepare("UPDATE jobs SET result_json=? WHERE job_id=?").run(JSON.stringify(finalResult(this.db, job_id)), job_id);
+            moved = true;
+          }
+          const pending = this.db.prepare("SELECT DISTINCT j.job_id,j.worker_id FROM jobs j JOIN job_dependencies d USING(job_id) WHERE j.state='queued' AND j.queue_seq IS NULL").all() as Array<{ job_id: string; worker_id: string }>;
+          for (const job of pending) {
+            const deps = this.db.prepare("SELECT p.job_id,p.state FROM job_dependencies d JOIN jobs p ON p.job_id=d.depends_on_job_id WHERE d.job_id=?").all(job.job_id) as Array<{ job_id: string; state: string }>;
+            const failed = deps.find((d) => d.state === "failed" || d.state === "cancelled");
+            if (failed) {
+              this.db.prepare("UPDATE jobs SET state='failed',end_reason='dependency_failed' WHERE job_id=? AND state='queued'").run(job.job_id);
+              this.db.prepare("INSERT INTO events(created_at,content_json) VALUES(?,?)").run(this.now(), JSON.stringify({ type: "job_failed", job_id: job.job_id, reason: "dependency_failed", depends_on: failed.job_id }));
+              moved = true;
+            } else if (deps.every((d) => d.state === "succeeded")) {
+              // Only now does it take a place at the back of its worker's FIFO.
+              this.db.prepare("UPDATE jobs SET queue_seq=?,state=?,wait_until=? WHERE job_id=?").run(nextQueueSeq(this.db), readyState(this.db, job.worker_id), this.now() + Number(process.env.WORKER_WAIT_MS ?? 86400000), job.job_id);
+              workers.add(job.worker_id);
+              moved = true;
+            }
+          }
+          const resumable = this.db.prepare("SELECT job_id FROM jobs p WHERE state='waiting_children' AND NOT EXISTS (SELECT 1 FROM jobs c WHERE c.parent_job_id=p.job_id AND (c.state NOT IN ('succeeded','failed','cancelled') OR c.result_json IS NULL))").all() as Array<{ job_id: string }>;
+          for (const { job_id } of resumable) {
+            this.db.prepare("UPDATE jobs SET state='running' WHERE job_id=? AND state='waiting_children'").run(job_id);
+            this.db.prepare("INSERT INTO events(created_at,content_json) VALUES(?,?)").run(this.now(), JSON.stringify({ type: "job_children_finished", job_id }));
+            main = true; moved = true;
+          }
+          for (const p of this.db.prepare("SELECT job_id FROM jobs p WHERE state='cancel_requested' AND EXISTS (SELECT 1 FROM jobs c WHERE c.parent_job_id=p.job_id)").all() as Array<{ job_id: string }>) {
+            const open = this.db.prepare("SELECT state FROM jobs WHERE parent_job_id=? AND state NOT IN ('succeeded','failed','cancelled')").all(p.job_id) as Array<{ state: string }>;
+            if (!open.length) cancelling.add(p.job_id);
+            else if (open.every((c) => c.state === "needs_attention")) {
+              // A child's execution is unproven, so the parent cannot claim a safe stop.
+              this.db.prepare("UPDATE jobs SET state='needs_attention' WHERE job_id=? AND state='cancel_requested'").run(p.job_id);
+              this.db.prepare("INSERT INTO events(created_at,content_json) VALUES(?,?)").run(this.now(), JSON.stringify({ type: "job_needs_attention", job_id: p.job_id, reason: "child_needs_attention" }));
+              main = true; moved = true;
+            }
+          }
+          return moved;
+        })();
+        movedAny ||= changed;
+      } while (changed || this.advanceAgain);
+    } finally { this.advancing = false; }
+    if (movedAny) mainFault("after_advance_commit");
+    for (const id of cancelling) this.finalizeCancel(id);
+    for (const id of workers) void this.pump(id);
+    if (main) void this.pumpMain();
+  }
+
   async piTool(job: any, callId: string) {
     if (!this.current(job)) throw new Error("job_not_running");
     return toolOutput(await this.dispatch(job.job_id, callId));
@@ -1002,6 +1148,42 @@ function p2Script(job: any): ScriptStep[] {
 }
 
 export function newJobId() { return randomUUID(); }
+
+
+/**
+ * The structured outcome of a finished job: what happened, the model's own
+ * summary, the calls that are its evidence, and what was cut or went wrong.
+ * A model's success is its judgement backed by these calls, not proof.
+ */
+export function finalResult(db: Database.Database, jobId: string) {
+  const job = db.prepare("SELECT state,end_reason,cancel_reason,worker_id FROM jobs WHERE job_id=?").get(jobId) as { state: string; end_reason: string | null; cancel_reason: string | null; worker_id: string | null };
+  const final = db.prepare("SELECT content_json FROM messages WHERE job_id=? AND json_extract(content_json,'$.role')='assistant' ORDER BY seq DESC LIMIT 1").get(jobId) as { content_json: string } | undefined;
+  const content = final ? JSON.parse(final.content_json).content : undefined;
+  const text = Array.isArray(content) ? content.filter((c: any) => c?.type === "text").map((c: any) => c.text).join("\n") : typeof content === "string" ? content : "";
+  const calls = db.prepare("SELECT call_id,tool_name,status,result_json FROM runtime_calls WHERE job_id=? ORDER BY call_seq").all(jobId) as Array<{ call_id: string; tool_name: string; status: string; result_json: string | null }>;
+  let exitCode: number | undefined, truncated = false;
+  const failedCalls: string[] = [];
+  for (const c of calls) {
+    const record = c.result_json ? JSON.parse(c.result_json) as ToolRecord : undefined;
+    if (!record?.ok) failedCalls.push(c.call_id);
+    if (c.tool_name !== "bash" || !record) continue;
+    if (typeof record.result?.exit_code === "number") exitCode = record.result.exit_code;
+    if (record.result?.logs?.truncated || STREAMS.some((s) => record.result?.output?.[s]?.truncated)) truncated = true;
+  }
+  const children = job.worker_id === null ? (db.prepare("SELECT job_id,delegation_id,state FROM jobs WHERE parent_job_id=? ORDER BY created_at,rowid").all(jobId) as any[]) : undefined;
+  const verification = db.prepare("SELECT call_id,status,result_json FROM runtime_calls WHERE job_id=? AND turn_key=?").get(jobId, `verify:${jobId}`) as { call_id: string; status: string; result_json: string | null } | undefined;
+  return {
+    outcome: job.state,
+    summary: text || job.end_reason || job.state,
+    evidence_call_ids: calls.filter((c) => c.status === "completed").map((c) => c.call_id),
+    ...(exitCode !== undefined ? { exit_code: exitCode } : {}),
+    error: job.state === "succeeded" ? null : (job.end_reason ?? job.cancel_reason ?? "unknown"),
+    failed_call_ids: failedCalls,
+    truncated,
+    ...(children ? { children } : {}),
+    ...(verification ? { verification: { call_id: verification.call_id, status: verification.status, exit_code: verification.result_json ? JSON.parse(verification.result_json).result?.exit_code ?? null : null } } : {}),
+  };
+}
 
 /** How long a dispatched call may go without a result before it is unknown. */
 function resultTimeoutMs(row: CallRow) {

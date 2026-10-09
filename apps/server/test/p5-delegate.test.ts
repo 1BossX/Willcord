@@ -21,10 +21,12 @@ async function mainSession(s: Awaited<ReturnType<typeof startScenario>>) {
 test("P5-A delegate: one atomic child per delegation ID, parent injected, isolated child session", { timeout: 60000 }, async () => {
   const s = await startScenario({ scripts: {
     plan: [
-      delegate("d-1", { prompt: "child-a", delegation_key: "a", parent_job_id: "forged", delegation_id: "forged" }),
-      delegate("d-2", { prompt: "child-a", delegation_key: "a" }),
-      delegate("d-3", { prompt: "child-other", delegation_key: "a" }),
-      delegate("d-4", { worker_id: "nobody", prompt: "child-x" }),
+      { calls: [
+        delegate("d-1", { prompt: "child-a", delegation_key: "a", parent_job_id: "forged", delegation_id: "forged" }),
+        delegate("d-2", { prompt: "child-a", delegation_key: "a" }),
+        delegate("d-3", { prompt: "child-other", delegation_key: "a" }),
+        delegate("d-4", { worker_id: "nobody", prompt: "child-x" }),
+      ] } as ScriptStep,
       { text: "delegated" },
     ],
     "child-a": bash("child-a-1", "echo child-a >> marker.log"),
@@ -98,7 +100,7 @@ test("P5-A shared FIFO: user work and delegated work queue in order on one worke
   } finally { await s.close(); }
 });
 
-test("P5-A dependencies: same task only, and an unmet dependency holds no queue position", { timeout: 60000 }, async () => {
+test("P5 dependencies: same task only, no queue position until the prerequisite succeeded", { timeout: 60000 }, async () => {
   let other = "";
   const scripts: Record<string, ScriptStep[]> = {
     "dep-a": bash("dep-a-1", "echo a-start >> marker.log; sleep 2; echo a-end >> marker.log"),
@@ -107,11 +109,13 @@ test("P5-A dependencies: same task only, and an unmet dependency holds no queue 
     other: bash("other-1", "echo other >> marker.log"),
   };
   Object.defineProperty(scripts, "deps", { enumerable: true, get: () => [
-    delegate("dep-1", { prompt: "dep-a", delegation_key: "a" }),
-    delegate("dep-2", { prompt: "dep-b", delegation_key: "b", depends_on: ["a"] }),
-    delegate("dep-3", { prompt: "dep-b", delegation_key: "c", depends_on: ["missing"] }),
-    delegate("dep-4", { prompt: "dep-b", delegation_key: "d", depends_on: [other] }),
-    { tool: "get_job", arguments: { job_id: other }, id: "dep-5" },
+    { calls: [
+      delegate("dep-1", { prompt: "dep-a", delegation_key: "a" }),
+      delegate("dep-2", { prompt: "dep-b", delegation_key: "b", depends_on: ["a"] }),
+      delegate("dep-3", { prompt: "dep-b", delegation_key: "c", depends_on: ["missing"] }),
+      delegate("dep-4", { prompt: "dep-b", delegation_key: "d", depends_on: [other] }),
+      { tool: "get_job", arguments: { job_id: other }, id: "dep-5" },
+    ] } as ScriptStep,
     { text: "planned" },
   ] });
   const s = await startScenario({ scripts });
@@ -122,7 +126,7 @@ test("P5-A dependencies: same task only, and an unmet dependency holds no queue 
     other = await s.submit(user, "other");
     await s.until(() => s.state(other) === "succeeded");
     const parent = await s.submit(main, "deps");
-    await s.until(() => s.state(parent) === "succeeded");
+    await s.until(() => s.state(parent) === "waiting_children");
     assert.deepEqual([result(s, "dep-3").ok, result(s, "dep-3").result.error], [false, "dependency_not_in_task"]);
     assert.deepEqual([result(s, "dep-4").ok, result(s, "dep-4").result.error], [false, "dependency_not_in_task"], "another task's job is not a valid dependency");
     assert.deepEqual([result(s, "dep-5").ok, result(s, "dep-5").result.error], [false, "job_not_found"], "get_job sees only its own task");
@@ -137,6 +141,9 @@ test("P5-A dependencies: same task only, and an unmet dependency holds no queue 
     const { readFileSync } = await import("node:fs");
     const lines = readFileSync(`${s.workspace}/marker.log`, "utf8").trim().split("\n");
     assert.deepEqual(lines.slice(0, 4), ["other", "a-start", "a-end", "after"], "the waiting job never blocks the queue");
-    assert.equal(s.count("b"), 0);
+    // Once A succeeded, B joins the back of the FIFO, behind work submitted while it waited.
+    await s.until(() => s.state(parent) === "succeeded");
+    assert.deepEqual(readFileSync(`${s.workspace}/marker.log`, "utf8").trim().split("\n"), ["other", "a-start", "a-end", "after", "b"]);
+    assert.ok(s.one("SELECT queue_seq FROM jobs WHERE job_id=?", b.job_id).queue_seq > s.one("SELECT queue_seq FROM jobs WHERE job_id=?", after).queue_seq);
   } finally { await s.close(); }
 });

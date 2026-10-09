@@ -56,6 +56,10 @@ struct Config {
     data_dir: PathBuf,
     url: String,
     workspaces: Vec<Workspace>,
+    /// File holding the worker token, reread on every connection so a rotated
+    /// token takes effect on reconnect. Without it, WORKER_TOKEN is used.
+    #[serde(default)]
+    token_file: Option<PathBuf>,
     /// How long acknowledged results stay readable before only a tombstone remains.
     #[serde(default)]
     result_retention_secs: Option<u64>,
@@ -87,10 +91,43 @@ fn retry(reason: impl std::fmt::Display) -> Error {
     Box::new(Retry(reason.to_string()))
 }
 
+/// Where the bearer token comes from: fixed from the environment, or a file
+/// read again before each connection.
+enum TokenSource {
+    Env(String),
+    File(PathBuf),
+}
+impl TokenSource {
+    fn new(file: Option<PathBuf>, env: Option<String>) -> Result<Self, Error> {
+        match (file, env) {
+            (Some(path), None) => Ok(Self::File(path)),
+            (None, Some(token)) => Ok(Self::Env(token)),
+            (Some(_), Some(_)) => Err("set token_file or WORKER_TOKEN, not both".into()),
+            (None, None) => Err("token_file or WORKER_TOKEN required".into()),
+        }
+    }
+    fn read(&self) -> Result<String, Error> {
+        let token = match self {
+            Self::Env(token) => token.clone(),
+            Self::File(path) => {
+                use std::os::unix::fs::PermissionsExt;
+                if fs::metadata(path)?.permissions().mode() & 0o077 != 0 {
+                    return Err("token_file must not be readable by group or others".into());
+                }
+                fs::read_to_string(path)?.trim().to_string()
+            }
+        };
+        if token.is_empty() {
+            return Err("worker token is empty".into());
+        }
+        Ok(token)
+    }
+}
+
 struct Worker {
     worker_id: String,
     url: String,
-    token: String,
+    token: TokenSource,
     boot_id: String,
     retention_ms: i64,
     workspaces: Arc<Vec<Workspace>>,
@@ -225,10 +262,12 @@ async fn main() -> Result<(), Error> {
         interrupt.recv().await;
         listener.notify_one();
     });
+    let token = TokenSource::new(config.token_file, std::env::var("WORKER_TOKEN").ok())?;
+    token.read()?;
     let worker = Worker {
         worker_id: config.worker_id,
         url: config.url,
-        token: std::env::var("WORKER_TOKEN")?,
+        token,
         boot_id,
         retention_ms,
         workspaces: Arc::new(config.workspaces),
@@ -295,7 +334,7 @@ async fn connect(worker: &Worker) -> Result<Socket, Error> {
     let mut request = worker.url.as_str().into_client_request()?;
     request.headers_mut().insert(
         "authorization",
-        HeaderValue::from_str(&format!("Bearer {}", worker.token))?,
+        HeaderValue::from_str(&format!("Bearer {}", worker.token.read()?))?,
     );
     let websocket_config = WebSocketConfig::default()
         .max_message_size(Some(MAX_FRAME_BYTES))
@@ -961,6 +1000,44 @@ async fn log_fetch(
 mod tests {
     use super::*;
     use sha2::{Digest, Sha256};
+    #[test]
+    fn token_file_is_reread_and_must_be_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("wp-token-{}", Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("token");
+        fs::write(&path, "first\n").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        let source = TokenSource::new(Some(path.clone()), None).unwrap();
+        assert_eq!(source.read().unwrap(), "first");
+        fs::write(&path, "second").unwrap();
+        assert_eq!(
+            source.read().unwrap(),
+            "second",
+            "rotation is picked up on the next read"
+        );
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(
+            source.read().is_err(),
+            "a token readable by others is refused"
+        );
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::write(&path, " \n").unwrap();
+        assert!(source.read().is_err(), "an empty token is refused");
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn token_source_needs_exactly_one_origin() {
+        assert!(TokenSource::new(None, None).is_err());
+        assert!(TokenSource::new(Some("/x".into()), Some("t".into())).is_err());
+        assert_eq!(
+            TokenSource::new(None, Some("t".into()))
+                .unwrap()
+                .read()
+                .unwrap(),
+            "t"
+        );
+    }
     #[test]
     fn shared_fixtures() {
         let fixtures: Value =

@@ -37,15 +37,23 @@ async function spawnMain(options: MainOptions): Promise<MainProcess> {
 
 /** Spawn the main node; resolves once it serves /health or rejects with its stderr if it exits. */
 export async function startMainProcess(options: MainOptions): Promise<MainProcess> {
-  const main = await spawnMain(options);
-  const { child, port } = main;
-  let healthy = false;
-  await waitFor(() => {
-    if (child.exitCode !== null || child.signalCode !== null) throw new Error(`main exited (${child.exitCode ?? child.signalCode}): ${main.stderr()}`);
-    fetch(`http://127.0.0.1:${port}/health`).then((r) => { healthy = r.ok; }, () => {});
-    return healthy;
-  }, 20000);
-  return main;
+  // freePort() releases its probe before the child binds, so a concurrently
+  // running test file can take the port first; that start is simply retried.
+  for (let attempt = 1; ; attempt++) {
+    const main = await spawnMain(options);
+    const { child, port } = main;
+    let healthy = false;
+    try {
+      await waitFor(() => {
+        if (child.exitCode !== null || child.signalCode !== null) throw new Error(`main exited (${child.exitCode ?? child.signalCode}): ${main.stderr()}`);
+        fetch(`http://127.0.0.1:${port}/health`).then((r) => { healthy = r.ok; }, () => {});
+        return healthy;
+      }, 20000);
+      return main;
+    } catch (error) {
+      if (attempt >= 5 || !main.stderr().includes("EADDRINUSE")) throw error;
+    }
+  }
 }
 
 /** Start a main node that must refuse to run; returns its exit code and stderr. */

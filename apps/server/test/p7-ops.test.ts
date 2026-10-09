@@ -90,7 +90,18 @@ test("P7-A a backup taken mid-call restores paused, and the call it holds as in 
     assert.equal(s.callStatus("slow-1"), "dispatched", "nothing is re-sent before the operator resumes");
     assert.equal((await s.api("POST", "/api/ops/resume", { note: "ledgers checked" })).statusCode, 200);
     // The worker ledger answers with the stored result; the call is not executed again.
-    await s.until(() => s.state(slow) === "succeeded");
+    await s.until(() => s.state(slow) === "succeeded", 40000).catch((error) => {
+      throw new Error(`${error}: ${JSON.stringify({
+        job: s.one("SELECT state,end_reason FROM jobs WHERE job_id=?", slow),
+        call: s.one("SELECT status,result_json FROM runtime_calls WHERE call_id='slow-1'"),
+        worker: s.one("SELECT online,reconciled,blocked FROM workers"),
+        slot: s.one("SELECT active_job_id FROM worker_slots"),
+        dispatch: s.one("SELECT * FROM dispatch_state"),
+        attention: s.all("SELECT action,evidence FROM attention_actions"),
+        frames: s.proxy.frames.slice(-12).map((f) => `${f.direction}:${f.type}`),
+        stderr: s.worker?.stderr().slice(-2000),
+      })}`);
+    });
     assert.equal(s.callStatus("slow-1"), "completed");
     const next = await s.submit(session, "next");
     await s.until(() => s.state(next) === "succeeded");

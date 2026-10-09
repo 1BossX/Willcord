@@ -588,6 +588,8 @@ export class ExecutionCoordinator {
     const unresolved = this.db.prepare("SELECT call_id FROM runtime_calls WHERE job_id=? AND status IN ('dispatched','unknown')").all(jobId);
     if (job.session_kind === "main") {
       // Main tools run inside their commit, so a main job never has an unresolved call.
+      // A run that ended without an outcome stops its children first, like a cancel.
+      if (this.openChildren(jobId) && (this.db.prepare("SELECT state FROM jobs WHERE job_id=?").get(jobId) as { state: string }).state === "running") this.cancel(jobId, "run_ended");
       this.db.prepare("UPDATE jobs SET state='failed',end_reason=COALESCE(end_reason,'run_ended') WHERE job_id=? AND state='running'").run(jobId);
       if (failure) console.error("main execution failed", String(failure));
       this.finalizeCancel(jobId);
@@ -856,6 +858,8 @@ export class ExecutionCoordinator {
     // Every unfinished child stops too; the parent ends only once they have.
     const reason_ = (this.db.prepare("SELECT cancel_reason FROM jobs WHERE job_id=?").get(jobId) as { cancel_reason: string }).cancel_reason;
     for (const { job_id } of this.db.prepare("SELECT job_id FROM jobs WHERE parent_job_id=? AND state NOT IN ('succeeded','failed','cancelled')").all(jobId) as Array<{ job_id: string }>) this.cancel(job_id, reason_);
+    // Children left needing attention move the parent there now, not at the next sweep.
+    this.advance();
     const worker = (this.db.prepare("SELECT worker_id FROM jobs WHERE job_id=?").get(jobId) as { worker_id: string | null }).worker_id;
     if (worker) this.sendCancels(worker);
     this.finalizeCancel(jobId);

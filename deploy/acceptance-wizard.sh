@@ -305,7 +305,7 @@ step "worker-plane-worker-$RELEASE_TAG-darwin-* → /usr/local/bin/worker-plane-
 step "$STATE/$MAC_WORKER.token → /usr/local/etc/worker-plane/token（0600）"
 step "$STATE/ca.pem → /usr/local/etc/worker-plane/ca.pem"
 step "worker.toml：worker_id=$MAC_WORKER；Apple Silicon 加 command_path（含 /opt/homebrew/bin）"
-step "安装 com.workerplane.worker.plist 和 newsyslog 配置，然后 launchctl bootstrap system ..."
+step "建日志目录，安装 com.workerplane.worker.plist，然后 launchctl bootstrap system ..."
 pause "启动后按 Enter，开始检查"
 state=$(worker_field "$MAC_WORKER" schedulable || true)
 say "主节点看到的 $MAC_WORKER 可执行状态：$state"

@@ -1,5 +1,5 @@
 // P4 operator controls: cancel, budget use, attention handling and full logs.
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { request } from "./api";
 
 export type JobControl = {
@@ -227,21 +227,30 @@ export function LogViewer({ jobId, callId, version }: { jobId: string; callId: s
   const [stream, setStream] = useState<"stdout" | "stderr">("stdout");
   const [text, setText] = useState(""), [next, setNext] = useState(0);
   const [page, setPage] = useState<LogPage | null>(null), [error, setError] = useState("");
-  const load = async (from: number, s = stream, append = true) => {
+  /** Only the latest view's responses apply; a slow older page never overwrites newer text. */
+  const generation = useRef(0), nextRef = useRef(0), busy = useRef(false), again = useRef(false);
+  const load = async (from: number, s = stream, append = true, gen = generation.current) => {
     try {
       const data = await request<LogPage>(`/api/jobs/${jobId}/calls/${callId}/logs?stream=${s}&from_seq=${from}`);
+      if (gen !== generation.current) return;
       const bytes = data.items.map((i) => decode(i.data));
       const merged = new Uint8Array(bytes.reduce((n, b) => n + b.length, 0));
       bytes.reduce((at, b) => (merged.set(b, at), at + b.length), 0);
       const chunk = new TextDecoder().decode(merged);
       setText((t) => (append ? t + chunk : chunk));
-      setNext(data.items.length ? data.items.at(-1)!.seq + 1 : from);
+      nextRef.current = data.items.length ? data.items.at(-1)!.seq + 1 : from;
+      setNext(nextRef.current);
       setPage(data); setError("");
     } catch (e) { setError(e instanceof Error ? e.message : "无法读取日志"); }
   };
-  useEffect(() => { setText(""); void load(0, stream, false); }, [stream, jobId, callId]);
-  // New output while streaming: re-read the first page so it never repeats a chunk.
-  useEffect(() => { if (version !== undefined && page) void load(0, stream, false); }, [version]);
+  useEffect(() => { const gen = ++generation.current; nextRef.current = 0; setText(""); void load(0, stream, false, gen); }, [stream, jobId, callId]);
+  // New output while streaming: append from where this view stopped, one request at a time.
+  const follow = async () => {
+    if (busy.current) { again.current = true; return; }
+    busy.current = true;
+    try { do { again.current = false; await load(nextRef.current); } while (again.current); } finally { busy.current = false; }
+  };
+  useEffect(() => { if (version !== undefined && page) void follow(); }, [version]);
   const more = page && page.chunks !== null && next < page.chunks && page.items.length > 0;
   return (
     <div className="log-viewer">
@@ -270,7 +279,7 @@ export function LogViewer({ jobId, callId, version }: { jobId: string; callId: s
           ))}
         </ul>
       )}
-      {more && <button type="button" className="secondary-button" onClick={() => load(next)}>加载更多</button>}
+      {more && <button type="button" className="secondary-button" onClick={() => void follow()}>加载更多</button>}
     </div>
   );
 }

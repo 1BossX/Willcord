@@ -532,6 +532,7 @@ function DelegationStatus({ child }: { child: Child }) {
 }
 function ToolCard({ value, jobId, onOpenSession, delegations }: { value: Content; jobId: string; onOpenSession?: (sessionId: string) => void; delegations?: Child[] }) {
   const [showLog, setShowLog] = useState(false);
+  const card = useRef<HTMLDetailsElement>(null);
   const result = (
     value.content &&
     typeof value.content === "object" &&
@@ -567,6 +568,8 @@ function ToolCard({ value, jobId, onOpenSession, delegations }: { value: Content
         ? "已超时停止"
         : "";
   const failed = value.ok === false || Boolean(result.error) || nonzeroExit;
+  // Delegation cards start open; afterwards the user's collapse sticks across feed updates.
+  useEffect(() => { if (tool === "delegate" && card.current) card.current.open = true; }, []);
   const child = tool === "delegate" ? delegations?.find((c) => c.job_id === result.job_id) : undefined;
   const titles: Record<string, string> = {
     read: "读取文件",
@@ -591,7 +594,7 @@ function ToolCard({ value, jobId, onOpenSession, delegations }: { value: Content
           ? `${stopped ? `${stopped} · 信号 ${result.signal ?? "未知"}` : `退出码 ${result.exit_code ?? "未知"}`}${result.truncated || outputCut ? " · 输出已截断" : ""}`
           : "查看结果";
   return (
-    <details className={`tool-card ${failed || (child && ["failed", "cancelled", "needs_attention"].includes(child.state)) ? "tool-failed" : ""}`} open={tool === "delegate" ? true : undefined}>
+    <details ref={card} className={`tool-card ${failed || (child && ["failed", "cancelled", "needs_attention"].includes(child.state)) ? "tool-failed" : ""}`}>
       <summary>
         <span className="tool-icon">
           <Icon

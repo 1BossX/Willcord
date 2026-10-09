@@ -67,8 +67,14 @@ export async function createApp(
   const budget = { ...DEFAULT_BUDGET, ...options.budget };
   const coordinator = new ExecutionCoordinator(db, connections, now, options.runJob as ((job:any)=>Promise<void>)|undefined, { budget, dataDir: options.dataDir, fakeScript: options.fakeScript, toolResultTimeoutMs: options.toolResultTimeoutMs, logCapacityBytes: options.logCapacityBytes });
   let shuttingDown = false;
+  let recovered = false;
   // Main jobs need no worker: a restart resumes them right away.
-  setImmediate(() => { coordinator.advance(); void coordinator.pumpMain(); });
+  setImmediate(() => { coordinator.advance(); recovered = true; void coordinator.pumpMain(); });
+  /** Scheduling is ready once the startup recovery pass ran, the database answers and shutdown has not begun. */
+  const schedulingReady = () => {
+    if (!recovered || shuttingDown) return false;
+    try { return db.prepare("SELECT 1").pluck().get() === 1; } catch { return false; }
+  };
   /** Inside a transaction: a new job with its own budget root, at the back of its worker's queue. */
   const insertJob = (session: any, clientRequestId: string, message: string, requestHash: string) =>
     createJob(db, now, { session, clientRequestId, message, requestHash, budget });
@@ -113,7 +119,7 @@ export async function createApp(
   });
   app.get("/health", async () => ({
     alive: true,
-    scheduling_ready: true,
+    scheduling_ready: schedulingReady(),
     phase: "P5",
   }));
   app.post(

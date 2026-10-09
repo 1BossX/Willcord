@@ -85,9 +85,11 @@ async function midCallRestore(ackAfter: boolean) {
   await s.until(() => s.state(after) === "succeeded");
   // The worker's ledger is settled before it stops: what it holds is the scenario, not a race.
   await s.until(() => ledger("slow-1") === "acked" && ledger("after-1") === (ackAfter ? "acked" : "completed"));
-  dropAck = false;
-
+  // ACKs stay dropped until the worker is gone: a result it repeats before
+  // stopping must not get acknowledged after the check above.
   await s.stopWorker("SIGTERM");
+  dropAck = false;
+  assert.equal(ledger("after-1"), ackAfter ? "acked" : "completed");
   await s.stopMain();
   mkdirSync(join(s.dir, "main.lock"));
   assert.throws(() => restore(s.dir, copy), /stop the main node/);
@@ -126,7 +128,15 @@ test("P7-A a backup taken mid-call restores paused, and the call it holds as in 
 test("P7-A after a restore, an unacknowledged call the backup lacks blocks the worker; nothing runs again", { timeout: 90000 }, async () => {
   const { s, session } = await midCallRestore(false);
   try {
-    await s.until(() => s.one("SELECT blocked FROM workers").blocked === 1);
+    await s.until(() => s.one("SELECT blocked FROM workers").blocked === 1, 40000).catch((error) => {
+      throw new Error(`${error}: ${JSON.stringify({
+        worker: s.one("SELECT online,reconciled,blocked FROM workers"),
+        call: s.one("SELECT status FROM runtime_calls WHERE call_id='slow-1'"),
+        attention: s.all("SELECT action,evidence FROM attention_actions"),
+        frames: s.proxy.frames.slice(-16).map((f) => `${f.direction}:${f.type}:${f.call_id ?? ""}${f.dropped ? ":dropped" : ""}`),
+        stderr: s.worker?.stderr().slice(-2000),
+      })}`);
+    });
     const reasons = s.all("SELECT evidence FROM attention_actions WHERE action='blocked'").map((r) => JSON.parse(r.evidence));
     assert.ok(reasons.some((e) => e.reason === "ledger_contradiction" && e.evidence.call_id === "after-1"), JSON.stringify(reasons));
     const next = await s.submit(session, "next");

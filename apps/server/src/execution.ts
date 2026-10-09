@@ -769,6 +769,7 @@ export class ExecutionCoordinator {
       return "cancel_requested";
     })();
     if (state !== "cancel_requested") return state;
+    mainFault("after_cancel_commit");
     this.sessions.get(jobId)?.agent.abort();
     const worker = (this.db.prepare("SELECT worker_id FROM jobs WHERE job_id=?").get(jobId) as { worker_id: string }).worker_id;
     this.sendCancels(worker);

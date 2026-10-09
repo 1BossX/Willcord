@@ -1,10 +1,15 @@
 // The main node as its own OS process (src/main.ts), so it can be SIGKILLed at
 // a commit point and restarted against the same data directory and lock.
 import { spawn, type ChildProcess } from "node:child_process";
+import { createHash } from "node:crypto";
 import { once } from "node:events";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { repoRoot, waitFor } from "./worker-harness.js";
+import argon2 from "argon2";
+import { openDatabase } from "../../src/storage.js";
+import { createCertificates, repoRoot, startTlsProxy, startWorker, stopWorker, waitFor, type WorkerProcess } from "./worker-harness.js";
 
 export type MainProcess = { child: ChildProcess; port: number; stderr: () => string; exited: Promise<unknown> };
 
@@ -57,4 +62,46 @@ export async function adminClient(port: () => number, password: string) {
   if (!login.ok) throw new Error(`login failed: ${login.status}`);
   const headers = { cookie: login.headers.get("set-cookie")!.split(";")[0], origin, "x-csrf-token": (await login.json()).csrf, "content-type": "application/json" };
   return (path: string, body: unknown) => fetch(`http://127.0.0.1:${port()}${path}`, { method: "POST", headers, body: JSON.stringify(body) });
+}
+
+const token = "p3-main-process-worker-token";
+const password = "p3-main-process-password";
+
+/** A main process, its data directory, a TLS proxy and a real worker; `one` reads the live WAL database. */
+export async function processScenario(scripts: Record<string, unknown>) {
+  const dir = mkdtempSync(join(tmpdir(), "worker-plane-p3c-main-"));
+  const dataDir = join(dir, "data");
+  mkdirSync(dataDir, { mode: 0o700 });
+  const certs = createCertificates(dir);
+  const workspace = join(dir, "workspace");
+  const marker = join(workspace, "marker.log");
+  const scriptFile = join(dir, "scripts.json");
+  writeFileSync(scriptFile, JSON.stringify(scripts));
+  // Seed credentials before the first start; the test keeps a reader on the same WAL database.
+  const db = openDatabase(join(dataDir, "main.sqlite"));
+  db.prepare("INSERT INTO worker_tokens VALUES (?,'w',NULL)").run(createHash("sha256").update(token).digest("hex"));
+  db.prepare("INSERT INTO administrators VALUES (1,?)").run(await argon2.hash(password, { type: argon2.argon2id }));
+  let main: MainProcess | undefined;
+  let worker: WorkerProcess | undefined;
+  const proxy = await startTlsProxy(certs, () => main!.port);
+  const one = (sql: string, ...params: unknown[]) => db.prepare(sql).get(...params) as any;
+  return {
+    dir, workspace, dataDir, scriptFile, proxy, one, password,
+    get worker() { return worker; },
+    get main() { return main!; },
+    count: (tag: string) => existsSync(marker) ? readFileSync(marker, "utf8").split("\n").filter((l) => l === tag).length : 0,
+    start: async (env: Record<string, string> = {}) => (main = await startMainProcess({ dataDir, scriptFile, env })),
+    startWorker: () => (worker = startWorker({ dir, id: "w", url: proxy.url, ca: certs.ca, token, workspace })),
+    until: (check: () => boolean, timeoutMs = 20000) => waitFor(() => {
+      if (worker && worker.child.exitCode !== null) throw new Error(`worker exited: ${worker.stderr()}`);
+      return check();
+    }, timeoutMs),
+    close: async () => {
+      if (worker) await stopWorker(worker);
+      if (main && main.child.exitCode === null && main.child.signalCode === null) { main.child.kill("SIGTERM"); await main.exited; }
+      await proxy.close();
+      db.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
 }

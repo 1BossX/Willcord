@@ -99,7 +99,7 @@ worker 上报 `reconcile.calls` 后，主节点逐条核对，判定只决定是
 | 账本中没有 | dispatched | 由重发的原请求交给 worker 判定 |
 | 执行槽指向不存在的 job | — | 阻塞，执行槽保留 |
 
-出现矛盾时仍确认对账，连接保持在线并显示 blocked，worker 不再循环重连。worker 被阻塞后不接收新调用，新 job 保持 waiting_worker。解除阻塞属于 P4 的人工处置。
+出现矛盾时仍确认对账，连接保持在线并显示 blocked，worker 不再循环重连。worker 被阻塞后不接收新调用，新 job 保持 waiting_worker。解除阻塞由 P4 的人工处置提供，见 [P4-B 人工处置](p4-development.md#人工处置)。
 
 ### 执行与恢复
 
@@ -193,7 +193,7 @@ Migration `004_p3_recovery.sql` 给 `runtime_calls` 增加 `completed_at`，用�
 - **重复帧**：结果或 ACK 随连接丢失后，重连时 worker 在 `worker_ready` 之后主动重发未确认的结果，主节点同时重发等待中的调用，worker 再返回一次缓存结果。主节点因此可能收到两次相同结果、发出两次 ACK。重复结果只重新 ACK，副作用和工具消息都只有一次，终态不倒退。
 - **主节点 SIGKILL 后的锁**：`main.lock` 不会自动过期，重启会以 `EEXIST` 失败，需要运维确认旧进程已退出后删除该目录。测试按此操作。
 - **worker 丢失 SIGINT（已修复）**：CI 中 `p3-recovery` 在 ubuntu 上偶发卡满 120 s，P3-B 分支上已出现过。原因是 worker 每轮会话循环新建 `ctrl_c()` 监听，信号在处理帧、分块传输或握手期间到达时没有监听者，直接丢失，worker 不退出。现在进程启动时注册一次 SIGINT 监听并保存信号，会话在任何等待点都会被取消。`worker-ledger.test.ts` 用停在分块传输中的 worker 复现：修复前 SIGINT 后不退出，修复后立即以 0 退出。测试工具的 `stopWorker` 增加 10 s 上限，信号被忽略时报错而不是挂住。
-- **ledger 丢失**：worker 用新 ledger_id 注册时被置为 blocked，对账以 `reconcile_blocked` 被拒，worker 按退避持续重连但始终不能对账。主节点保留原 ledger_id，在途调用不重发也不判定为未执行，执行槽保留。人工处置属于 P4。
+- **ledger 丢失**：worker 用新 ledger_id 注册时被置为 blocked，对账以 `reconcile_blocked` 被拒，worker 按退避持续重连但始终不能对账。主节点保留原 ledger_id，在途调用不重发也不判定为未执行，执行槽保留。P4 起，人工解除阻塞时采用新账本，见 [P4-B 人工处置](p4-development.md#人工处置)。
 
 ### 总验收
 

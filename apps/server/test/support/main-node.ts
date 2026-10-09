@@ -20,6 +20,7 @@ type AppOptions = Parameters<typeof createApp>[2];
 export async function startScenario(options: {
   scripts: Record<string, ScriptStep[]>;
   drop?: (direction: Direction, frame: any) => boolean;
+  duplicate?: (direction: Direction, frame: any) => boolean;
   app?: AppOptions;
 }) {
   const dir = mkdtempSync(join(tmpdir(), "worker-plane-p3c-"));
@@ -37,7 +38,7 @@ export async function startScenario(options: {
     main = { db, app: app_, port: (app_.server.address() as { port: number }).port };
   };
   const stopMain = async () => { await main!.app.close(); main!.db.close(); main = undefined; };
-  const proxy = await startTlsProxy(certs, () => main!.port, { drop: options.drop });
+  const proxy = await startTlsProxy(certs, () => main!.port, { drop: options.drop, duplicate: options.duplicate });
   await startMain();
   main!.db.prepare("INSERT INTO worker_tokens VALUES (?,'w',NULL)").run(createHash("sha256").update(workerToken).digest("hex"));
   main!.db.prepare("INSERT INTO administrators VALUES (1,?)").run(await argon2.hash(password, { type: argon2.argon2id }));

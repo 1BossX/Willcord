@@ -97,16 +97,19 @@ export type RelayedFrame = { direction: Direction; type: string; call_id?: strin
  * TLS termination in front of the main node, standing in for Caddy. The target
  * port is read per connection so a restarted main node is reached at its new
  * port; dropAll() simulates a network loss without restarting either side.
- * `drop` loses individual frames on an otherwise healthy connection; every
- * relayed frame is recorded in `frames` as evidence.
+ * `drop` loses individual frames on an otherwise healthy connection and
+ * `duplicate` delivers a frame twice; every relayed frame is recorded in
+ * `frames` as evidence.
  */
-export async function startTlsProxy(certs: ReturnType<typeof createCertificates>, target: () => number, options: { drop?: (direction: Direction, frame: any) => boolean } = {}) {
+export async function startTlsProxy(certs: ReturnType<typeof createCertificates>, target: () => number, options: { drop?: (direction: Direction, frame: any) => boolean; duplicate?: (direction: Direction, frame: any) => boolean } = {}) {
   const frames: RelayedFrame[] = [];
   const relay = (direction: Direction, to: WebSocket, data: string) => {
     const frame = JSON.parse(data);
     const dropped = options.drop?.(direction, frame) ?? false;
     if (frame.type !== "heartbeat") frames.push({ direction, type: frame.type, call_id: frame.call_id, dropped });
-    if (!dropped) to.send(data);
+    if (dropped) return;
+    to.send(data);
+    if (options.duplicate?.(direction, frame)) { frames.push({ direction, type: frame.type, call_id: frame.call_id, dropped: false }); to.send(data); }
   };
   const server: Server = createServer({ key: readFileSync(certs.key), cert: readFileSync(certs.cert) });
   const gateway = new WebSocketServer({ noServer: true, maxPayload: 65536 });

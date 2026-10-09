@@ -1,10 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
+import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type Database from "better-sqlite3";
 import type { WorkerFrame } from "@worker-plane/protocol";
 import { requestHash } from "@worker-plane/protocol";
 import { mainFault } from "./fault.js";
+import { delegate } from "./jobs.js";
 
 type Socket = { readyState: number; send(data: string): void };
 type Connection = { epoch: number; socket: Socket; tokenDigest: string };
@@ -13,7 +15,7 @@ type Pending = { workerId: string; jobId: string; callId: string; promise: Promi
 type CallRow = { job_id: string; turn_key: string; call_id: string; call_seq: number; request_hash: string; tool_name: string; arguments_json: string; status: string; result_json: string | null; completed_at: number | null; worker_id: string; workspace_id: string; workspace_version: number };
 type CallReport = { job_id: string; call_id: string; call_seq: number; request_hash: string; status: string; boot_id: string };
 /** Scripted model turns for isolated acceptance; never a real provider. */
-export type ScriptStep = ({ tool: "read" | "write" | "bash"; arguments: Record<string, unknown>; id?: string } | { text: string }) & { delay_ms?: number };
+export type ScriptStep = ({ tool: "read" | "write" | "bash" | "list_workers" | "get_job" | "delegate"; arguments: Record<string, unknown>; id?: string } | { text: string }) & { delay_ms?: number };
 /** Per-job limits written at creation. Counts come from SQLite, so a restart never resets them. */
 export type Budget = { maxToolCalls: number; maxTokens: number; maxRuntimeSecs: number };
 export const DEFAULT_BUDGET: Budget = { maxToolCalls: 200, maxTokens: 2_000_000, maxRuntimeSecs: 4 * 3600 };
@@ -77,7 +79,7 @@ export class ExecutionCoordinator {
     readonly connections: Map<string, Connection>,
     readonly now = Date.now,
     readonly runJob?: (job: any) => Promise<void>,
-    readonly options: { dataDir?: string; fakeScript?: (job: any) => ScriptStep[]; toolResultTimeoutMs?: number; logCapacityBytes?: number } = {},
+    readonly options: { budget?: Budget; dataDir?: string; fakeScript?: (job: any) => ScriptStep[]; toolResultTimeoutMs?: number; logCapacityBytes?: number } = {},
   ) {}
 
   /** Results that wait for the head of their output before they commit. */
@@ -511,7 +513,7 @@ export class ExecutionCoordinator {
           if (!this.release(workerId, slot)) return;
           continue;
         }
-        const job = this.db.prepare("SELECT job_id,session_id,wait_until FROM jobs WHERE worker_id=? AND state IN ('queued','waiting_worker') ORDER BY queue_seq LIMIT 1").get(workerId) as any;
+        const job = this.db.prepare("SELECT job_id,session_id,wait_until FROM jobs WHERE worker_id=? AND state IN ('queued','waiting_worker') AND queue_seq IS NOT NULL ORDER BY queue_seq LIMIT 1").get(workerId) as any;
         if (!job) return;
         if (job.wait_until && job.wait_until < this.now()) { this.db.prepare("UPDATE jobs SET state='failed',end_reason='worker_wait_expired' WHERE job_id=?").run(job.job_id); continue; }
         if (!workspaceCurrent(this.db, job.session_id)) { this.failStaleWorkspace(job.job_id, job.session_id); continue; }
@@ -523,6 +525,29 @@ export class ExecutionCoordinator {
         if (claimed) await this.execute(job.job_id);
       }
     } finally { this.inFlight.delete(workerId); }
+  }
+
+  private mainPumping = false;
+
+  /**
+   * Advance the Main Agent session: one job at a time, in submission order.
+   * A main job holds no worker slot; a job waiting on children keeps the
+   * session's turn, so the next message waits behind it.
+   */
+  async pumpMain() {
+    if (this.mainPumping || this.closed) return;
+    this.mainPumping = true;
+    try {
+      while (!this.closed) {
+        const head = this.db.prepare("SELECT j.job_id,j.state FROM jobs j JOIN sessions s USING(session_id) WHERE s.kind='main' AND j.state NOT IN ('succeeded','failed','cancelled') ORDER BY j.created_at,j.rowid LIMIT 1").get() as { job_id: string; state: string } | undefined;
+        if (!head || this.running.has(head.job_id)) return;
+        if (head.state === "running") { await this.execute(head.job_id); continue; }
+        if (head.state === "cancel_requested") { if (!this.finalizeCancel(head.job_id)) return; continue; }
+        if (head.state !== "queued") return;
+        this.db.prepare("UPDATE jobs SET state='running',started_at=?,deadline_at=COALESCE(deadline_at,?+max_runtime_secs*1000) WHERE job_id=? AND state='queued'").run(this.now(), this.now(), head.job_id);
+        await this.execute(head.job_id);
+      }
+    } finally { this.mainPumping = false; }
   }
 
   /** Queued work never moves to a workspace its session did not bind. */
@@ -547,7 +572,7 @@ export class ExecutionCoordinator {
       this.db.prepare("UPDATE jobs SET runtime_generation=runtime_generation+1 WHERE job_id=?").run(jobId);
       return (this.db.prepare("SELECT runtime_generation g FROM jobs WHERE job_id=?").get(jobId) as { g: number }).g;
     })();
-    const job = { ...(this.db.prepare("SELECT j.*,s.workspace_id,s.workspace_version,s.repo_id,s.path FROM jobs j JOIN sessions s USING(session_id) WHERE j.job_id=?").get(jobId) as any), runtime_generation: generation };
+    const job = { ...(this.db.prepare("SELECT j.*,s.kind session_kind,s.workspace_id,s.workspace_version,s.repo_id,s.path FROM jobs j JOIN sessions s USING(session_id) WHERE j.job_id=?").get(jobId) as any), runtime_generation: generation };
     this.running.add(jobId);
     this.armDeadline(jobId, job.deadline_at);
     let failure: unknown;
@@ -559,6 +584,13 @@ export class ExecutionCoordinator {
     }
     if (this.closed) return;
     const unresolved = this.db.prepare("SELECT call_id FROM runtime_calls WHERE job_id=? AND status IN ('dispatched','unknown')").all(jobId);
+    if (job.session_kind === "main") {
+      // Main tools run inside their commit, so a main job never has an unresolved call.
+      this.db.prepare("UPDATE jobs SET state='failed',end_reason=COALESCE(end_reason,'run_ended') WHERE job_id=? AND state='running'").run(jobId);
+      if (failure) console.error("main execution failed", String(failure));
+      this.finalizeCancel(jobId);
+      return;
+    }
     const state = (this.db.prepare("SELECT state FROM jobs WHERE job_id=?").get(jobId) as { state: string }).state;
     if (state === "running" && unresolved.length) this.attention(job.worker_id, jobId, "run_ended_with_unresolved_calls", { calls: unresolved, error: String(failure ?? "") });
     else if (state === "running") this.db.prepare("UPDATE jobs SET state='failed' WHERE job_id=? AND state='running'").run(jobId);
@@ -604,9 +636,10 @@ export class ExecutionCoordinator {
     this.db.prepare("INSERT OR IGNORE INTO runtime_history(job_id,entry_key,message_json) VALUES(?,?,?)").run(job.job_id, `user:${job.job_id}`, JSON.stringify({ role: "user", content: [{ type: "text", text: job.input_text }], timestamp: job.created_at }));
     // Committed intents from an earlier run finish first, in order, with their original IDs.
     const open = this.db.prepare("SELECT call_id FROM runtime_calls WHERE job_id=? AND status IN ('committed','dispatched','unknown') ORDER BY call_seq").all(job.job_id) as Array<{ call_id: string }>;
+    const main = job.session_kind === "main";
     for (const { call_id } of open) {
       if (!this.current(job)) return;
-      await this.dispatch(job.job_id, call_id);
+      if (main) this.localTool(job, call_id); else await this.dispatch(job.job_id, call_id);
     }
     if (!this.current(job)) return;
     const messages = this.transcript(job.job_id);
@@ -617,18 +650,25 @@ export class ExecutionCoordinator {
     await runtime.setRuntimeApiKey(provider as any, apiKey);
     const model = ai.getModel(provider as any, modelName); if (!model) throw new Error(`unknown Pi model ${provider}/${modelName}`);
     const sessionDir = resolve(dataDir, "pi-sessions", job.session_id);
-    const tools = [
+    const cwd = main ? resolve(dataDir, "main") : job.path;
+    if (main) mkdirSync(cwd, { recursive: true });
+    const local = async (id: string) => toolOutput(this.localTool(job, id));
+    const tools = main ? [
+      { name: "list_workers", label: "list_workers", description: "List worker machines, whether each can run work now, its queue length and its workspaces.", parameters: typebox.Type.Object({}), execute: local },
+      { name: "get_job", label: "get_job", description: "Read the state and final result of a job of this task.", parameters: typebox.Type.Object({ job_id: typebox.Type.String() }), execute: local },
+      { name: "delegate", label: "delegate", description: "Start a task on one worker machine in a new, independent session. It queues behind that machine's other work. depends_on lists delegation keys or job IDs of this task that must succeed first. A repeated delegation_key returns the original task. Files are never copied between machines.", parameters: typebox.Type.Object({ worker_id: typebox.Type.String(), workspace_id: typebox.Type.Optional(typebox.Type.String()), prompt: typebox.Type.String(), delegation_key: typebox.Type.Optional(typebox.Type.String()), depends_on: typebox.Type.Optional(typebox.Type.Array(typebox.Type.String())) }), execute: local },
+    ] : [
       { name: "read", label: "read", description: "Read bounded UTF-8 text from the fixed remote workspace.", parameters: typebox.Type.Object({ path: typebox.Type.String(), offset: typebox.Type.Optional(typebox.Type.Integer({ minimum: 0 })), limit: typebox.Type.Optional(typebox.Type.Integer({ minimum: 1, maximum: 16384 })) }), execute: async (id: string) => this.piTool(job, id) },
       { name: "write", label: "write", description: "Atomically write a UTF-8 file in the fixed remote workspace. expected_hash is the current SHA-256 or 'missing'.", parameters: typebox.Type.Object({ path: typebox.Type.String(), content: typebox.Type.String(), expected_hash: typebox.Type.String() }), execute: async (id: string) => this.piTool(job, id) },
       { name: "bash", label: "bash", description: "Run a non-interactive command in the fixed remote workspace. It is stopped after timeout_secs (default 600, at most 1800). The first 64 KiB of each output stream is returned.", parameters: typebox.Type.Object({ command: typebox.Type.String(), timeout_secs: typebox.Type.Optional(typebox.Type.Integer({ minimum: 1, maximum: 1800 })) }), execute: async (id: string) => this.piTool(job, id) },
     ];
     const mod = await import("./pi-runtime.js");
-    const manager = pi.SessionManager.create(job.path, sessionDir);
+    const manager = pi.SessionManager.create(cwd, sessionDir);
     for (const message of messages) manager.appendMessage(structuredClone(message));
     let session: any, finished = false, modelError: string | undefined;
     try {
       ({ session } = await mod.createPiSession({
-        role: "worker", cwd: job.path, agentDir: resolve(dataDir, "pi-agent"), sessionDir, sessionManager: manager, model, modelRuntime: runtime, customTools: tools,
+        role: main ? "main" : "worker", cwd, agentDir: resolve(dataDir, "pi-agent"), sessionDir, sessionManager: manager, model, modelRuntime: runtime, customTools: tools,
         commitAssistantTurn: async ({ turnKey, assistantMessage, calls }: any) => this.commitTurn(job, turnKey, assistantMessage, calls),
         onAssistantTurn: async ({ message }: any) => {
           if (message.stopReason === "error" || message.stopReason === "aborted") {
@@ -682,7 +722,8 @@ export class ExecutionCoordinator {
       for (const c of calls) {
         seq++;
         const request = { worker_id: job.worker_id, job_id: job.job_id, call_id: c.id, call_seq: seq, workspace_id: job.workspace_id, config_version: job.workspace_version, tool: c.name, arguments: c.arguments ?? {} };
-        add.run(job.job_id, turnKey, c.id, seq, requestHash(request), c.name, JSON.stringify(c.arguments ?? {}));
+        // Main calls never leave this node, so they need no worker-protocol hash.
+        add.run(job.job_id, turnKey, c.id, seq, job.session_kind === "main" ? hash(request) : requestHash(request), c.name, JSON.stringify(c.arguments ?? {}));
       }
       this.db.prepare("INSERT INTO runtime_history(job_id,entry_key,turn_key,message_json) VALUES(?,?,?,NULL)").run(job.job_id, `turn:${turnKey}`, turnKey);
       this.recordUsage(job, turnKey, assistantMessage);
@@ -771,8 +812,8 @@ export class ExecutionCoordinator {
     if (state !== "cancel_requested") return state;
     mainFault("after_cancel_commit");
     this.sessions.get(jobId)?.agent.abort();
-    const worker = (this.db.prepare("SELECT worker_id FROM jobs WHERE job_id=?").get(jobId) as { worker_id: string }).worker_id;
-    this.sendCancels(worker);
+    const worker = (this.db.prepare("SELECT worker_id FROM jobs WHERE job_id=?").get(jobId) as { worker_id: string | null }).worker_id;
+    if (worker) this.sendCancels(worker);
     this.finalizeCancel(jobId);
     return (this.db.prepare("SELECT state FROM jobs WHERE job_id=?").get(jobId) as { state: string }).state;
   }
@@ -791,18 +832,19 @@ export class ExecutionCoordinator {
   /** End a cancelled job once nothing it sent can still run, then free the slot. */
   private finalizeCancel(jobId: string) {
     if (this.running.has(jobId)) return false;
-    const workerId = this.db.transaction(() => {
-      const job = this.db.prepare("SELECT state,cancel_reason,worker_id FROM jobs WHERE job_id=?").get(jobId) as { state: string; cancel_reason: string | null; worker_id: string } | undefined;
+    const ended = this.db.transaction(() => {
+      const job = this.db.prepare("SELECT state,cancel_reason,worker_id FROM jobs WHERE job_id=?").get(jobId) as { state: string; cancel_reason: string | null; worker_id: string | null } | undefined;
       if (job?.state !== "cancel_requested") return undefined;
       if (this.db.prepare("SELECT 1 FROM runtime_calls WHERE job_id=? AND status IN ('dispatched','unknown')").get(jobId)) return undefined;
       const reason = job.cancel_reason ?? "cancelled_by_user";
       for (const row of this.db.prepare("SELECT job_id,call_id,tool_name,arguments_json FROM runtime_calls WHERE job_id=? AND status='committed'").all(jobId) as CallRow[]) this.writeNotExecuted(row, reason);
       this.db.prepare("UPDATE jobs SET state=?,end_reason=? WHERE job_id=?").run(reason === "cancelled_by_user" ? "cancelled" : "failed", reason, jobId);
-      return job.worker_id;
+      return { workerId: job.worker_id };
     })();
-    if (!workerId) return false;
-    this.release(workerId, jobId);
-    void this.pump(workerId);
+    if (!ended) return false;
+    if (ended.workerId === null) { void this.pumpMain(); return true; }
+    this.release(ended.workerId, jobId);
+    void this.pump(ended.workerId);
     return true;
   }
 
@@ -892,6 +934,54 @@ export class ExecutionCoordinator {
       (SELECT COUNT(*) FROM runtime_turns t WHERE t.job_id=j.job_id) model_turns,
       (SELECT COUNT(*) FROM job_usage u WHERE u.job_id=j.job_id AND u.usage_known=0) usage_unknown_turns
       FROM jobs j LEFT JOIN budget_roots r ON r.root_job_id=j.root_job_id WHERE j.job_id=?`).get(jobId);
+  }
+
+  /**
+   * Run a committed Main Agent call on this node. Its effect and its result
+   * commit together, so a restart replays the stored result, never the effect.
+   */
+  localTool(job: any, callId: string): ToolRecord {
+    let wake: string | undefined;
+    const record = this.db.transaction(() => {
+      if (!this.current(job)) throw new Error("job_not_running");
+      const row = this.call(job.job_id, callId);
+      if (!row) throw new Error("tool_intent_not_committed");
+      if (SETTLED.has(row.status)) return JSON.parse(row.result_json!) as ToolRecord;
+      const args = JSON.parse(row.arguments_json);
+      let record: ToolRecord;
+      if (row.tool_name === "delegate") {
+        const delegated = delegate(this.db, this.now, { ...DEFAULT_BUDGET, ...this.options.budget }, job, callId, args);
+        record = delegated.record;
+        if (delegated.queued) wake = delegated.workerId;
+      } else if (row.tool_name === "list_workers") record = { ok: true, result: { workers: this.workerList() } };
+      else if (row.tool_name === "get_job") record = this.jobView(job, args.job_id);
+      else record = { ok: false, result: { error: `unknown_tool:${row.tool_name}` } };
+      this.db.prepare("UPDATE runtime_calls SET status='completed',result_json=?,completed_at=? WHERE job_id=? AND call_id=? AND status='committed'").run(JSON.stringify(record), this.now(), job.job_id, callId);
+      this.db.prepare(MESSAGE_INSERT).run(randomUUID(), JSON.stringify({ role: "tool", call_id: callId, tool: row.tool_name, arguments: args, content: record.result, ok: record.ok }), job.job_id);
+      return record;
+    }).immediate();
+    if (wake) void this.pump(wake);
+    return record;
+  }
+
+  private workerList() {
+    const workers = this.db.prepare(`SELECT w.worker_id,w.online,w.reconciled,w.blocked,s.active_job_id,
+      (SELECT COUNT(*) FROM jobs q WHERE q.worker_id=w.worker_id AND q.state IN ('queued','waiting_worker') AND q.queue_seq IS NOT NULL) queued_jobs
+      FROM workers w LEFT JOIN worker_slots s USING(worker_id) ORDER BY w.worker_id`).all() as any[];
+    return workers.map((w) => ({
+      worker_id: w.worker_id, online: Boolean(w.online), ready: Boolean(w.online && w.reconciled && !w.blocked), blocked: Boolean(w.blocked),
+      busy: w.active_job_id !== null, queued_jobs: w.queued_jobs,
+      workspaces: (this.db.prepare("SELECT workspace_id,repo_id,path,is_default FROM workspaces WHERE worker_id=? ORDER BY workspace_id").all(w.worker_id) as any[]).map((x) => ({ ...x, is_default: Boolean(x.is_default) })),
+    }));
+  }
+
+  /** A job of the caller's own task; other tasks are invisible to it. */
+  private jobView(job: any, jobId: unknown): ToolRecord {
+    const target = typeof jobId === "string" ? this.db.prepare("SELECT job_id,session_id,worker_id,state,end_reason,parent_job_id,delegation_id,root_job_id,result_json FROM jobs WHERE job_id=?").get(jobId) as any : undefined;
+    if (!target || target.root_job_id !== job.root_job_id) return { ok: false, result: { error: "job_not_found" } };
+    const final = this.db.prepare("SELECT content_json FROM messages WHERE job_id=? AND json_extract(content_json,'$.role')='assistant' ORDER BY seq DESC LIMIT 1").get(target.job_id) as { content_json: string } | undefined;
+    const { root_job_id: _root, result_json, ...rest } = target;
+    return { ok: true, result: { ...rest, depends_on: (this.db.prepare("SELECT depends_on_job_id FROM job_dependencies WHERE job_id=? ORDER BY depends_on_job_id").all(target.job_id) as any[]).map((d) => d.depends_on_job_id), result: result_json ? JSON.parse(result_json) : null, final_message: final ? JSON.parse(final.content_json).content : null } };
   }
 
   async piTool(job: any, callId: string) {

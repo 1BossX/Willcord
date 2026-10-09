@@ -28,6 +28,9 @@ type Session = {
   path: string;
   created_at: number;
   title: string | null;
+  /** Set on a child session created by a Main Agent delegation. */
+  parent_job_id?: string | null;
+  delegation_id?: string | null;
 };
 type Job = JobControl & {
   job_id: string;
@@ -52,6 +55,17 @@ type ToolContent = {
   signal?: number | null;
   termination?: "exited" | "cancelled" | "timeout";
   output?: Partial<Record<"stdout" | "stderr", StreamOutput>>;
+  /** delegate results. */
+  job_id?: string;
+  session_id?: string;
+  worker_id?: string;
+  delegation_id?: string;
+  state?: string;
+  duplicate?: boolean;
+  depends_on?: string[];
+  verify?: string | null;
+  waiting_for_dependencies?: boolean;
+  workers?: Array<{ worker_id: string; ready: boolean; busy: boolean; queued_jobs: number }>;
 };
 /** What the main node assembled from stored chunks for the model. */
 type StreamOutput = {
@@ -66,7 +80,7 @@ type Content = {
   tool?: string;
   call_id?: string;
   ok?: boolean;
-  arguments?: { path?: string; command?: string };
+  arguments?: { path?: string; command?: string; prompt?: string; job_id?: string };
   content: string | { type?: string; text?: string }[] | ToolContent;
 };
 type IconName =
@@ -479,7 +493,7 @@ function MarkdownMessage({ value }: { value: string }) {
   return <MarkdownBlocks tokens={tokens} />;
 }
 
-function ToolCard({ value, jobId }: { value: Content; jobId: string }) {
+function ToolCard({ value, jobId, onOpenSession }: { value: Content; jobId: string; onOpenSession?: (sessionId: string) => void }) {
   const [showLog, setShowLog] = useState(false);
   const result = (
     value.content &&
@@ -520,6 +534,9 @@ function ToolCard({ value, jobId }: { value: Content; jobId: string }) {
     read: "读取文件",
     write: "写入文件",
     bash: "运行命令",
+    delegate: "委派任务",
+    list_workers: "查看机器",
+    get_job: "查看任务",
     tool: "工具结果",
   };
   const summary = failed
@@ -528,6 +545,10 @@ function ToolCard({ value, jobId }: { value: Content; jobId: string }) {
       ? `${result.total_chars ?? 0} 字符${result.truncated ? " · 已截断" : ""}`
       : tool === "write"
         ? `${(result.bytes ?? 0).toLocaleString()} 字节`
+        : tool === "delegate"
+          ? `${result.worker_id ?? "机器"} · ${result.duplicate ? "沿用已有委派" : result.waiting_for_dependencies ? "已委派，排在前置任务之后" : "已委派"}`
+        : tool === "list_workers"
+          ? `${result.workers?.length ?? 0} 台机器`
         : tool === "bash"
           ? `${stopped ? `${stopped} · 信号 ${result.signal ?? "未知"}` : `退出码 ${result.exit_code ?? "未知"}`}${result.truncated || outputCut ? " · 输出已截断" : ""}`
           : "查看结果";
@@ -546,7 +567,13 @@ function ToolCard({ value, jobId }: { value: Content; jobId: string }) {
           <span>
             {tool === "bash"
               ? (value.arguments?.command ?? "远程命令")
-              : (value.arguments?.path ?? "远程工作目录")}
+              : tool === "delegate"
+                ? (value.arguments?.prompt ?? "委派")
+                : tool === "get_job"
+                  ? (value.arguments?.job_id ?? "任务")
+                  : tool === "list_workers"
+                    ? "全部机器"
+                    : (value.arguments?.path ?? "远程工作目录")}
           </span>
         </span>
         <span
@@ -579,7 +606,18 @@ function ToolCard({ value, jobId }: { value: Content; jobId: string }) {
                 )}
               </>
             )}
-            {tool === "tool" && <pre>{JSON.stringify(result, null, 2)}</pre>}
+            {tool === "delegate" && (
+              <dl className="delegation-facts">
+                <dt>目标</dt><dd>{result.worker_id} / {String((result as Record<string, unknown>).workspace_id ?? "默认工作目录")}</dd>
+                <dt>委派 ID</dt><dd>{result.delegation_id}</dd>
+                {result.depends_on?.length ? (<><dt>前置任务</dt><dd>{result.depends_on.join("、")}</dd></>) : null}
+                {result.verify ? (<><dt>验证命令</dt><dd><code>{result.verify}</code></dd></>) : null}
+              </dl>
+            )}
+            {tool === "delegate" && result.session_id && onOpenSession && (
+              <button type="button" className="secondary-button" onClick={() => onOpenSession(result.session_id!)}>打开子会话</button>
+            )}
+            {(tool === "tool" || tool === "list_workers" || tool === "get_job") && <pre>{JSON.stringify(result, null, 2)}</pre>}
           </>
         )}
         {(result.truncated || outputCut) && (
@@ -616,9 +654,9 @@ function ToolCard({ value, jobId }: { value: Content; jobId: string }) {
     </details>
   );
 }
-function ChatMessage({ message }: { message: Message }) {
+function ChatMessage({ message, agent = "Worker Agent", onOpenSession }: { message: Message; agent?: string; onOpenSession?: (sessionId: string) => void }) {
   const value = parseMessage(message);
-  if (value.role === "tool") return <ToolCard value={value} jobId={message.job_id} />;
+  if (value.role === "tool") return <ToolCard value={value} jobId={message.job_id} onOpenSession={onOpenSession} />;
   return (
     <div
       className={`chat-message ${value.role === "user" ? "from-user" : "from-agent"}`}
@@ -628,7 +666,7 @@ function ChatMessage({ message }: { message: Message }) {
       </span>
       <div className="message-body">
         <div className="message-author">
-          {value.role === "user" ? "你" : "Worker Agent"}
+          {value.role === "user" ? "你" : agent}
         </div>
         <div className="message-copy">
           {value.role === "user" ? messageText(value) : <MarkdownMessage value={messageText(value)} />}
@@ -732,18 +770,42 @@ function App() {
         cause instanceof Error ? cause.message : "无法连接主节点，请稍后重试。",
       );
   }
-  function selectMain() {
+  /** Bumped on every navigation, so a slow Main lookup cannot override a later click. */
+  const navigation = useRef(0);
+  async function selectMain() {
+    const generation = ++navigation.current;
     setError("");
     setEditingSessionId(null);
     localStorage.removeItem("worker-plane-session");
     setSelectedWorker(null);
-    setSessionId(null);
+    try {
+      const main = await request<Session>("/api/main");
+      if (generation !== navigation.current) return;
+      setSessions((current) => current.some((s) => s.session_id === main.session_id) ? current : [main, ...current]);
+      setSessionId(main.session_id);
+    } catch (cause) {
+      if (generation !== navigation.current) return;
+      report(cause);
+      setSessionId(null);
+    }
     setMessages([]);
     setJobs([]);
     setSelectedJobId(null);
     setNavOpen(false);
   }
+  const agentName = activeSession?.kind === "main" ? "Main Agent" : "Worker Agent";
+  /** A delegation card opens its child session, which is an ordinary worker session. */
+  function openSessionById(id: string) {
+    const session = sessions.find((s) => s.session_id === id);
+    if (session) return selectSession(session);
+    void request<Session[]>("/api/sessions").then((next) => {
+      setSessions(next);
+      const found = next.find((s) => s.session_id === id);
+      if (found) selectSession(found);
+    }, report);
+  }
   function selectSession(session: Session) {
+    navigation.current++;
     setError("");
     setEditingSessionId(null);
     setSelectedWorker(session.worker_id);
@@ -755,6 +817,7 @@ function App() {
     localStorage.setItem("worker-plane-session", session.session_id);
   }
   function selectWorker(worker: Worker) {
+    navigation.current++;
     const latest = sessions.find(
       (session) =>
         session.kind === "worker" && session.worker_id === worker.worker_id,
@@ -985,7 +1048,8 @@ function App() {
       setAuth("logged-out");
       setWorkers([]);
       setSessions([]);
-      selectMain();
+      setSelectedWorker(null);
+      setSessionId(null);
       restored.current = false;
     } catch (cause) {
       report(cause);
@@ -1218,7 +1282,7 @@ function App() {
         </div>
         <button
           className={`main-agent nav-button ${selectedWorker === null ? "is-selected" : ""}`}
-          onClick={selectMain}
+          onClick={() => void selectMain()}
         >
           <span className="agent-icon">
             <Icon name="grid" />
@@ -1227,7 +1291,6 @@ function App() {
             <strong>Main Agent</strong>
             <small>多机器任务协调</small>
           </span>
-          <span className="soon-tag">即将开放</span>
         </button>
         <div className="sidebar-section-label">
           <span>机器</span>
@@ -1320,6 +1383,7 @@ function App() {
                             {session.title ?? session.workspace_id}
                           </strong>
                           <small>
+                            {session.parent_job_id ? "委派 · " : ""}
                             {time(session.created_at, true)} ·{" "}
                             {session.session_id.slice(0, 6)}
                           </small>
@@ -1441,11 +1505,11 @@ function App() {
             </button>
           </div>
         )}
-        {selectedWorker === null ? (
+        {selectedWorker === null && !sessionId ? (
           <div className="main-agent-home">
             <div className="welcome-topline">
               <span className="eyebrow">MAIN AGENT</span>
-              <span className="subtle-badge">即将开放</span>
+
             </div>
             <h2>
               一个目标，
@@ -1453,10 +1517,12 @@ function App() {
               让多台机器协同完成。
             </h2>
             <p className="welcome-description">
-              多机器委派与结果汇总将在后续开放。
-              <br />
-              现在，选择一台机器，进入它的独立会话。
+              Main Agent 把目标拆成步骤，委派给各台机器的独立会话，等前置步骤验证通过再继续。
             </p>
+            <button className="primary-button" onClick={() => void selectMain()}>
+              <Icon name="chat" />
+              开始 Main Agent 对话
+            </button>
             <div className="capability-strip">
               <span>
                 <Icon name="server" />
@@ -1524,6 +1590,14 @@ function App() {
           </div>
         ) : (
           <>
+            {activeSession?.kind === "main" ? (
+            <div className="target-bar">
+              <Icon name="grid" />
+              <span>Main Agent</span>
+              <strong>协调多台机器</strong>
+              <span className="target-repo">任务委派到各机器的独立会话，文件不会在机器之间自动传输</span>
+            </div>
+            ) : (
             <div className="target-bar">
               <Icon name="lock" />
               <span>固定目标</span>
@@ -1537,7 +1611,13 @@ function App() {
                   {activeSession.repo_id}
                 </span>
               )}
+              {activeSession?.parent_job_id && (
+                <button type="button" className="subtle-badge" onClick={() => void selectMain()} title="返回 Main Agent">
+                  Main Agent 委派
+                </button>
+              )}
             </div>
+            )}
             {needsAttention && (
               <div className="attention-banner">
                 <Icon name="alert" />
@@ -1573,6 +1653,14 @@ function App() {
                     <Icon name="plus" />
                     新建独立会话
                   </button>
+                </div>
+              ) : !messages.length && activeSession?.kind === "main" ? (
+                <div className="empty-state">
+                  <span className="empty-icon">
+                    <Icon name="grid" />
+                  </span>
+                  <h2>你想让几台机器一起完成什么？</h2>
+                  <p>描述目标，Main Agent 会把步骤委派给各台机器的独立会话，前置步骤验证通过后再继续。</p>
                 </div>
               ) : !messages.length ? (
                 <div className="empty-state">
@@ -1625,10 +1713,12 @@ function App() {
                           <ChatMessage
                             key={message.message_id}
                             message={message}
+                            agent={agentName}
+                            onOpenSession={openSessionById}
                           />
                         ))}
                         {toolMessages.length > 0 && (
-                          <details className="execution-details">
+                          <details className="execution-details" open={activeSession?.kind === "main"}>
                             <summary>
                               执行详情 · {toolMessages.length} 次工具调用
                             </summary>
@@ -1637,6 +1727,8 @@ function App() {
                                 <ChatMessage
                                   key={message.message_id}
                                   message={message}
+                                  agent={agentName}
+                                  onOpenSession={openSessionById}
                                 />
                               ))}
                             </div>
@@ -1646,7 +1738,7 @@ function App() {
                     );
                   })}
                   {orphanMessages.map((message) => (
-                    <ChatMessage key={message.message_id} message={message} />
+                    <ChatMessage key={message.message_id} message={message} agent={agentName} onOpenSession={openSessionById} />
                   ))}
                   {runningJob && (
                     <div className="agent-working">
@@ -1698,7 +1790,9 @@ function App() {
               <div className="composer-footnote">
                 <span>
                   <Icon name="lock" />
-                  {activeWorker?.blocked
+                  {activeSession?.kind === "main"
+                    ? "Main Agent 在主节点运行；委派的任务进入各机器的队列。"
+                    : activeWorker?.blocked
                     ? "消息将保留在队列中，等待机器完成核对。"
                     : !activeWorker?.online
                       ? "机器离线时，消息会等待上线后执行。"

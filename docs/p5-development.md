@@ -6,7 +6,7 @@
 |---|---|---|
 | P5-A | 数据迁移、Main session、Main 工具（list_workers、get_job、delegate）、共用 FIFO 入队、前置依赖校验 | 完成 |
 | P5-B | 等待集合与 `waiting_children`、依赖满足后入队、重启扫描恢复、父取消传播、根预算、结构化最终结果 | 完成 |
-| P5-C | Main 入口 UI、双 worker 测试工具、故障程序与全量验收记录 | 未开始 |
+| P5-C | Main 入口 UI、双 worker 测试工具、故障程序与全量验收记录 | 完成，见 [总验收](#总验收) |
 
 已定决策：
 
@@ -142,3 +142,65 @@ worker 上的模型只有 read/write/bash，无法报告"失败"，正常结束�
 | 工具次数上限 3：委派 c1、c2、c3 | c1 执行；c2 的命令超过共享上限，以 `budget_tool_calls` 结束；父任务随后同样结束，c3 没有创建；只有一个 `budget_roots` 行，计数为 5 |
 
 `p5-delegate.test.ts` 的依赖场景同时验证了：A 成功后，B 排在 A 运行期间提交的用户任务之后。
+
+## P5-C 故障程序与验收
+
+### 测试工具
+
+| 文件 | 内容 |
+|---|---|
+| `apps/server/test/support/main-node.ts` | `startScenario({workers: ["w","v"]})`：每个 worker 有自己的 token、数据目录和 workspace（第一个仍是 `workspace`）。`startWorker({id})`、`ready(id)`、`count(tag, id)`、`workspaceOf(id)`、`workerOf(id)` |
+| `apps/server/src/fault.ts` | 主节点故障点新增 `after_delegate_commit`（delegate 的事务提交之后）、`after_advance_commit`（`advance()` 推进了状态之后，唤醒父任务和 worker 之前） |
+| `apps/server/test/p5-faults.test.ts` | 双 worker 委派、前置任务执行不明、主节点在两个委派提交点崩溃 |
+
+判定方法同 P3-C/P4-C：每台机器的 workspace 里 `marker.log` 的行数就是副作用次数，再核对主节点 SQLite 和进程退出信号。
+
+### 观察到的行为
+
+- 两台机器：A（w）运行测试期间，B（v）还没有队列位置，v 上同时提交的用户任务马上执行。A 的验证命令通过后 B 才开始（`started_at` 晚于验证调用的 `completed_at`）。v 的 workspace 里只有 B 自己产生的文件，没有从 w 带过去的文件。
+- 前置任务执行不明：w 在命令执行后、结果写入账本前被 SIGKILL（worker 故障点 `after_effect`）。重启后调用为 unknown，A 进入 `needs_attention`，B 一直没有 `queue_seq`。取消父任务：B 直接取消，A 只记录取消请求，父任务进入 `needs_attention`，不显示已安全取消，人工核对面板里能看到它。人工放弃 A 后父任务仍是 `needs_attention`，再由人工放弃父任务才结束。整个过程 v 上没有执行 doc。
+- 主节点在 delegate 提交后，或子任务结果提交后崩溃：删除锁、重启后，父任务从 SQLite 恢复并完成。只有一个子 job 和一个 delegate 调用，子任务的命令只执行一次。
+
+### UI
+
+- Main Agent 置顶入口去掉"即将开放"，点击后打开唯一的 Main session。首页增加"开始 Main Agent 对话"。
+- Main 会话的目标栏显示"协调多台机器"，并提示文件不会在机器之间自动传输。回答署名为 Main Agent，执行详情默认展开。
+- 委派卡片：标题是委派的 prompt，摘要是"目标机器 · 已委派 / 已委派，排在前置任务之后 / 沿用已有委派"；展开后显示目标、委派 ID、前置任务和验证命令，并有"打开子会话"按钮。
+- 子会话就是普通的 worker 会话：目标栏多一个"Main Agent 委派"标记（点击回到 Main），侧栏会话前有"委派"字样。委派出来的任务不显示"新建重试"，改为说明由 Main Agent 决定是否重新委派。
+- 更完整的委派卡片（实时状态、结果、来源）属于 P6。
+
+浏览器走查：本机主节点（脚本模型）和两个真实 Rust worker，通过一个临时 HTTP 前端访问构建好的 `apps/web/dist`。
+
+- 发送"在 w 上跑测试，通过后在 v 上写说明"：Main 任务先显示"等待子任务"，两张委派卡片分别是 w（已委派）和 v（排在前置任务之后）。约 5 秒后显示"已完成"，Main Agent 的回答出现。
+- 打开 w 的子会话：目标栏是 `w / repo`，带"Main Agent 委派"标记，有 2 次工具调用（测试命令和验证命令）。
+- 发送"测试失败的情况"：子任务自己认为测试通过，但验证命令失败，结果为 `failed`；doc 为 `failed`（`dependency_failed`），没有执行。Main 任务的 `result_json.children` 列出这两个失败。
+- 走查中发现并修复：子任务上原来会显示"新建重试"按钮，但服务端会拒绝；委派卡片原来显示"已排队"，那只是创建时的回执，已改为"已委派"。
+- Main 的 `outcome` 仍由 Main 的模型判断。上面的失败场景里 Main 是 `succeeded`，子任务的失败记录在 `children` 里。
+
+### 总验收
+
+验收环境：macOS arm64，Node 22.22.3，Rust 1.99.0，本机临时 CA，主节点和两个 worker 都在本机。真实双机联调放到 P7。
+
+先执行 `cargo build --locked --manifest-path worker/Cargo.toml`，再执行 `PATH=/opt/homebrew/bin:$PATH pnpm test`：server 74 项、protocol 3 项全部通过。`cargo test --locked`（含与不含 `--features fault-injection`）各 23 项通过。
+
+| # | 验收标准 | 证据 | 结果 |
+|---|---|---|---|
+| 1 | delegate 原子创建子 session/job；重复 ID 返回原任务，不同内容冲突 | `p5-delegate`：同一 key 只有一个子 job，重复返回原 job，换内容返回 `delegation_conflict`；`p5-faults`：在 delegate 提交点崩溃后只有一个子 job | 通过 |
+| 2 | 父任务与 delegation ID 由服务端注入，模型不能伪造 | `p5-delegate`：参数里的 `parent_job_id`/`delegation_id` 不进数据库，`get_job` 和依赖都不能跨任务 | 通过 |
+| 3 | 用户任务和委派进入同一 FIFO，仍最多一个活动 job | `p5-delegate`：执行顺序 u1 → 委派 → u2，`queue_seq` 递增 | 通过 |
+| 4 | 等待期间无持续模型调用；父 job 不占 worker 槽 | `p5-wait`：`waiting_children` 期间 `runtime_turns` 不变，执行槽属于子任务 | 通过 |
+| 5 | 完成事件丢失或主节点重启，数据库扫描恢复父等待；不重复委派 | `p5-wait`：重启恢复，直接改库模拟丢失唤醒，靠扫描恢复；`p5-faults`：`after_delegate_commit` 和 `after_advance_commit` 崩溃后各只有一个子 job，命令只执行一次 | 通过 |
+| 6 | 机器 A 测试成功 → 机器 B 写说明按序执行；失败、取消或 needs_attention 时 B 不启动 | `p5-faults`：w → v 按序执行；`p5-wait`：验证失败、取消时 B 为 `dependency_failed`；`p5-faults`：A `needs_attention` 时 B 一直没有队列位置，最终被取消 | 通过 |
+| 7 | 依赖合法、无循环；未满足不占队列，满足后才获得 FIFO 序号 | `p5-delegate`：依赖只能指向同一任务中已存在的 job（新 job 不可能成环）；B 排在 A 运行期间提交的用户任务之后；`p5-faults`：等待期间 v 上的用户任务照常执行 | 通过 |
+| 8 | 子 session 与用户默认 session 隔离，可独立追问且目标固定，文件不自动跨机器 | `p5-delegate`：子 session 独立、可追问，追问仍在同一 workspace；`p5-faults`：v 的 workspace 里没有 w 的文件 | 通过 |
+| 9 | 父取消传播到未终态子任务；子执行不明时父任务不宣称安全取消 | `p5-wait`：父任务等子命令确认终止后才 `cancelled`；`p5-faults`：子任务 unknown 时父任务为 `needs_attention` | 通过 |
+| 10 | 父子模型消耗计入根预算，重复委派不能绕过 | `p5-wait`：只有一个 `budget_roots` 行，第二个子任务的命令和第三次委派都被拦下；委派出来的 job 不能单独重试 | 通过 |
+| 11 | 结构化结果；有未结束子任务不能 succeeded | `p5-wait`：子任务和父任务都有 `result_json`（outcome、summary、证据 call、exit_code、错误、截断、children、verification）；父任务给出最终回答时若还有子任务未结束，会回到等待 | 通过 |
+
+出口条件"双 worker 协作可以恢复，失败和取消不启动依赖步骤"已满足。P5 验收完成。
+
+遗留到后续阶段：
+
+- 真实双机联调（P7）。
+- 委派卡片的实时状态与结果、SSE 补放（P6）。
+- 真实模型是否遵守"有依赖的步骤在同一轮委派"和"给被依赖的步骤带 verify"，这次只用脚本模型验证过。

@@ -35,6 +35,9 @@
   <integer>60</integer>
   <key>Umask</key>
   <integer>63</integer>
+  <!-- launchd holds this file open for the worker's lifetime: rotate it by
+       stopping the service, moving the file and starting again, never with
+       newsyslog (docs/operations.md §11). -->
   <key>StandardErrorPath</key>
   <string>/usr/local/var/log/worker-plane/worker.log</string>
   <key>StandardOutPath</key>

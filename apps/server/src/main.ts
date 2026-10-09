@@ -35,14 +35,20 @@ try {
     minFreeBytes: config.minFreeBytes,
   });
   await app.listen({ host: "127.0.0.1", port: config.port });
-  for (const signal of ["SIGINT", "SIGTERM"] as const)
-    process.once(signal, () => {
-      void app.close().then(() => {
-        db!.close();
-        release();
-        process.exit(0);
-      });
+  // The listeners stay registered for the whole shutdown: signal-exit (loaded
+  // with the Pi SDK) re-raises a signal it sees no other listener for, which
+  // would kill the process before the lock is released.
+  let stopping = false;
+  const shutdown = () => {
+    if (stopping) return;
+    stopping = true;
+    void app.close().then(() => {
+      db!.close();
+      release();
+      process.exit(0);
     });
+  };
+  for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, shutdown);
 } catch (error) {
   db?.close();
   release();

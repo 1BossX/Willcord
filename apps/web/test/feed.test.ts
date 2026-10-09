@@ -67,3 +67,11 @@ test("attention-relevant changes bump the attention version", () => {
   assert.ok(applyEvent(s, ev(11, "job", "j1", { job_id: "j1", state: "needs_attention" })).attentionVersion > s.attentionVersion);
   assert.equal(applyEvent(s, ev(11, "job", "j1", { job_id: "j1", state: "succeeded" })).attentionVersion, s.attentionVersion);
 });
+
+test("the dispatch pause comes from the snapshot and follows its events", () => {
+  const paused = { paused: 1, reason: "restored", note: "from backup", since: 1 };
+  let state = fromSnapshot({ ...snapshot, dispatch: paused }, null);
+  assert.deepEqual(state.dispatch, paused);
+  state = applyEvent(state, { event_id: 11, kind: "dispatch", entity_id: "dispatch", session_id: null, job_id: null, data: { paused: 0, reason: null, note: null, since: null } });
+  assert.equal(state.dispatch?.paused, 0);
+});

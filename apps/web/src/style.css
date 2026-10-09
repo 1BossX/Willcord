@@ -2333,6 +2333,18 @@ summary:focus-visible {
   overflow-y: auto;
 }
 /* P6: live state from the event feed */
+.dispatch-banner {
+  margin: 12px 30px 0;
+  padding: 12px 14px;
+  border-radius: 9px;
+  font-size: 13px;
+  color: #8a5a1f;
+  background: #fff6e8;
+  border: 1px solid #f1dfc0;
+}
+.dispatch-banner p {
+  margin: 0 0 6px;
+}
 .connection-banner {
   margin: 12px 30px 0;
   display: flex;
@@ -2430,6 +2442,7 @@ summary:focus-visible {
   color: #b3594f;
 }
 @media (max-width: 640px) {
+  .dispatch-banner,
   .connection-banner {
     margin: 10px 16px 0;
   }

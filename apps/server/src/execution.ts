@@ -9,6 +9,7 @@ import { mainFault } from "./fault.js";
 import { delegate, nextQueueSeq, readyState } from "./jobs.js";
 import { freezeContext, omittedNote, priorContext } from "./context.js";
 import { logView } from "./feed.js";
+import { modelFromEnv, type ModelConfig } from "./config.js";
 
 type Socket = { readyState: number; send(data: string): void };
 type Connection = { epoch: number; socket: Socket; tokenDigest: string };
@@ -116,7 +117,7 @@ export class ExecutionCoordinator {
     readonly connections: Map<string, Connection>,
     readonly now = Date.now,
     readonly runJob?: (job: any) => Promise<void>,
-    readonly options: { budget?: Budget; dataDir?: string; fakeScript?: (job: any, messages: any[]) => ScriptStep[]; toolResultTimeoutMs?: number; logCapacityBytes?: number } = {},
+    readonly options: { budget?: Budget; dataDir?: string; model?: ModelConfig; fakeScript?: (job: any, messages: any[]) => ScriptStep[]; toolResultTimeoutMs?: number; logCapacityBytes?: number } = {},
   ) {
     // A draft still streaming belongs to a process that is gone.
     db.prepare("UPDATE model_drafts SET state='interrupted',updated_at=? WHERE state='streaming'").run(now());
@@ -471,6 +472,25 @@ export class ExecutionCoordinator {
     conn?.socket.send(JSON.stringify({ protocol_version: 1, type: "log_ack", worker_id: row.worker_id, connection_epoch: conn.epoch, job_id: row.job_id, call_id: row.call_id, request_hash: row.request_hash, stream, chunks }));
   }
 
+  /**
+   * Retention: output chunks of jobs that ended before `cutoff` are removed.
+   * The model already holds its view in the committed result; the state row
+   * stays, marked pruned, so the operator sees why the log is gone.
+   */
+  pruneLogs(cutoff: number) {
+    const pruned = this.db.transaction(() => {
+      const rows = this.db.prepare(`SELECT s.job_id,s.call_id,s.stream FROM call_log_state s JOIN jobs j USING(job_id) JOIN runtime_calls c USING(job_id,call_id)
+        WHERE s.pruned_at IS NULL AND s.state<>'streaming' AND j.state IN ('succeeded','failed','cancelled') AND c.completed_at IS NOT NULL AND c.completed_at<?`).all(cutoff) as Array<{ job_id: string; call_id: string; stream: Stream }>;
+      for (const r of rows) {
+        this.db.prepare("DELETE FROM call_logs WHERE job_id=? AND call_id=? AND stream=?").run(r.job_id, r.call_id, r.stream);
+        this.db.prepare("UPDATE call_log_state SET pruned_at=? WHERE job_id=? AND call_id=? AND stream=?").run(this.now(), r.job_id, r.call_id, r.stream);
+      }
+      return rows.length;
+    })();
+    if (pruned) this.storedLogBytes = undefined;
+    return pruned;
+  }
+
   /** Stored output of a call for the operator, in pages of chunks. */
   readLog(jobId: string, callId: string, stream: Stream, fromSeq: number, limit = 64) {
     const view = logView(this.db, jobId, callId, stream);
@@ -537,13 +557,18 @@ export class ExecutionCoordinator {
     void this.pump(workerId);
   }
 
+  /** While dispatch is paused nothing starts or resumes; running executions finish. */
+  paused() {
+    return (this.db.prepare("SELECT paused FROM dispatch_state WHERE id=1").get() as { paused: number }).paused === 1;
+  }
+
   async pump(workerId: string) {
-    if (this.inFlight.has(workerId) || this.closed) return;
+    if (this.inFlight.has(workerId) || this.closed || this.paused()) return;
     this.inFlight.add(workerId);
     try {
       while (!this.closed) {
         const worker = this.db.prepare("SELECT online,reconciled,blocked FROM workers WHERE worker_id=?").get(workerId) as any;
-        if (!worker || !worker.online || !worker.reconciled || worker.blocked) return;
+        if (!worker || !worker.online || !worker.reconciled || worker.blocked || this.paused()) return;
         const slot = (this.db.prepare("SELECT active_job_id FROM worker_slots WHERE worker_id=?").get(workerId) as any)?.active_job_id as string | null;
         if (slot) {
           if (this.running.has(slot)) return;
@@ -576,10 +601,10 @@ export class ExecutionCoordinator {
    * session's turn, so the next message waits behind it.
    */
   async pumpMain() {
-    if (this.mainPumping || this.closed) return;
+    if (this.mainPumping || this.closed || this.paused()) return;
     this.mainPumping = true;
     try {
-      while (!this.closed) {
+      while (!this.closed && !this.paused()) {
         const head = this.db.prepare("SELECT j.job_id,j.state FROM jobs j JOIN sessions s USING(session_id) WHERE s.kind='main' AND j.state NOT IN ('succeeded','failed','cancelled') ORDER BY j.created_at,j.rowid LIMIT 1").get() as { job_id: string; state: string } | undefined;
         if (!head || this.running.has(head.job_id)) return;
         if (head.state === "running") { await this.execute(head.job_id); continue; }
@@ -724,11 +749,12 @@ export class ExecutionCoordinator {
   }
 
   async runPi(job: any) {
-    const dataDir = this.options.dataDir ?? process.env.DATA_DIR ?? "./data";
+    const dataDir = this.options.dataDir ?? "./data";
     const fakeMode = Boolean(this.options.fakeScript) || process.env.P2_FAKE_MODEL === "1";
-    const provider = fakeMode ? "openai" : (process.env.MODEL_PROVIDER ?? "openrouter");
-    const modelName = fakeMode ? "gpt-4o-mini" : (process.env.MODEL_NAME ?? "deepseek/deepseek-v4.1-flash");
-    const apiKey = fakeMode ? "p2-scripted-provider" : (process.env.MODEL_API_KEY ?? process.env.OPENROUTER_API_KEY);
+    const configured = this.options.model ?? modelFromEnv(process.env);
+    const provider = fakeMode ? "openai" : configured.provider;
+    const modelName = fakeMode ? "gpt-4o-mini" : configured.name;
+    const apiKey = fakeMode ? "p2-scripted-provider" : configured.apiKey;
     if (!apiKey) throw new Error("MODEL_API_KEY (or OPENROUTER_API_KEY) is required to execute jobs");
     // The first run fixes the earlier exchanges the job carries, with its user message.
     this.db.transaction(() => {

@@ -6,7 +6,7 @@ import { ApiError, request } from "./api";
 import { advanceCursor, applyEvent, emptyFeed, fromSnapshot, type FeedState, type Snapshot } from "./feed-state";
 
 export type Connection = "connecting" | "live" | "reconnecting";
-const KINDS = ["job", "message", "session", "worker", "call", "log", "draft", "attention"];
+const KINDS = ["job", "message", "session", "worker", "call", "log", "draft", "attention", "dispatch"];
 const RESTART_MS = 3000;
 
 export function useFeed(enabled: boolean, sessionId: string | null, handlers: { onUnauthorized(): void; onError(cause: unknown): void; onMissingSession(): void }) {

@@ -215,6 +215,49 @@ export function AttentionPanel({ job, workerId, workerBlocked, refreshKey, onDon
   );
 }
 
+const pauseReasons: Record<string, string> = {
+  restored: "主节点从备份恢复，已暂停调度。请等每台机器重新连接并完成账本核对，确认没有备份之后才执行的调用后再恢复。",
+  disk_low: "主节点数据目录剩余空间不足，已暂停调度。空间恢复后会自动继续。",
+  operator: "调度已由管理员暂停。",
+};
+
+/** Shown while the main node starts nothing; resuming needs a note, and after a restore every worker reconciled. */
+export function DispatchBanner({ dispatch, unreconciled, onError }: {
+  dispatch: { paused: number; reason: string | null; note: string | null } | null;
+  /** Known workers that have not reconciled their ledger since this start. */
+  unreconciled: string[];
+  onError: (e: unknown) => void;
+}) {
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  if (!dispatch?.paused) return null;
+  const reason = dispatch.reason ?? "operator";
+  const waiting = reason === "restored" && unreconciled.length > 0;
+  return (
+    <section className="dispatch-banner" role="status" aria-label="调度已暂停">
+      <p>{pauseReasons[reason] ?? `调度已暂停：${reason}`}</p>
+      {dispatch.note && <p className="inspector-note">{dispatch.note}</p>}
+      {waiting && <p className="inspector-note">尚未核对账本的机器：{unreconciled.join("、")}</p>}
+      {reason !== "disk_low" && (
+        <div className="attention-action">
+          <label>恢复说明（必填）<textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} placeholder="例如：两台机器已重连，账本无矛盾" /></label>
+          <button
+            type="button"
+            className="primary-button"
+            disabled={busy || !note.trim() || waiting}
+            onClick={async () => {
+              setBusy(true);
+              try { await post("/api/ops/resume", { note }); setNote(""); } catch (e) { onError(e); } finally { setBusy(false); }
+            }}
+          >
+            恢复调度
+          </button>
+        </div>
+      )}
+    </section>
+  );
+}
+
 type LogGap = { from_seq: number; to_seq: number | null; from_offset: number; missing_bytes: number | null };
 type LogPage = { chunks: number | null; bytes_total: number | null; worker_truncated: number; main_truncated: number; state: string; gaps: LogGap[]; items: { seq: number; offset: number; data: string }[] };
 const decode = (b64: string) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));

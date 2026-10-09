@@ -86,7 +86,7 @@ function callRow({ arguments_json, ...row }: any) {
  * because this node was full are truncation, reported by main_truncated.
  */
 export function logView(db: Database.Database, jobId: string, callId: string, stream: string) {
-  const state = db.prepare("SELECT job_id,call_id,stream,chunks,bytes_total,worker_truncated,main_truncated,state FROM call_log_state WHERE job_id=? AND call_id=? AND stream=?").get(jobId, callId, stream) as any;
+  const state = db.prepare("SELECT job_id,call_id,stream,chunks,bytes_total,worker_truncated,main_truncated,state,pruned_at FROM call_log_state WHERE job_id=? AND call_id=? AND stream=?").get(jobId, callId, stream) as any;
   if (!state) return null;
   const held = db.prepare("SELECT seq,offset,length(data) n FROM call_logs WHERE job_id=? AND call_id=? AND stream=? ORDER BY seq").all(jobId, callId, stream) as Array<{ seq: number; offset: number; n: number }>;
   const gaps: Array<{ from_seq: number; to_seq: number | null; from_offset: number; missing_bytes: number | null }> = [];
@@ -117,9 +117,15 @@ function materialize(db: Database.Database, e: { kind: string; entity_id: string
     case "call": { const row = db.prepare(`${CALL_VIEW} WHERE job_id=? AND call_id=?`).get(e.job_id, e.entity_id); return row ? callRow(row) : null; }
     case "log": { const slash = e.entity_id.lastIndexOf("/"); return logView(db, e.job_id!, e.entity_id.slice(0, slash), e.entity_id.slice(slash + 1)); }
     case "draft": return db.prepare("SELECT * FROM model_drafts WHERE draft_id=?").get(e.entity_id) ?? null;
+    case "dispatch": return dispatchView(db);
     case "attention": return db.prepare("SELECT action_id,worker_id,job_id,action,created_at FROM attention_actions WHERE action_id=?").get(e.entity_id) ?? null;
     default: return null;
   }
+}
+
+/** Whether this node starts work, and if not, why. */
+export function dispatchView(db: Database.Database) {
+  return db.prepare("SELECT paused,reason,note,since FROM dispatch_state WHERE id=1").get() as { paused: number; reason: string | null; note: string | null; since: number | null };
 }
 
 export function cursorNow(db: Database.Database) {
@@ -156,6 +162,7 @@ export function snapshot(db: Database.Database, now: () => number, sessionId?: s
       cursor: cursorNow(db),
       main_session_id: (main as any).session_id as string,
       workers: workerViews(db),
+      dispatch: dispatchView(db),
       sessions: db.prepare("SELECT * FROM sessions ORDER BY created_at DESC").all(),
       session: session ? {
         session,

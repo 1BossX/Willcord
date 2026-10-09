@@ -6,7 +6,7 @@ export type SseMessage = { id?: number; event: string; data: any };
 export function openEvents(port: number, cookie: string, query: { after?: number; lastEventId?: number }) {
   const controller = new AbortController();
   const messages: SseMessage[] = [];
-  let ended = false, status = 0;
+  let ended = false, status = 0, failure: Error | undefined;
   const url = `http://127.0.0.1:${port}/api/events${query.after === undefined ? "" : `?after=${query.after}`}`;
   const headers: Record<string, string> = { cookie, accept: "text/event-stream" };
   if (query.lastEventId !== undefined) headers["last-event-id"] = String(query.lastEventId);
@@ -35,13 +35,16 @@ export function openEvents(port: number, cookie: string, query: { after?: number
         }
       }
     } catch (error) {
-      if ((error as Error).name !== "AbortError") throw error;
+      // A server that dies mid-stream ends it like a dropped connection does.
+      if ((error as Error).name !== "AbortError") failure = error as Error;
     } finally { ended = true; }
   })();
   return {
     messages,
     get ended() { return ended; },
     get status() { return status; },
+    /** Why the stream ended, when it was not closed by the test. */
+    get failure() { return failure; },
     /** Feed events only, without cursor markers. */
     events: () => messages.filter((m) => m.event !== "cursor" && m.event !== "reset").map((m) => m.data),
     until: (check: () => boolean, timeoutMs = 20000) => waitFor(check, timeoutMs),

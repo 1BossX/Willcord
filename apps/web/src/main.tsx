@@ -215,7 +215,7 @@ function Icon({
 }
 const jobLabels: Record<string, string> = {
   queued: "排队中",
-  waiting_worker: "等待上线",
+  waiting_worker: "等待机器",
   running: "执行中",
   waiting_children: "等待子任务",
   cancel_requested: "正在停止",
@@ -733,13 +733,17 @@ type LogState = { job_id: string; call_id: string; stream: string; bytes_held: n
 function JobNotes({ job, worker }: { job: Job; worker?: Worker }) {
   const notes: { tone: string; text: string }[] = [];
   const summary = job.children_summary;
-  if (job.state === "waiting_worker" || (queuedStates.has(job.state) && worker && !worker.online))
-    notes.push({ tone: "warning", text: `等待 ${job.worker_id} 上线后执行${job.queue_position ? `，队列第 ${job.queue_position} 位` : ""}${job.wait_until ? `；${time(job.wait_until, true)} 前未上线将放弃` : ""}` });
-  else if (queuedStates.has(job.state) && worker?.blocked)
+  // A blocked machine may be online: say why it waits, not that it is away.
+  if (queuedStates.has(job.state) && worker?.blocked)
     notes.push({ tone: "warning", text: `${job.worker_id} 需要核对，核对完成前不会开始${job.queue_position ? `；队列第 ${job.queue_position} 位` : ""}` });
+  // waiting_worker is never rewritten once the machine is ready; then it is simply in the FIFO.
+  else if ((job.state === "waiting_worker" && !worker?.schedulable) || (queuedStates.has(job.state) && worker && !worker.online))
+    notes.push({ tone: "warning", text: worker?.online
+      ? `等待 ${job.worker_id} 完成对账后执行${job.queue_position ? `，队列第 ${job.queue_position} 位` : ""}`
+      : `等待 ${job.worker_id} 上线后执行${job.queue_position ? `，队列第 ${job.queue_position} 位` : ""}${job.wait_until ? `；${time(job.wait_until, true)} 前未上线将放弃` : ""}` });
   else if (job.state === "queued" && job.worker_id && job.queue_position == null)
     notes.push({ tone: "muted", text: "等待前置任务成功后才进入机器队列" });
-  else if (job.state === "queued" && job.queue_position)
+  else if (queuedStates.has(job.state) && job.queue_position)
     notes.push({ tone: "muted", text: job.queue_position === 1 && !worker?.active_job_id ? "即将开始" : `排在 ${job.worker_id} 队列第 ${job.queue_position} 位，前面的任务结束后开始` });
   if (job.state === "waiting_children" && summary)
     notes.push({ tone: "active", text: `等待 ${summary.open + summary.needs_attention} 个子任务结束，期间不调用模型` });
@@ -1904,9 +1908,11 @@ function App() {
                   )}
                   {queuedStates.has(job.state) && (
                     <span className="task-queue-position">
-                      {job.state === "waiting_worker"
-                        ? "等待目标机器上线"
-                        : "按机器顺序执行"}
+                      {workers.find((w) => w.worker_id === job.worker_id)?.blocked
+                        ? "等待机器核对"
+                        : job.state === "waiting_worker"
+                          ? "等待目标机器可用"
+                          : "按机器顺序执行"}
                       {job.queue_position
                         ? ` · 队列第 ${job.queue_position} 位`
                         : ""}

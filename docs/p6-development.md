@@ -6,7 +6,7 @@
 |---|---|---|
 | P6-A | 事件流（触发器写事件）、带游标快照、SSE 补放与游标过期、模型草稿、日志缺口、委派子任务汇总 | 完成 |
 | P6-B | UI 改为快照 + SSE，补齐机器状态、委派卡片、排队与取消、需要核对、日志缺口和草稿的展示 | 完成 |
-| P6-C | 故障程序、浏览器端到端走查（含网络记录）与全量验收记录 | 未开始 |
+| P6-C | 故障程序、浏览器端到端走查（含网络记录）与全量验收记录 | 完成，见 [总验收](#总验收) |
 | P6-D | 会话内多轮上下文：后续消息带上本会话已结束任务的问答 | 完成 |
 
 已定决策：
@@ -113,6 +113,54 @@ P6 阶段整体验收以 P6-C 的记录为准，P6-D 完成后补记多轮对话
   - 网络记录：所有请求都是 `localhost:8105` 的页面资源、`/auth/*` 和 `/api/*`（快照、事件流、消息、取消、workspace），没有访问 worker 地址，也没有携带 worker token。
 - `pnpm check`、`pnpm build` 通过。
 
+## P6-C 故障程序与验收
+
+### 故障程序（`apps/server/test/p6-faults.test.ts`）
+
+| 场景 | 结果 |
+|---|---|
+| 主节点作为独立进程运行。事件流打开、命令执行到一半时 SIGKILL 主节点，删掉锁后重启，浏览器用断开前最后一个 event_id 作为 `Last-Event-ID` 重连 | 旧连接结束，新连接只补放这个 ID 之后的事件。两段合并后的 job、消息和调用状态与重启后节点的新快照一致，job 为 succeeded，命令的前后两行各只写了一次 |
+| worker 在命令执行后、写账本前被杀（`after_effect`），重启后上报执行不明；再追问一条；取消卡住的任务；人工放弃；人工解除阻塞 | 事件流依次显示：job 进入 `needs_attention`，worker `blocked=1`、在线但 `schedulable=false`，调用为 `unknown`。追问是 `waiting_worker`，排第 1 位，卡住的任务不受影响。取消只记录 `cancel_requested=1`，状态仍是需要核对。放弃后 job 为 cancelled，机器仍然阻塞。解除后 worker `blocked=0`，追问执行成功。每个 job 的状态、结束原因、取消请求，调用状态和 worker 标志都与 SQLite 一致。人工操作都有 `attention` 事件。没有任何命令被重跑 |
+
+`test/support/sse.ts` 遇到服务端中途断开时，把它当作连接断开记录下来，不再当作测试异常。
+
+### 浏览器走查
+
+环境同 P6-B（`apps/server/test/support/walkthrough.ts`），另加一台 x：它运行带故障注入的 worker，第一次调用时在 `after_effect` 处退出，之后以正常模式重新连上。
+
+| 步骤 | 页面上看到的 | 数据库 |
+|---|---|---|
+| 登录，首页 | 三台机器都是"在线"和"可执行"，分开显示 | — |
+| x 上新建会话，发送"崩溃任务" | 顶部横幅"这台机器需要核对"。任务标签为"需要核对"，下方是"执行情况未知 · echo crash >> marker.log"和"需要核对：执行情况无法确认，不会自动重跑"。侧栏里 x 显示"在线"和"需要核对" | — |
+| 再发"跑测试" | 追问排进队列，标"等待机器"，时间线显示队列第 1 位。输入框下方说明"消息将保留在队列中，等待机器完成核对" | — |
+| 在任务详情里填放弃说明，点"放弃任务" | 任务变为已取消，结束原因"已放弃"。核对面板仍然要求填写调用结果和依据 | — |
+| 选择"已执行完毕"，填核对依据，点"解除阻塞" | x 变为"忙碌"，追问开始执行，显示"正在执行"和"查看实时输出"，随后完成并给出回答 | 崩溃任务 `cancelled/abandoned`；追问 `succeeded`；`crash-1` 为 `resolved`；x `blocked=0`；人工操作依次为 blocked、abandon、unblock、unblocked；x 的 marker 里 crash 和 test 各一行 |
+| 网络记录（`performance` resource 条目） | 只有 `localhost:8105` 一个主机，路径只有页面资源、`/auth/session`、`/auth/login`、`/api/snapshot`、`/api/events`、`/api/sessions…`、`/api/attention`、`/api/jobs/:id/abandon`、`/api/workers/x/unblock`、`/api/workers/x/workspaces` | — |
+
+走查中发现并修复：机器在线但被阻塞时，排队中的追问原来写着"等待上线"。现在显示"需要核对，核对完成前不会开始"；时间线写"等待机器核对"；状态标签 `waiting_worker` 改为"等待机器"。
+
+已知限制：人工结清的调用不会生成工具消息，所以被放弃的任务在会话里只剩用户消息。结清的依据记录在人工操作里，`/api/attention` 可以查到。
+
+### 总验收
+
+验收环境：macOS arm64，Node 22.22.3，Rust 1.99.0，主节点和 worker 都在本机，模型为脚本模型。真实模型和真实双机联调放到 P7。
+
+先执行 `cargo build --locked --manifest-path worker/Cargo.toml`，再执行 `PATH=/opt/homebrew/bin:$PATH pnpm test`：server 82 项（`p6-events` 5 项、`p6-faults` 2 项）、web 6 项、protocol 3 项全部通过。`/health` 的 phase 为 `P6`。
+
+| # | 验收标准 | 证据 | 结果 |
+|---|---|---|---|
+| 1 | Main Agent 置顶；在线与 idle/busy/blocked 分开，在线不误显示为可执行 | 侧栏 Main Agent 置顶。机器的连接和执行状态分开显示，"可执行"只取服务端的 `schedulable`。`p6-events`：worker 离线后 `schedulable=false`。`p6-faults`：在线但阻塞时 `schedulable=false`。走查：x 显示"在线"和"需要核对" | 通过 |
+| 2 | 委派卡片显示来源、目标、状态与结果，可开子 session；追问进当前会话 | `p6-events`：父任务视图里子任务实时变为 succeeded，带结果和 `children_summary`。P6-B 走查：卡片实时变化，验证失败和依赖失败的原因、"2 个子任务未成功"、"打开子会话"都正常。追问用当前 `session_id` 提交，不猜测机器最近的任务 | 通过 |
+| 3 | 执行期间追问排队、不改活动 job；显示等待上线、排队位置、取消请求 | `p6-events`：排队位置 1、2 实时变化，取消排第一的后另一个前移，`cancel_requested` 先于终态出现。`p6-faults`：追问为 `waiting_worker`、排第 1 位，卡住的任务不受影响。P6-B 走查和本节走查的页面截图都对应这些状态 | 通过 |
+| 4 | needs_attention 显示"需要核对"，人工操作结果与数据库一致 | `p6-faults`：每一步人工操作后，事件流的状态与 SQLite 逐项一致。本节走查：页面显示与数据库查询一致，任何位置都没有显示"已完成" | 通过 |
+| 5 | 带游标快照后订阅 SSE，重复 event_id 不重复渲染，断线补放无关键状态缺失 | `p6-events`：快照游标之后补放，从中间断开再重连，合并后与新快照一致。`p6-faults`：主节点被 SIGKILL 后用旧游标补放，结果完整。web `feed.test.ts`：重复或已覆盖的 event_id 不改变状态 | 通过 |
+| 6 | 刷新/重连恢复任务；游标过期要求重取快照；日志过期、缺口、截断明确显示 | `p6-events`：过期游标和不是本库发出的游标都收到 `reset`。日志 `gaps` 与快照一致，截断不算缺口。UI 收到 `reset` 后重取快照，并显示缺口、过期、截断和"仍在接收"。走查：刷新后恢复会话（包括 Main）和运行状态，主节点重启后浏览器回到登录页 | 通过 |
+| 7 | 中断草稿可识别，已提交消息和工具结果不重复；敏感历史与日志仅认证用户可见 | `p6-events`：取消、主节点重启都留下 `interrupted` 草稿，回答只出现一次。未登录访问事件流、快照、历史、日志都是 401；退出登录后事件流关闭。走查：页面上中断草稿标"生成中断，未提交"，提交后的草稿被正式回答替换 | 通过 |
+| 8 | 浏览器提交真实任务，观察工具和数据库，查看结果、取消与恢复 | P6-B 与本节走查：真实 Rust worker 执行命令，页面显示执行中、结果、取消，以及需要核对后的恢复，数据库查询与页面一致。模型为脚本模型（已定决策） | 通过 |
+| 9 | 浏览器只连主节点 REST/SSE，不访问 worker、不带 worker token；切换后只显示当前目标数据；断线恢复靠快照与补放 | 两次走查的网络记录只有主节点的 `/api/*`、`/auth/*` 和页面资源，worker token 只存在于 worker 进程。`feed-state` 只保留当前会话的记录，切换会话时先清空再取新快照（web 单测）。断线恢复只用快照和 `/api/events` | 通过 |
+
+出口条件"无须查看开发日志即可理解任务处于何种状态、为何等待以及如何处置"：每个任务下方都用文字说明状态、等待原因和下一步操作，人工核对面板给出处置入口。P6 验收完成。
+
 ## P6-D：会话内多轮上下文
 
 ### 问题
@@ -180,6 +228,6 @@ P6 阶段整体验收以 P6-C 的记录为准，P6-D 完成后补记多轮对话
 | 三轮后把 `SESSION_CONTEXT_CHARS` 设为 130 | 只带最近两轮，第一条消息前有 `[1 earlier exchange of this session is not included.]`，`context` 为 `{ jobs: 2, omitted: 1 }` |
 | Main 委派子任务，再在子会话追问 | 子任务第一次运行只看到委派 prompt；追问看到委派 prompt、子任务回答和追问，没有 Main 会话的内容 |
 
-`pnpm test`：server 85 项（其中 `p6-conversation` 5 项）、web 6 项、protocol 3 项全部通过（`identity` 的迁移计数改为 11）。`pnpm check` 通过。
+合并 P6-C 后，`pnpm test`：server 87 项（其中 `p6-conversation` 5 项）、web 6 项、protocol 3 项全部通过（`identity` 的迁移计数改为 11）。`pnpm check` 通过。
 
 本机 PATH 上若先找到 anaconda 自带的 OpenSSL 1.1.1，测试生成的证书会被 worker 拒绝（`UnknownIssuer`），所有带 worker 的测试都会失败；把 Homebrew 的 `openssl` 放在前面即可。

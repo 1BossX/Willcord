@@ -89,7 +89,7 @@
 | 1 | `scheduling_ready` 由 DB 可用、调度循环、恢复扫描完成等实际计算 | 学习 1 + 代码现状 | P7 | 待办 |
 | 2 | worker 支持 `token_file`，重连时重读（不杀在途 job） | 学习 3（已由一手核实） | P7 | 待办 |
 | 3 | `worker debug [--json]`：token、TLS/CA、数据目录锁、账本完整性、磁盘预算、workspace 路径 | 学习 2 | P7 | 待办 |
-| 4 | architecture.md 增加数据外流表与中心数据敏感级别 | 学习 4、避免 2 | P7 | 待办 |
+| 4 | architecture.md 增加数据外流表与中心数据敏感级别 | 学习 4、避免 2 | P7 | 已完成：见 [architecture.md 12.1 数据外流边界](../architecture.md#121-数据外流边界) |
 | 5 | needs_attention / 长时间等待醒目展示与通知 | 学习 8 | P6 | 待办 |
 | 6 | 重试流回退协议用于“中断草稿可识别” | 学习 6 | P6 | 待办 |
 | 7 | 注册时上报环境指纹（OS/arch、关键工具版本、git 状态）并注入 prompt | 学习 9（[推断] 落法为我们设计） | P5/P6 | 待议 |

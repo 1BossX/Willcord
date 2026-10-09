@@ -4,11 +4,11 @@
 
 | 步骤 | 内容 | 状态 |
 |---|---|---|
-| P4-A | 协议帧、worker 进程组控制、超时、输出分块与补读、磁盘拒绝、账本取消栅栏与人工解除 | 本文记录 |
-| P4-B | 主节点取消全链路、任务预算、人工处置接口与基础 UI | 待开发 |
-| P4-C | 故障程序与全量验收记录 | 待开发 |
+| P4-A | 协议帧、worker 进程组控制、超时、输出分块与补读、磁盘拒绝、账本取消栅栏与人工解除 | 完成 |
+| P4-B | 主节点取消全链路、任务预算、人工处置接口与基础 UI | 完成 |
+| P4-C | 故障程序与全量验收记录 | 完成，见 [总验收](#总验收) |
 
-P4 阶段整体验收以 P4-C 的记录为准。P4-A 的测试只证明 worker 侧机制和主节点的输出处理，主节点发起取消、预算与人工处置属于 P4-B。
+P4 阶段整体验收以 P4-C 的记录为准。
 
 ## P4-A Worker 进程控制与输出
 
@@ -259,3 +259,63 @@ UI 的 bash 卡片读取 `output`，显示真实退出码或"已取消/已超时
   - 输入框 Enter 提交、Shift+Enter 换行，输入法组字时不提交；
   - 任务详情改为独立滚动，内容过长时不再带动整页；
   - 重试的副作用提示保留显示在新任务上。
+
+## P4-C 故障程序与验收
+
+### 故障程序
+
+判定方法同 P3-C：bash 命令向 workspace 的 `marker.log` 追加唯一标记，按行数计副作用；被停止的命令不应写出 `late` 行。同时核对主节点 SQLite、进程退出信号、代理记录的帧，以及进程组是否仍存活（`kill(-pgid, 0)`）。
+
+| 文件 | 内容 |
+|---|---|
+| `apps/server/test/p4-faults.test.ts` | 取消路径上的 worker 崩溃窗口、主节点崩溃、取消帧丢失与重复 |
+| `apps/server/test/support/main-process.ts` | `processScenario(scripts)` 从 `p3-main-process.test.ts` 移入，供 P3/P4 共用 |
+| `apps/server/test/support/worker-harness.ts` | `startTlsProxy` 新增 `duplicate` 规则，把一帧投递两次 |
+
+故障点：
+
+| 故障点 | 位置 | 崩溃时的状态 |
+|---|---|---|
+| worker `after_cancel_recorded` | 账本写入 `cancel_requested=1` 之后，回 `cancel_ack` 和发信号之前 | 进程组未收到任何信号 |
+| worker `after_term_sent` | `killpg(TERM)` 之后，宽限期内 | 进程组已收到 TERM |
+| 主节点 `after_cancel_commit`（新增） | `cancel()` 事务提交之后，中止生成和发送 `cancel_call` 之前 | job `cancel_requested`，call `dispatched`，`cancel_sent_at` 为空 |
+
+### 观察到的行为
+
+- worker 在取消途中崩溃后，被取消的命令所在进程组仍然存活（测试中命令忽略 TERM）。重启的 worker 把上一个 boot 的 running 调用报告为 unknown，主节点让 job 进入 needs_attention 并阻塞机器。重启的 worker 不保存也不使用旧 PGID，进程组在阻塞期间一直存活，需要人工处理。测试模拟运维手动 kill 该进程组，放弃 job 后提交依据解除阻塞，排队的 job 随后执行。
+- 主节点在取消提交后崩溃：重启后从 SQLite 恢复 `cancel_requested`，worker 重连对账后 `resumeWorker` 先发 `cancel_call`。job 以 `cancelled` 结束，`runtime_turns` 没有增加，也没有最终回答。
+- `cancel_call` 或 `cancel_ack` 随连接丢失时，重连后主节点重复发出停止，命令仍以 `termination=cancelled` 结束。单独丢一帧而连接不断的情况不做重试，与 P3 对其他帧的处理一致。
+- 重复的 `cancel_call` 和 `cancel_ack` 不改变结果，也不产生 attention 记录。
+
+### 总验收
+
+验收环境：macOS arm64，Node 22.22.3，Rust 1.93.1，本机临时 CA，worker 与主节点均在本机。未在 venus-local 远端复验。命令：先执行 `cargo build --locked --manifest-path worker/Cargo.toml`，再执行 `PATH=/opt/homebrew/bin:$PATH pnpm test`，结果是 server 62 项、protocol 3 项全部通过。`cargo test --locked`（含 `--features fault-injection`）23 项通过。job ID 为下面这次运行的记录。
+
+**故障程序**（`p4-faults.test.ts`）
+
+| 场景 | 预期 | 实际 | job |
+|---|---|---|---|
+| worker SIGKILL `after_cancel_recorded` | unknown、needs_attention、blocked，不按旧 PGID 杀进程 | 重启后 call unknown，blocked=1，执行槽保留；1.5 秒后进程组仍存活，新 job waiting_worker；人工 kill 后放弃、解除，call `resolved`，新 job 完成；`long` 1 行、`late` 0 行 | `719b109d-a0d5-4df2-aad6-f2db91deca9e` |
+| worker SIGKILL `after_term_sent` | 同上 | 同上 | `06828181-fb4c-4fbe-925e-974948aacd57` |
+| 主节点 SIGKILL `after_cancel_commit` | 重启后仍发出取消，不恢复推理 | 崩溃时 call dispatched、`cancel_sent_at` 为空；删除锁后重启，代理记录到 `cancel_call`，job `cancelled`，结果 `termination=cancelled`，`runtime_turns` 不变，无最终回答，`late` 0 行，后续 job 完成 | `25db2c76-7e89-4255-9323-76c5b3d6cc10` |
+| `cancel_call` 随连接丢失 | 重连后重复停止 | 在新 epoch 上结束为 cancelled，未阻塞，无 attention 记录 | `be60d3b1-b2f5-4de7-a123-edbdfbd2e41d` |
+| `cancel_ack` 随连接丢失 | 同上 | 同上 | `160a8c8c-5a09-4eef-bde2-ab2074de2ea3` |
+| `cancel_call`、`cancel_ack` 各重复一次，API 取消两次 | 幂等 | 两种帧均送达 ≥2 次；`end_reason=cancelled_by_user`，未阻塞，无 attention 记录 | `a38c1b4d-f8cf-47db-b696-ab6e559127ac` |
+
+**P4 验收表**（[开发阶段](development-plan.md#p4取消预算输出与人工处置)）
+
+| # | 验收标准 | 实际 | 证据 |
+|---|---|---|---|
+| 1 | queued 取消原子结束且无工具；推理取消后不产生新调用 | queued 取消直接 `cancelled`，无 runtime_calls；推理中取消后迟到的响应不产生调用，marker 0 行；主节点在取消提交后崩溃，重启也不恢复推理 | `p4-control` 离线/queued 取消、推理中取消；`p4-faults` `after_cancel_commit` |
+| 2 | 命令取消/超时执行 TERM → 宽限 → KILL → 等待退出；确认停止前不启动下一 job | 忽略 TERM 的命令在宽限 1 秒后被 KILL，同组子进程消失；终止确认前的下一调用被拒为 `busy`；下一 job 在取消的 job 结束后才运行 | `worker-process`；`p4-control` 命令中取消 job `e1e8740a-4327-45d9-b383-4c7160d59782` → `2332a0cd-c844-4977-b14a-f6214021adfb` |
+| 3 | 离线执行取消保留请求与槽，重连优先对账/取消；cancel_ack 不被当作停止证明 | 离线取消后重连，发往 worker 的第一帧是 `cancel_call`，原调用不再发送；`cancel_ack` 为 running 时等待真实结果；worker 回 ack 后崩溃时调用仍为 unknown | `p4-control` 离线取消；`p4-faults` 两个 worker 窗口 |
+| 4 | 完成与取消竞争保留真实结果，禁止后续调用；重复取消幂等，终态返回原状态 | 取消后保留 worker 的真实结果（`termination=cancelled`）；对已完成调用的取消回 `completed`；重复取消、重复帧、终态取消都返回原状态 | `execution.test.ts`；`worker-process` 重复取消；`p4-faults` 重复帧 |
+| 5 | 无法识别或停止残留执行时 unknown → needs_attention；不按陈旧 PID 误杀无关进程 | worker 在取消途中崩溃时调用为 unknown，机器阻塞；重启的 worker 不触碰旧进程组，进程组一直存活到人工处理 | `p4-faults` `after_cancel_recorded`、`after_term_sent` |
+| 6 | 人工"放弃任务"不解除 worker blocked；解除阻塞保存核对依据；新建重试使用新 ID | 放弃后 blocked 仍为 1；依据写入 `attention_actions`；重试生成新 job_id | `p4-control` 放弃 → 解除 → 重试；`p4-faults` 两个 worker 窗口 |
+| 7 | 工具次数、token、运行时限实际限制执行，重启不重置；默认工具超时 600 秒、本地上限 1800 秒不可绕过 | 三类预算分别以 `budget_tool_calls`、`budget_tokens`、`deadline_exceeded` 结束，重启主节点后计数不变；`timeout_secs` 超过本地上限或 1800 被拒为 `invalid` | `p4-control` 预算；`worker-process` |
+| 8 | stdout/stderr 带 stream/seq，可去重、重连补读；超过模型每流 64 KiB 和调用日志 10 MiB 明确截断 | 丢弃的分块用 `log_fetch` 补齐；提交 64 KiB 并标记 `truncated`；30 MiB 输出保存 10 MiB 并标记 `log_truncated` | `p4-output`；`worker-process` |
+| 9 | 队列满和大输出不堵塞子进程管道；日志缺口明确可见，主节点也有容量限额 | 30 MiB 输出约 1.2 秒完成；缺口记为 `gap`；主节点容量 100000 字节时超出部分 `main_truncated=1` | `worker-process`；`p4-output` |
+| 10 | 磁盘不足拒绝新调用，不删除未确认记录；日志过期返回明确状态，结果 ACK 不错误删除仍需补读的日志 | `disk_full` 拒绝，job 以 `worker_disk_full` 结束、未阻塞；只收到 `log_ack` 时输出保留，再收到 `tool_ack` 才删除，之后 `log_fetch` 返回 `expired` | `p4-control` 磁盘不足；`worker-process` |
+| 11 | 超出总时限停止新调用，在途执行按取消处理；终止不明仍阻塞 | 时限到期时命令以 cancelled 终止，job `deadline_exceeded`；终止过程中 worker 崩溃时为 unknown 并阻塞 | `p4-control` 预算；`p4-faults` `after_term_sent` |
+
+出口判断：所有故障场景达到预期；无法证明进程已停止时选择阻塞，没有发现重复副作用。P4 阶段验收完成。

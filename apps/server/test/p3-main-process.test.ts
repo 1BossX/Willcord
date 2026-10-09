@@ -3,67 +3,24 @@
 // model again or repeating the worker side effect.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import argon2 from "argon2";
-import { openDatabase } from "../src/storage.js";
 import type { MainFaultPoint } from "../src/fault.js";
-import { createCertificates, startTlsProxy, startWorker, stopWorker, waitFor, type WorkerProcess } from "./support/worker-harness.js";
-import { adminClient, expectMainRefused, startMainProcess, type MainProcess } from "./support/main-process.js";
+import { adminClient, expectMainRefused, processScenario } from "./support/main-process.js";
 
-const token = "p3-main-process-worker-token";
-const password = "p3-main-process-password";
-
-async function processScenario() {
-  const dir = mkdtempSync(join(tmpdir(), "worker-plane-p3c-main-"));
-  const dataDir = join(dir, "data");
-  mkdirSync(dataDir, { mode: 0o700 });
-  const certs = createCertificates(dir);
-  const workspace = join(dir, "workspace");
-  const marker = join(workspace, "marker.log");
-  const scriptFile = join(dir, "scripts.json");
-  writeFileSync(scriptFile, JSON.stringify({
-    crash: [{ tool: "bash", arguments: { command: "echo crash >> marker.log; sleep 1" }, id: "crash-1" }, { text: "done" }],
-    next: [{ tool: "bash", arguments: { command: "echo next >> marker.log" }, id: "next-1" }, { text: "done" }],
-  }));
-  // Seed credentials before the first start; the test keeps a reader on the same WAL database.
-  const db = openDatabase(join(dataDir, "main.sqlite"));
-  db.prepare("INSERT INTO worker_tokens VALUES (?,'w',NULL)").run(createHash("sha256").update(token).digest("hex"));
-  db.prepare("INSERT INTO administrators VALUES (1,?)").run(await argon2.hash(password, { type: argon2.argon2id }));
-  let main: MainProcess | undefined;
-  let worker: WorkerProcess | undefined;
-  const proxy = await startTlsProxy(certs, () => main!.port);
-  const one = (sql: string, ...params: unknown[]) => db.prepare(sql).get(...params) as any;
-  return {
-    dataDir, scriptFile, proxy, one,
-    get main() { return main!; },
-    count: (tag: string) => existsSync(marker) ? readFileSync(marker, "utf8").split("\n").filter((l) => l === tag).length : 0,
-    start: async (env: Record<string, string> = {}) => (main = await startMainProcess({ dataDir, scriptFile, env })),
-    startWorker: () => (worker = startWorker({ dir, id: "w", url: proxy.url, ca: certs.ca, token, workspace })),
-    until: (check: () => boolean, timeoutMs = 20000) => waitFor(() => {
-      if (worker && worker.child.exitCode !== null) throw new Error(`worker exited: ${worker.stderr()}`);
-      return check();
-    }, timeoutMs),
-    close: async () => {
-      if (worker) await stopWorker(worker);
-      if (main && main.child.exitCode === null && main.child.signalCode === null) { main.child.kill("SIGTERM"); await main.exited; }
-      await proxy.close();
-      db.close();
-      rmSync(dir, { recursive: true, force: true });
-    },
-  };
-}
+const scripts = {
+  crash: [{ tool: "bash", arguments: { command: "echo crash >> marker.log; sleep 1" }, id: "crash-1" }, { text: "done" }],
+  next: [{ tool: "bash", arguments: { command: "echo next >> marker.log" }, id: "next-1" }, { text: "done" }],
+};
 
 for (const point of ["before_dispatch", "after_dispatch", "after_result_commit"] satisfies MainFaultPoint[]) {
   test(`P3-C main process SIGKILL ${point}: restart resumes from SQLite without repeating the model turn or the effect`, { timeout: 90000 }, async (t) => {
-    const s = await processScenario();
+    const s = await processScenario(scripts);
     try {
       await s.start({ WP_MAIN_FAULT: point });
       s.startWorker();
       await s.until(() => s.one("SELECT reconciled FROM workers WHERE worker_id='w'")?.reconciled === 1);
-      const post = await adminClient(() => s.main.port, password);
+      const post = await adminClient(() => s.main.port, s.password);
       const session = (await (await post("/api/sessions", { worker_id: "w", workspace_id: "repo" })).json()).session_id;
       const job = (await (await post(`/api/sessions/${session}/messages`, { client_request_id: "crash", message: "crash" })).json()).job_id;
       t.diagnostic(`job=${job} call=crash-1`);
@@ -94,7 +51,7 @@ for (const point of ["before_dispatch", "after_dispatch", "after_result_commit"]
       if (point === "after_result_commit")
         assert.ok(s.proxy.frames.filter((f) => f.type === "tool_ack" && f.call_id === "crash-1").length >= 1, "the lost ACK was sent after restart");
 
-      const repost = await adminClient(() => s.main.port, password);
+      const repost = await adminClient(() => s.main.port, s.password);
       const next = (await (await repost(`/api/sessions/${session}/messages`, { client_request_id: "next", message: "next" })).json()).job_id;
       await s.until(() => s.one("SELECT state FROM jobs WHERE job_id=?", next).state === "succeeded");
       assert.equal(s.count("crash"), 1);
@@ -104,7 +61,7 @@ for (const point of ["before_dispatch", "after_dispatch", "after_result_commit"]
 }
 
 test("P3-C a second main process on the same data directory is refused while the first keeps serving", { timeout: 60000 }, async (t) => {
-  const s = await processScenario();
+  const s = await processScenario(scripts);
   try {
     const first = await s.start();
     t.diagnostic(`first pid=${first.child.pid}`);

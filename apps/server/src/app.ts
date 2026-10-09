@@ -117,7 +117,7 @@ export async function createApp(
   app.get("/health", async () => ({
     alive: true,
     scheduling_ready: true,
-    phase: "P2",
+    phase: "P4",
   }));
   app.post(
     "/auth/login",

@@ -29,7 +29,7 @@ export async function createApp(
     logStream?: FastifyLoggerOptions["stream"];
     runJob?: (job:unknown)=>Promise<void>;
     dataDir?: string;
-    fakeScript?: (job: any) => ScriptStep[];
+    fakeScript?: (job: any, messages: any[]) => ScriptStep[];
     toolResultTimeoutMs?: number;
     waitSweepMs?: number;
     logCapacityBytes?: number;

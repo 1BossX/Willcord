@@ -53,6 +53,8 @@ type Job = JobControl & {
   state: string;
   children?: Child[];
   children_summary?: { total: number; succeeded: number; failed: number; needs_attention: number; open: number };
+  /** Earlier exchanges of the session the model saw with this job; fixed when it first ran. */
+  context?: { jobs: number; omitted: number } | null;
   input_text: string;
   created_at: number;
   started_at: number | null;
@@ -725,7 +727,8 @@ type LogState = { job_id: string; call_id: string; stream: string; bytes_held: n
 
 /**
  * Why a job is where it is and what can be done, in words: queue place, the
- * machine it waits for, children, a stop in progress, a check it needs.
+ * machine it waits for, children, a stop in progress, a check it needs, and
+ * earlier exchanges the model did not see.
  */
 function JobNotes({ job, worker }: { job: Job; worker?: Worker }) {
   const notes: { tone: string; text: string }[] = [];
@@ -746,6 +749,8 @@ function JobNotes({ job, worker }: { job: Job; worker?: Worker }) {
     notes.push({ tone: "danger", text: `需要核对：执行情况无法确认，不会自动重跑${job.cancel_requested ? "；取消请求已记录，但不能宣称已安全停止" : ""}。请在任务详情中处理` });
   if (summary && summary.failed + summary.needs_attention > 0 && !activeStates.has(job.state))
     notes.push({ tone: "danger", text: `${summary.failed + summary.needs_attention} 个子任务未成功${summary.needs_attention ? `（其中 ${summary.needs_attention} 个需要核对）` : ""}，请查看委派卡片` });
+  if (job.context?.omitted)
+    notes.push({ tone: "muted", text: `本会话更早的 ${job.context.omitted} 轮对话未纳入这次的上下文` });
   if (!notes.length) return null;
   return (
     <ul className="job-notes">

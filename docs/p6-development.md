@@ -1,19 +1,20 @@
 # P6 UI 与完整端到端体验
 
-日期：2026-10-09。P6 分三步交付，本文随每步更新。阶段验收标准见 [开发阶段](development-plan.md#p6ui-与完整端到端体验)，设计依据见 [架构 §4、§12](architecture.md)。
+日期：2026-10-09。P6 分四步交付，本文随每步更新。阶段验收标准见 [开发阶段](development-plan.md#p6ui-与完整端到端体验)，设计依据见 [架构 §4、§12](architecture.md)。
 
 | 步骤 | 内容 | 状态 |
 |---|---|---|
 | P6-A | 事件流（触发器写事件）、带游标快照、SSE 补放与游标过期、模型草稿、日志缺口、委派子任务汇总 | 完成 |
 | P6-B | UI 改为快照 + SSE，补齐机器状态、委派卡片、排队与取消、需要核对、日志缺口和草稿的展示 | 完成 |
 | P6-C | 故障程序、浏览器端到端走查（含网络记录）与全量验收记录 | 未开始 |
+| P6-D | 会话内多轮上下文：后续消息带上本会话已结束任务的问答 | 完成 |
 
 已定决策：
 
 - Main 的 outcome 仍由模型判断。UI 在 Main 结果和委派卡片上醒目显示"N 个子任务未成功"，服务端在 job 视图里给出 `children_summary`。
 - P6 走查用脚本模型和真实 Rust worker。真实模型联调（包括是否遵守"同一轮委派""带 verify"）放到 P7。
 
-P6 阶段整体验收以 P6-C 的记录为准。
+P6 阶段整体验收以 P6-C 的记录为准，P6-D 完成后补记多轮对话的验收结果。
 
 ## P6-A：事件流、快照与草稿
 
@@ -111,3 +112,74 @@ P6 阶段整体验收以 P6-C 的记录为准。
   - 手机宽度（375 px）没有横向滚动，刷新后回到 Main。
   - 网络记录：所有请求都是 `localhost:8105` 的页面资源、`/auth/*` 和 `/api/*`（快照、事件流、消息、取消、workspace），没有访问 worker 地址，也没有携带 worker token。
 - `pnpm check`、`pnpm build` 通过。
+
+## P6-D：会话内多轮上下文
+
+### 问题
+
+同一会话可以连续发消息，每条消息是一个新 job，但模型看不到之前的对话。`transcript(jobId)` 只读 `runtime_history WHERE job_id=?`，`runPi` 只写入当前 job 的 `user:`。第二条消息里说"把刚才那个改一下"，模型不知道"刚才"指什么。能延续的只有 workspace 里的文件。
+
+这也和 [架构 §数据出境](architecture.md) 里"完整历史"的描述不一致。
+
+### 前提
+
+- 同一会话的 job 串行执行。worker 会话的 job 都在同一台机器的 FIFO 里，只有一个执行槽；Main 会话按 `created_at` 取队头，一次只跑一个。所以一个 job 开始时，同会话更早的 job 一般已经结束。
+- 恢复依赖重建出的记录逐字节一致，`transcript()` 还会核对工具调用与已提交记录。带进来的历史必须在第一次运行时定下，之后不变。
+- 已结束的 job 里可能有 `committed` 或 `unknown` 的调用，取消后工具结果也可能晚到。原样拼进来会触发 `transcript_has_unresolved_call`，记录也不再固定。
+
+### 方案：只带问答，第一次运行时冻结
+
+带进来的内容：
+
+- 对同会话中更早、已结束（`succeeded`/`failed`/`cancelled`）、且真正运行过（有 `user:` 记录）的 job，各生成两条消息：
+  - `user`：该 job 的 `user:` 记录，含 verify 提示。
+  - `assistant`：`final:` 记录。没有成功的 job 在回答后补一段说明，没有回答时说明单独成为一条 assistant 消息（`provider` 为 `worker-plane`，用量为 0）：`[This task did not finish: cancelled (budget_tokens).]`；验证未通过为 `[The verification command of this task failed.]`。
+- 不带工具调用和工具结果。具体改动在 workspace 里，模型需要时自己读。这样避开了未结论的调用，上下文也小（工具结果每个最多 64 KiB，问答通常几 KB），也不和 Main 的 `child:` 记录冲突。
+- 排队时就被取消、从未运行的 job 跳过。
+
+冻结（`migrations/011_session_context.sql`）：
+
+- `jobs` 新增 `context_json TEXT`，记录 `{ jobs: [{ job_id, state, end_reason }], omitted }`。每个 job 的结局随它一起固定，之后即使 `end_reason` 变化也不影响重建。迁移前已运行过的 job 保持 NULL，不带上下文。
+- `events_job_update` 触发器加上 `context_json`，job 视图里的 `context` 变化会推送给 UI。
+- `runPi` 写入 `user:` 之前，在同一个事务里：若 `context_json IS NULL`，选出要带的 job 并写入。之后的重试和恢复只读这一份。
+- `transcript(jobId)` 先渲染 `context_json` 里各 job 的问答，再接本 job 自己的历史。被引用的 job 都已结束，它们的 `user:`、`final:` 记录不会再变，重建结果是确定的。
+
+上下文上限：
+
+- `SESSION_CONTEXT_CHARS`，默认 120,000 字符，按各条消息 `content` 的 JSON 长度计。从最近的 job 往前选，直到超出上限。被省略的条数记入 `omitted`，并在第一条消息前加 `[n earlier exchanges of this session are not included.]`（一条也带不进时加在本 job 的问题前）。
+- 这是明确告知的截断，不是压缩，不生成摘要，符合 [架构](architecture.md) 中"压缩结果未持久化就不启用自动压缩"的约束。
+- 本 job 自身的工具输出导致超限，仍按现有逻辑处理，不在本步范围内。
+
+### 改动
+
+| 位置 | 改动 |
+|---|---|
+| `migrations/011_session_context.sql` | `ALTER TABLE jobs ADD COLUMN context_json TEXT` |
+| `context.ts`（新） | `freezeContext` 选出并固定要带的 job；`priorContext` 渲染问答对；`omittedNote` |
+| `execution.ts` `runPi` | 写入 `user:` 前冻结 `context_json`，与 `user:` 同一事务 |
+| `execution.ts` `transcript` | 带入的问答 + `ownTranscript`（原逻辑，`durable_user_history_required` 检查不变） |
+| `execution.ts` 脚本模型 | `committedTurns` 只统计本 job 的轮次；`fakeScript(job, messages)` 多收到交给模型的消息，测试据此断言 |
+| 快照 / job 视图 | job 增加 `context: { jobs, omitted }`（条数），未运行过的 job 为 `null` |
+| `apps/web` | `omitted > 0` 时在会话中提示"更早 n 轮未纳入上下文" |
+| `architecture.md` | §12 写明会话内多轮的语义；数据出境表中"完整历史"改为"本会话已结束 job 的问答 + 本 job 完整历史，受 `SESSION_CONTEXT_CHARS` 限制" |
+
+本步不做：
+
+- Main 的 `get_job` 仍限本根任务。追问时查不到上一轮委派的 job，只能依据上一轮回答中的文字。放开范围涉及权限边界，另行评估。
+- 带入历史 job 的工具调用细节。
+
+### 验证
+
+`apps/server/test/p6-conversation.test.ts` 5 项，真实 Rust worker 加脚本模型。脚本模型记录每次运行交给模型的消息，断言的就是模型实际看到的内容。
+
+| 场景 | 结果 |
+|---|---|
+| 同一会话先跑一个 bash 任务，再追问 | 第二个 job 看到第一问、第一答、第二问，没有工具调用和结果；命令只执行一次。job 视图 `context` 为 `{ jobs: 1, omitted: 0 }`。同机器的另一个会话只看到自己的问题 |
+| 长命令运行中再交两条，取消排队的那条，再取消运行中的 | 最后一条看到"long + `[This task did not finish: cancelled …]`"和自己的问题，不报错；排队时被取消的 job 不在上下文里 |
+| Main 生成中途主节点停止再启动 | 重启后再次运行，交给模型的消息与第一次逐字节一致；之后同会话的新 job 不改变它的 `context_json` |
+| 三轮后把 `SESSION_CONTEXT_CHARS` 设为 130 | 只带最近两轮，第一条消息前有 `[1 earlier exchange of this session is not included.]`，`context` 为 `{ jobs: 2, omitted: 1 }` |
+| Main 委派子任务，再在子会话追问 | 子任务第一次运行只看到委派 prompt；追问看到委派 prompt、子任务回答和追问，没有 Main 会话的内容 |
+
+`pnpm test`：server 85 项（其中 `p6-conversation` 5 项）、web 6 项、protocol 3 项全部通过（`identity` 的迁移计数改为 11）。`pnpm check` 通过。
+
+本机 PATH 上若先找到 anaconda 自带的 OpenSSL 1.1.1，测试生成的证书会被 worker 拒绝（`UnknownIssuer`），所有带 worker 的测试都会失败；把 Homebrew 的 `openssl` 放在前面即可。

@@ -148,7 +148,6 @@ rm -f "$JAR"
      ```bash
      sudo install -d -o workerplane -m 0700 /usr/local/var/log/worker-plane
      sudo cp deploy/launchd/com.workerplane.worker.plist /Library/LaunchDaemons/
-     sudo cp deploy/launchd/worker-plane.newsyslog.conf /etc/newsyslog.d/worker-plane.conf
      sudo launchctl bootstrap system /Library/LaunchDaemons/com.workerplane.worker.plist
      tail -f /usr/local/var/log/worker-plane/worker.log
      ```
@@ -235,7 +234,14 @@ worker：先执行 `systemctl stop`（或 `launchctl bootout`），等它停下�
   - 已确认的结果保留 `result_retention_secs`（默认 7 天），之后只留下用于去重的 tombstone。
 - 进程日志：
   - 主节点和 Linux worker 的日志由 journald 收集。
-  - macOS worker 的日志写到 `/usr/local/var/log/worker-plane/worker.log`，由 newsyslog 在 10 MiB 时轮转，保留 5 份。
+  - macOS worker 的日志写到 `/usr/local/var/log/worker-plane/worker.log`。worker 只在连接变化和出错时写日志，增长很慢。
+  - 这个文件由 launchd 打开并一直持有，newsyslog 改名或压缩后 worker 仍会写进旧文件，所以不要用 newsyslog 轮转它。需要清理时，先停止服务（正在运行的命令会正常停止），移走文件，再启动：
+
+    ```bash
+    sudo launchctl bootout system/com.workerplane.worker
+    sudo mv /usr/local/var/log/worker-plane/worker.log /usr/local/var/log/worker-plane/worker.log.1
+    sudo launchctl bootstrap system /Library/LaunchDaemons/com.workerplane.worker.plist
+    ```
 
 ## 12. 故障排查
 

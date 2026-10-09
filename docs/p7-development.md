@@ -139,7 +139,7 @@
 | `systemd/worker-plane-main.service` | 专用用户；`EnvironmentFile` 权限 0600；`ProtectSystem=strict`，只有数据目录可写。`Restart=no`：崩溃后 `main.lock` 会故意留下，需要人工确认后删除（运维手册 §10） |
 | `systemd/worker-plane-worker.service` | 停止信号 SIGTERM，等待 60 s，大于 `kill_grace_secs + 7`；`KillMode=control-group`；`StartLimitBurst=5`，避免被吊销的 token 导致无限重启 |
 | `systemd/worker-plane-backup.{service,timer}` | 每天在线备份一次，删除 14 天前的备份 |
-| `launchd/com.workerplane.worker.plist` | LaunchDaemon，`KeepAlive` 只在非正常退出时重启，`ThrottleInterval` 60 s，`ExitTimeOut` 60 s；日志写入文件，由 `worker-plane.newsyslog.conf` 轮转 |
+| `launchd/com.workerplane.worker.plist` | LaunchDaemon，`KeepAlive` 只在非正常退出时重启，`ThrottleInterval` 60 s，`ExitTimeOut` 60 s；日志写入文件。launchd 一直持有这个文件，newsyslog 无法正确轮转它，所以运维手册改为停止服务后移走文件 |
 | `main.env.example`、`worker.config.toml` | 生产配置示例：worker 使用 `token_file`，`data_dir` 放在持久目录 |
 
 ### 文档

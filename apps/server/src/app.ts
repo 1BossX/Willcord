@@ -8,6 +8,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { DEFAULT_BUDGET, ExecutionCoordinator, workspaceCurrent, type Budget, type Resolution, type ScriptStep } from "./execution.js";
 import { mainFault } from "./fault.js";
 import { createJob, mainSession } from "./jobs.js";
+import { registerFeed, sessionJobs, workerViews } from "./feed.js";
 import type Database from "better-sqlite3";
 import {
   parseFrame,
@@ -33,6 +34,7 @@ export async function createApp(
     waitSweepMs?: number;
     logCapacityBytes?: number;
     budget?: Partial<Budget>;
+    feed?: { pollMs?: number; pruneMs?: number; keep?: number; maxAgeMs?: number };
   } = {},
 ) {
   const now = options.now ?? Date.now;
@@ -89,6 +91,8 @@ export async function createApp(
       )
       .run(id, epoch);
   };
+  const loggedIn = (token: string | undefined) =>
+    Boolean(token && db.prepare("SELECT 1 FROM auth_sessions WHERE digest=? AND expires_at>?").get(digest(token), now()));
   app.addHook("onRequest", async (req, reply) => {
     if (
       req.url.split("?")[0] === "/health" ||
@@ -169,9 +173,8 @@ export async function createApp(
     if(!session) return {authenticated:false};
     return {authenticated:true,csrf:session.csrf,expires_at:session.expires_at};
   });
-  app.get("/api/workers", async () =>
-    db.prepare("SELECT w.*,s.active_job_id FROM workers w LEFT JOIN worker_slots s USING(worker_id) ORDER BY w.worker_id").all(),
-  );
+  app.get("/api/workers", async () => workerViews(db));
+  registerFeed(app, db, now, loggedIn, options.feed);
   app.get("/api/main", async () => mainSession(db, now));
   app.get("/api/sessions", async () => db.prepare("SELECT * FROM sessions ORDER BY created_at DESC").all());
   app.post("/api/sessions", async (req, reply) => {
@@ -213,13 +216,7 @@ export async function createApp(
   });
   app.get<{Params:{session_id:string}}>("/api/sessions/:session_id/jobs",async(req,reply)=>{
     if(!db.prepare("SELECT 1 FROM sessions WHERE session_id=?").get(req.params.session_id)) return reply.code(404).send({error:"session_not_found"});
-    return db.prepare(`SELECT j.job_id,j.worker_id,j.client_request_id,j.input_text,j.state,j.queue_seq,j.created_at,j.started_at,j.wait_until,
-      j.cancel_requested,j.cancel_reason,j.end_reason,j.max_tool_calls,j.max_tokens,j.max_runtime_secs,j.deadline_at,
-      (SELECT r.tool_calls_used FROM budget_roots r WHERE r.root_job_id=j.root_job_id) AS tool_calls_used,
-      (SELECT r.tokens_used FROM budget_roots r WHERE r.root_job_id=j.root_job_id) AS tokens_used,
-      j.parent_job_id,j.delegation_id,j.result_json,
-      CASE WHEN j.state IN ('queued','waiting_worker') AND j.queue_seq IS NOT NULL THEN (SELECT COUNT(*) FROM jobs q WHERE q.worker_id=j.worker_id AND q.state IN ('queued','waiting_worker') AND q.queue_seq<=j.queue_seq) ELSE NULL END AS queue_position
-      FROM jobs j WHERE j.session_id=? ORDER BY j.created_at,j.rowid`).all(req.params.session_id);
+    return sessionJobs(db, req.params.session_id);
   });
   app.post<{Params:{session_id:string}}>("/api/sessions/:session_id/messages",async(req,reply)=>{
     const body=req.body as {client_request_id?:unknown;message?:unknown}|null;

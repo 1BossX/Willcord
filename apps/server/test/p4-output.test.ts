@@ -52,6 +52,7 @@ test("P4-A the model sees the first 64 KiB of each stream; lost live chunks are 
     const page = await s.main.app.inject({ method: "GET", url: `/api/jobs/${job}/calls/loud-1/logs?stream=stdout&from_seq=12`, headers: { cookie: (await login(s)) } });
     assert.equal(page.statusCode, 200, page.body);
     assert.deepEqual(page.json().items.map((i: any) => i.seq), [12]);
+    assert.deepEqual(page.json().gaps, [], "a complete log has no gap");
     assert.equal(Buffer.from(page.json().items[0].data, "base64").length, 200000 - 12 * 16384);
   } finally { await s.close(); }
 });
@@ -70,6 +71,9 @@ test("P4-A a full main node keeps the model's view and marks the rest as dropped
     const head = JSON.parse(s.one("SELECT result_json FROM runtime_calls WHERE call_id='cap-1'").result_json).result.output.stdout;
     assert.equal(head.bytes_shown, 65536, "the model's view is kept despite the limit");
     assert.ok(s.one("SELECT SUM(length(data)) n FROM call_logs").n <= 100_000);
+    // What the full node dropped is truncation, not a gap.
+    const page = await s.main.app.inject({ method: "GET", url: `/api/jobs/${job}/calls/cap-1/logs?stream=stdout`, headers: { cookie: (await login(s)) } });
+    assert.deepEqual(page.json().gaps, []);
   } finally { await s.close(); }
 });
 

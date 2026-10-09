@@ -24,7 +24,7 @@ test("real SQLite migration, reopen, authentication and CSRF boundaries", async 
         n: number;
       }
     ).n,
-    9,
+    10,
   );
   const app = await createApp(db, "https://localhost:8443", { logging: false });
   try {
@@ -35,6 +35,8 @@ test("real SQLite migration, reopen, authentication and CSRF boundaries", async 
       ["GET", "/api/history"],
       ["GET", "/api/logs"],
       ["GET", "/api/events"],
+      ["GET", "/api/events?after=0"],
+      ["GET", "/api/snapshot"],
       ["GET", "/api/workers/a/workspaces"],
     ] as const)
       assert.equal((await app.inject({ method, url })).statusCode, 401);
@@ -254,7 +256,7 @@ test("migration 001 database upgrades without discarding identity or active slot
         n: number;
       }
     ).n,
-    9,
+    10,
   );
   assert.deepEqual(
     db.prepare("SELECT connection_epoch,online,reconciled FROM workers").get(),

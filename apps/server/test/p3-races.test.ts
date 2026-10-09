@@ -170,7 +170,7 @@ test("P3-C a workspace version change never rebinds an in-flight job and never s
     await v2.handshake({ version: 2 });
     await waitFor(() => s.state(queued) === "failed");
     assert.equal(s.one("SELECT count(*) n FROM runtime_calls WHERE job_id=?", queued).n, 0);
-    assert.match(s.one("SELECT content_json FROM events ORDER BY event_id DESC").content_json, /workspace_version_changed/);
+    assert.match(s.one("SELECT content_json FROM events WHERE kind IS NULL ORDER BY event_id DESC").content_json, /workspace_version_changed/);
     const rejected = await s.post(oldSession, "more");
     assert.equal(rejected.statusCode, 409);
     assert.equal(rejected.json().error, "workspace_version_changed");

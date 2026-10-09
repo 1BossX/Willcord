@@ -7,6 +7,7 @@ import type { WorkerFrame } from "@worker-plane/protocol";
 import { requestHash } from "@worker-plane/protocol";
 import { mainFault } from "./fault.js";
 import { delegate, nextQueueSeq, readyState } from "./jobs.js";
+import { logView } from "./feed.js";
 
 type Socket = { readyState: number; send(data: string): void };
 type Connection = { epoch: number; socket: Socket; tokenDigest: string };
@@ -17,7 +18,7 @@ type CallReport = { job_id: string; call_id: string; call_seq: number; request_h
 /** Scripted model turns for isolated acceptance; never a real provider. */
 type ScriptCall = { tool: "read" | "write" | "bash" | "list_workers" | "get_job" | "delegate"; arguments: Record<string, unknown>; id?: string };
 /** One model turn: a single call, several calls in one batch, or a final text. */
-export type ScriptStep = (ScriptCall | { calls: ScriptCall[] } | { text: string }) & { delay_ms?: number };
+export type ScriptStep = (ScriptCall | { calls: ScriptCall[] } | { text: string }) & { delay_ms?: number; tokens_per_second?: number };
 /** Per-job limits written at creation. Counts come from SQLite, so a restart never resets them. */
 export type Budget = { maxToolCalls: number; maxTokens: number; maxRuntimeSecs: number };
 export const DEFAULT_BUDGET: Budget = { maxToolCalls: 200, maxTokens: 2_000_000, maxRuntimeSecs: 4 * 3600 };
@@ -41,6 +42,8 @@ type Stream = (typeof STREAMS)[number];
 type LogSummary = Record<Stream, { bytes_total: number; bytes_logged: number; chunks: number }> & { truncated: boolean };
 type ResultFrame = Extract<WorkerFrame, { type: "tool_result" }>;
 const MAX_MODEL_TURNS = 20;
+/** Streamed text is written at most this often while a generation runs. */
+const DRAFT_FLUSH_MS = 250;
 const TERMINAL = new Set(["succeeded", "failed", "cancelled"]);
 /** Call states with an authoritative result the transcript can show. */
 const SETTLED = new Set(["completed", "not_executed", "resolved"]);
@@ -82,7 +85,10 @@ export class ExecutionCoordinator {
     readonly now = Date.now,
     readonly runJob?: (job: any) => Promise<void>,
     readonly options: { budget?: Budget; dataDir?: string; fakeScript?: (job: any) => ScriptStep[]; toolResultTimeoutMs?: number; logCapacityBytes?: number } = {},
-  ) {}
+  ) {
+    // A draft still streaming belongs to a process that is gone.
+    db.prepare("UPDATE model_drafts SET state='interrupted',updated_at=? WHERE state='streaming'").run(now());
+  }
 
   /** Results that wait for the head of their output before they commit. */
   private readonly held = new Map<string, ResultFrame>();
@@ -435,8 +441,9 @@ export class ExecutionCoordinator {
 
   /** Stored output of a call for the operator, in pages of chunks. */
   readLog(jobId: string, callId: string, stream: Stream, fromSeq: number, limit = 64) {
-    const state = this.db.prepare("SELECT chunks,bytes_total,worker_truncated,main_truncated,state FROM call_log_state WHERE job_id=? AND call_id=? AND stream=?").get(jobId, callId, stream);
-    if (!state) return undefined;
+    const view = logView(this.db, jobId, callId, stream);
+    if (!view) return undefined;
+    const { job_id: _job, call_id: _call, stream: _stream, ...state } = view;
     const chunks = (this.db.prepare("SELECT seq,offset,data FROM call_logs WHERE job_id=? AND call_id=? AND stream=? AND seq>=? ORDER BY seq LIMIT ?").all(jobId, callId, stream, fromSeq, limit) as Array<{ seq: number; offset: number; data: Buffer }>)
       .map((c) => ({ seq: c.seq, offset: c.offset, data: c.data.toString("base64") }));
     return { ...state, items: chunks };
@@ -582,6 +589,7 @@ export class ExecutionCoordinator {
       if (this.runJob) await this.runJob(job); else await this.runPi(job);
     } catch (error) { failure = error; } finally {
       this.running.delete(jobId);
+      this.interruptDrafts(jobId);
       clearTimeout(this.deadlines.get(jobId)); this.deadlines.delete(jobId);
     }
     if (this.closed) return;
@@ -603,6 +611,46 @@ export class ExecutionCoordinator {
     if (state === "cancel_requested") this.finalizeCancel(jobId);
     else this.release(job.worker_id, jobId);
     this.advance();
+  }
+
+  /** Drafts of a generation that ended without committing its turn. */
+  private interruptDrafts(jobId: string) {
+    // After close the next start marks them, like a crash.
+    if (this.closed) return;
+    this.db.prepare("UPDATE model_drafts SET state='interrupted',updated_at=? WHERE job_id=? AND state='streaming'").run(this.now(), jobId);
+  }
+
+  /** Inside the turn's transaction: its streamed text is now history, so the draft is not shown again. */
+  private commitDrafts(jobId: string) {
+    this.db.prepare("UPDATE model_drafts SET state='committed',text='',updated_at=? WHERE job_id=? AND state='streaming'").run(this.now(), jobId);
+  }
+
+  /**
+   * Stream generated text into model_drafts, in batches, so the UI can show it
+   * before the turn commits and can tell a generation that never committed.
+   */
+  private streamDrafts(job: any, session: any) {
+    let draft: { id: string; text: string; written: string; inserted: boolean; timer?: NodeJS.Timeout } | undefined;
+    let n = 0;
+    const flush = () => {
+      if (!draft) return;
+      clearTimeout(draft.timer); draft.timer = undefined;
+      if (draft.text === draft.written || this.closed) return;
+      if (draft.inserted) this.db.prepare("UPDATE model_drafts SET text=?,updated_at=? WHERE draft_id=? AND state='streaming'").run(draft.text, this.now(), draft.id);
+      else this.db.prepare("INSERT INTO model_drafts(draft_id,job_id,session_id,text,state,created_at,updated_at) VALUES(?,?,?,?,'streaming',?,?)").run(draft.id, job.job_id, job.session_id, draft.text, this.now(), this.now());
+      draft.inserted = true; draft.written = draft.text;
+    };
+    return session.agent.subscribe((event: any) => {
+      if (event.message?.role !== "assistant" || this.closed) return;
+      if (event.type === "message_start") { flush(); draft = { id: `${job.job_id}:${job.runtime_generation}:${++n}`, text: "", written: "", inserted: false }; return; }
+      if (!draft) return;
+      const text = Array.isArray(event.message.content) ? event.message.content.filter((c: any) => c?.type === "text").map((c: any) => c.text).join("") : "";
+      if (!text) return;
+      draft.text = text;
+      if (event.type === "message_end") flush();
+      else if (!draft.inserted) flush();
+      else draft.timer ??= setTimeout(flush, DRAFT_FLUSH_MS);
+    });
   }
 
   private current(job: any) {
@@ -681,6 +729,7 @@ export class ExecutionCoordinator {
         commitAssistantTurn: async ({ turnKey, assistantMessage, calls }: any) => this.commitTurn(job, turnKey, assistantMessage, calls),
         onAssistantTurn: async ({ message }: any) => {
           if (message.stopReason === "error" || message.stopReason === "aborted") {
+            this.interruptDrafts(job.job_id);
             // Spent tokens of a generation that committed nothing still count.
             this.recordUsage(job, `aborted:${job.runtime_generation}:${randomUUID()}`, message);
             modelError = message.errorMessage ?? message.stopReason;
@@ -691,11 +740,14 @@ export class ExecutionCoordinator {
         },
       }));
       this.sessions.set(job.job_id, session);
+      this.streamDrafts(job, session);
       if (fakeMode) {
         const faux = await import("@earendil-works/pi-ai");
-        const core = faux.createFauxCore({ provider: "openai", api: "openai", models: [{ id: "gpt-4o-mini" }] });
         const committedTurns = messages.filter((m) => m.role === "assistant").length;
         const steps = (this.options.fakeScript?.(job) ?? p2Script(job)).slice(committedTurns);
+        // A slow stream lets a test see, and interrupt, a draft before it commits.
+        const tokensPerSecond = Math.max(0, ...steps.map((step) => step.tokens_per_second ?? 0)) || undefined;
+        const core = faux.createFauxCore({ provider: "openai", api: "openai", models: [{ id: "gpt-4o-mini" }], tokensPerSecond });
         const call = (c: ScriptCall) => faux.fauxToolCall(c.tool, c.arguments as any, { id: c.id ?? `${job.job_id}-${c.tool}-${randomUUID()}` });
         core.setResponses(steps.map((step) => "text" in step
           ? faux.fauxAssistantMessage(step.text)
@@ -744,6 +796,7 @@ export class ExecutionCoordinator {
       const old = this.db.prepare("SELECT content_hash FROM runtime_turns WHERE job_id=? AND turn_key=?").get(job.job_id, turnKey) as any;
       if (old) { if (old.content_hash !== fingerprint) throw new Error("turn_checkpoint_conflict"); return true; }
       inserted = true;
+      this.commitDrafts(job.job_id);
       this.db.prepare("INSERT INTO runtime_turns VALUES(?,?,?,?,?)").run(job.job_id, turnKey, JSON.stringify(assistantMessage), fingerprint, this.now());
       const add = this.db.prepare("INSERT INTO runtime_calls(job_id,turn_key,call_id,call_seq,request_hash,tool_name,arguments_json,status) VALUES(?,?,?,?,?,?,?,'committed')");
       let seq = (this.db.prepare("SELECT COALESCE(MAX(call_seq),0) n FROM runtime_calls WHERE job_id=?").get(job.job_id) as any).n;
@@ -773,6 +826,7 @@ export class ExecutionCoordinator {
       // A parent never succeeds while a child it started is unfinished.
       if (this.openChildren(job.job_id)) { this.db.prepare("UPDATE jobs SET state='waiting_children' WHERE job_id=? AND state='running'").run(job.job_id); return false; }
       this.db.prepare("INSERT INTO runtime_history(job_id,entry_key,message_json) VALUES(?,?,?)").run(job.job_id, `final:${job.job_id}`, JSON.stringify(message));
+      this.commitDrafts(job.job_id);
       this.db.prepare("INSERT INTO messages(message_id,session_id,job_id,seq,content_json) SELECT ?,?,?,COALESCE(MAX(seq),0)+1,? FROM messages WHERE session_id=?").run(randomUUID(), job.session_id, job.job_id, JSON.stringify({ role: "assistant", content: message.content }), job.session_id);
       this.recordUsage(job, `final:${job.job_id}`, message);
       if (job.verify_command) {

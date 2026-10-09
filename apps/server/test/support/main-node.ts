@@ -59,6 +59,8 @@ export async function startScenario(options: {
   }, timeoutMs);
   const s = {
     dir, workspace, proxy,
+    /** Cookie, Origin and CSRF of the logged-in admin, for clients outside inject (SSE). */
+    headers,
     get main() { return main!; },
     get worker() { return workers.get(ids[0]); },
     workerOf: (id: string) => workers.get(id),

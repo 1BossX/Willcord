@@ -287,6 +287,8 @@ cancel_ack 仅表示收到请求；最终 tool_result 或可靠人工核对才�
 
 UI 提供 Main Agent、worker 列表、独立会话、机器时间线、委派卡片、排队位置、取消和 needs_attention 处置。追问排队，本期没有实时 steering。
 
+同一会话的追问是多轮对话：job 第一次运行时，固定它带入的本会话更早已结束 job 的问答（不含工具调用与结果；未完成的标明结局），之后恢复只读这份记录。超过 `SESSION_CONTEXT_CHARS`（默认 120,000 字符）时只带最近的几轮，并告知模型和 UI 省略了几轮，不做摘要压缩。
+
 REST 提供 spec 的会话、消息、job、取消和日志接口，补充登录/退出与明确的人工核对接口。消息提交返回 job_id；创建 worker session 必须指定目标。
 
 SSE 用单调 event_id 补放，支持 Last-Event-ID 或 after。UI 先取带游标的快照，再订阅后续事件；事件保留到期则要求重新加载快照。鉴权必须同样适用于事件和日志。
@@ -312,7 +314,7 @@ Worker token 高熵、独立、可撤销，数据库只存安全校验值。撤�
 | | tool_log / log_fetch：bash 完整 stdout/stderr，worker 每调用最多 10 MiB（`CALL_LOG_LIMIT`） | call_logs.data，主节点总量默认 1 GiB（`MAIN_LOG_CAPACITY_BYTES`），超出部分只记 main_truncated | 高 |
 | | Worker token（连接认证） | worker_tokens 只存 digest | 高 |
 | 主节点 → worker | tool_call：工具名与参数（命令、路径、写入全文） | runtime_calls.arguments_json | 高 |
-| 主节点 → 模型供应商 | 系统提示、用户输入、完整历史（含工具参数与 64 KiB 结果视图）；模型密钥作为 API key | messages/runtime_turns/runtime_history、jobs.input_text、runtime_checkpoints；`DATA_DIR/pi-sessions/<session>` 由 Pi SessionManager 管理（是否落盘全文 待核实） | 高 |
+| 主节点 → 模型供应商 | 系统提示、用户输入、本会话更早已结束 job 的问答（受 `SESSION_CONTEXT_CHARS` 限制）、本 job 完整历史（含工具参数与 64 KiB 结果视图）；模型密钥作为 API key | messages/runtime_turns/runtime_history、jobs.input_text、jobs.context_json、runtime_checkpoints；`DATA_DIR/pi-sessions/<session>` 由 Pi SessionManager 管理（是否落盘全文 待核实） | 高 |
 | | 供应商默认 openrouter（`MODEL_PROVIDER`/`MODEL_NAME`），密钥来自 `MODEL_API_KEY` 环境变量；Pi 另有 `DATA_DIR/pi-auth.json` 路径（是否写入密钥 待核实）。供应商侧留存策略 待核实 | 不入库 | 高 |
 | 浏览器 ↔ 主节点（HTTPS/SSE） | 管理员密码（仅登录请求）、session Cookie 与 CSRF；会话、消息、工具结果、日志、事件 | administrators.password_hash（Argon2id）、auth_sessions.digest/csrf、events.content_json | 高 |
 | 磁盘：主节点 | `DATA_DIR` 下 SQLite（含 WAL）及其备份即全部上述中心数据 | 同上；备份权限与保留期见 6.1，具体策略 待核实 | 高 |

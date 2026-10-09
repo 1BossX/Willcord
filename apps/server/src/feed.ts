@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import type { FastifyInstance } from "fastify";
+import type { CarriedContext } from "./context.js";
 import { mainSession } from "./jobs.js";
 
 /** Model view of each stream: chunks past this point may be dropped when the node is full. */
@@ -14,7 +15,7 @@ export type FeedEvent = { event_id: number; kind: string; entity_id: string; ses
 
 const JOB_VIEW = `SELECT j.job_id,j.session_id,j.worker_id,j.client_request_id,j.input_text,j.state,j.queue_seq,j.created_at,j.started_at,j.wait_until,
   j.cancel_requested,j.cancel_reason,j.end_reason,j.max_tool_calls,j.max_tokens,j.max_runtime_secs,j.deadline_at,
-  r.tool_calls_used,r.tokens_used,j.parent_job_id,j.delegation_id,j.result_json,j.verify_command,
+  r.tool_calls_used,r.tokens_used,j.parent_job_id,j.delegation_id,j.result_json,j.verify_command,j.context_json,
   CASE WHEN j.state IN ('queued','waiting_worker') AND j.queue_seq IS NOT NULL THEN (SELECT COUNT(*) FROM jobs q WHERE q.worker_id=j.worker_id AND q.state IN ('queued','waiting_worker') AND q.queue_seq<=j.queue_seq) ELSE NULL END AS queue_position,
   (SELECT json_group_array(json_object('job_id',c.job_id,'session_id',c.session_id,'delegation_id',c.delegation_id,'worker_id',c.worker_id,
      'state',c.state,'end_reason',c.end_reason,'cancel_requested',c.cancel_requested,'result',json(c.result_json)))
@@ -23,12 +24,17 @@ const JOB_VIEW = `SELECT j.job_id,j.session_id,j.worker_id,j.client_request_id,j
 
 const CHILD_FAILED = new Set(["failed", "cancelled"]);
 
-/** A job as the UI shows it: budget use, queue place, and its delegated children with their results. */
+/**
+ * A job as the UI shows it: budget use, queue place, its delegated children
+ * with their results, and how many earlier exchanges of its session it carries.
+ */
 function jobRow(row: any) {
-  const { children_json, ...job } = row;
+  const { children_json, context_json, ...job } = row;
   const children = JSON.parse(children_json) as Array<{ state: string }>;
+  const context = context_json ? JSON.parse(context_json) as CarriedContext : null;
   return {
     ...job, children,
+    context: context && { jobs: context.jobs.length, omitted: context.omitted },
     children_summary: {
       total: children.length,
       succeeded: children.filter((c) => c.state === "succeeded").length,

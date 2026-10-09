@@ -7,6 +7,7 @@ import type { WorkerFrame } from "@worker-plane/protocol";
 import { requestHash } from "@worker-plane/protocol";
 import { mainFault } from "./fault.js";
 import { delegate, nextQueueSeq, readyState } from "./jobs.js";
+import { freezeContext, omittedNote, priorContext } from "./context.js";
 import { logView } from "./feed.js";
 
 type Socket = { readyState: number; send(data: string): void };
@@ -84,7 +85,7 @@ export class ExecutionCoordinator {
     readonly connections: Map<string, Connection>,
     readonly now = Date.now,
     readonly runJob?: (job: any) => Promise<void>,
-    readonly options: { budget?: Budget; dataDir?: string; fakeScript?: (job: any) => ScriptStep[]; toolResultTimeoutMs?: number; logCapacityBytes?: number } = {},
+    readonly options: { budget?: Budget; dataDir?: string; fakeScript?: (job: any, messages: any[]) => ScriptStep[]; toolResultTimeoutMs?: number; logCapacityBytes?: number } = {},
   ) {
     // A draft still streaming belongs to a process that is gone.
     db.prepare("UPDATE model_drafts SET state='interrupted',updated_at=? WHERE state='streaming'").run(now());
@@ -658,8 +659,19 @@ export class ExecutionCoordinator {
     return row.state === "running" && row.runtime_generation === job.runtime_generation && !this.closed;
   }
 
-  /** Rebuild the Pi transcript from SQLite; a partial session file is never trusted. */
+  /**
+   * Rebuild the Pi transcript from SQLite; a partial session file is never
+   * trusted. The session's earlier exchanges the job carries come first.
+   */
   transcript(jobId: string) {
+    const prior = priorContext(this.db, jobId), own = this.ownTranscript(jobId);
+    const messages = structuredClone([...prior.messages, ...own]);
+    if (prior.omitted) messages[0].content = [omittedNote(prior.omitted), ...messages[0].content];
+    return messages;
+  }
+
+  /** The job's own history: its user message, committed turns with their results, its answer. */
+  private ownTranscript(jobId: string) {
     const entries = this.db.prepare("SELECT entry_key,turn_key,message_json FROM runtime_history WHERE job_id=? ORDER BY history_seq").all(jobId) as Array<{ entry_key: string; turn_key: string | null; message_json: string | null }>;
     const messages: any[] = [];
     for (const entry of entries) {
@@ -687,7 +699,12 @@ export class ExecutionCoordinator {
     const modelName = fakeMode ? "gpt-4o-mini" : (process.env.MODEL_NAME ?? "deepseek/deepseek-v4.1-flash");
     const apiKey = fakeMode ? "p2-scripted-provider" : (process.env.MODEL_API_KEY ?? process.env.OPENROUTER_API_KEY);
     if (!apiKey) throw new Error("MODEL_API_KEY (or OPENROUTER_API_KEY) is required to execute jobs");
-    this.db.prepare("INSERT OR IGNORE INTO runtime_history(job_id,entry_key,message_json) VALUES(?,?,?)").run(job.job_id, `user:${job.job_id}`, JSON.stringify({ role: "user", content: [{ type: "text", text: job.verify_command ? `${job.input_text}\n\nWhen you finish, the main node runs this verification command in this workspace; the step succeeds only if it exits 0:\n${job.verify_command}` : job.input_text }], timestamp: job.created_at }));
+    // The first run fixes the earlier exchanges the job carries, with its user message.
+    this.db.transaction(() => {
+      if (this.db.prepare("SELECT 1 FROM runtime_history WHERE job_id=? AND entry_key=?").get(job.job_id, `user:${job.job_id}`)) return;
+      freezeContext(this.db, job.job_id);
+      this.db.prepare("INSERT INTO runtime_history(job_id,entry_key,message_json) VALUES(?,?,?)").run(job.job_id, `user:${job.job_id}`, JSON.stringify({ role: "user", content: [{ type: "text", text: job.verify_command ? `${job.input_text}\n\nWhen you finish, the main node runs this verification command in this workspace; the step succeeds only if it exits 0:\n${job.verify_command}` : job.input_text }], timestamp: job.created_at }));
+    })();
     // Committed intents from an earlier run finish first, in order, with their original IDs.
     const open = this.db.prepare("SELECT call_id FROM runtime_calls WHERE job_id=? AND status IN ('committed','dispatched','unknown') ORDER BY call_seq").all(job.job_id) as Array<{ call_id: string }>;
     const main = job.session_kind === "main";
@@ -743,8 +760,8 @@ export class ExecutionCoordinator {
       this.streamDrafts(job, session);
       if (fakeMode) {
         const faux = await import("@earendil-works/pi-ai");
-        const committedTurns = messages.filter((m) => m.role === "assistant").length;
-        const steps = (this.options.fakeScript?.(job) ?? p2Script(job)).slice(committedTurns);
+        const committedTurns = this.ownTranscript(job.job_id).filter((m) => m.role === "assistant").length;
+        const steps = (this.options.fakeScript?.(job, messages) ?? p2Script(job)).slice(committedTurns);
         // A slow stream lets a test see, and interrupt, a draft before it commits.
         const tokensPerSecond = Math.max(0, ...steps.map((step) => step.tokens_per_second ?? 0)) || undefined;
         const core = faux.createFauxCore({ provider: "openai", api: "openai", models: [{ id: "gpt-4o-mini" }], tokensPerSecond });

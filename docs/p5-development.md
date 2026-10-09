@@ -115,7 +115,18 @@ P5-A 提交时留下的缺口（依赖满足后入队、等待集合、父取消
 
 - `summary` 取最后一条回答，`evidence_call_ids` 是已完成的调用，`exit_code` 取最后一次 bash 的退出码，`truncated` 表示有输出流被截断。
 - Main job 的结果额外列出 `children`。
-- 委派出来的步骤只有最后一条命令退出码为 0 才算成功，否则以 `failed` + `last_command_failed` 结束，测试失败不会放行下一步。用户自己的任务不受这条规则影响。
+- `verification` 记录验证调用的 ID、状态和退出码（见下）。
+
+### 验证命令（`migrations/009_p5_verify.sql`）
+
+worker 上的模型只有 read/write/bash，无法报告"失败"，正常结束就会记为成功。所以由 Main 决定子任务怎样算成功：
+
+- `delegate` 新增可选参数 `verify`：一条 shell 命令，属于委派内容的一部分，计入幂等哈希，存在 `jobs.verify_command`。
+- 子任务的第一条用户消息会附上这条命令，告诉模型结束后会怎样验证。
+- 子任务的模型给出最终回答后，主节点在同一个事务里提交这条回答和一次服务端发起的 bash 调用（`verify-<job_id>`），然后在同一个 workspace 执行它。这次调用不计入工具次数预算。
+- 退出码为 0 才是 `succeeded`；否则以 `failed` + `verification_failed` 结束，依赖它的步骤以 `dependency_failed` 结束。
+- 提交最终回答后主节点崩溃，恢复时不会再调用模型，只把验证调用跑完：未发送的重新发送，已发送的按 P3 规则对账。
+- 不带 `verify` 的子任务，以及用户自己的任务，仍以模型正常结束为成功。工具说明要求 Main 给被依赖的步骤带上 `verify`，并把有依赖的步骤放在同一轮委派。
 
 ### 验证
 
@@ -123,8 +134,8 @@ P5-A 提交时留下的缺口（依赖满足后入队、等待集合、父取消
 
 | 场景 | 结果 |
 |---|---|
-| A 测试成功 → B 写说明 | 父任务 `waiting_children`，不占执行槽，等待期间模型轮次不增加；B 在 A 结束前没有 `queue_seq`；执行顺序 test-start、test-end、doc；子任务和父任务都有结构化结果；两条子任务结果各进入父任务历史一次 |
-| A 以退出码 3 失败；A 运行中被取消 | A 为 `failed`/`last_command_failed`，`exit_code=3`；两种情况下 B 都是 `failed`/`dependency_failed`，doc 为 0，被取消的命令没有后续副作用 |
+| A 测试成功 → B 写说明 | 父任务 `waiting_children`，不占执行槽，等待期间模型轮次不增加；A 的验证命令退出码为 0，证据里包括 `verify-<job_id>`，A 的提示附有这条命令；B 在 A 结束前没有 `queue_seq`；执行顺序 test-start、test-end、doc；子任务和父任务都有结构化结果；两条子任务结果各进入父任务历史一次 |
+| A 自己的命令成功并报告完成，但验证命令 `exit 3` 失败；A 运行中被取消 | A 为 `failed`/`verification_failed`，`exit_code=3`；两种情况下 B 都是 `failed`/`dependency_failed`，doc 为 0，被取消的命令没有后续副作用 |
 | 父任务等待期间取消 | 立即返回 `cancel_requested`，子命令确认终止后父子都变为 `cancelled`；doc 和 late 都为 0；worker 随后能正常执行用户任务 |
 | worker 离线时委派，主节点重启，再启动 worker | 父任务从数据库恢复；子任务只执行一次；只有一个子 job 和一个 delegate 调用 |
 | 直接改库让子任务结束（模拟丢失的唤醒） | 定时扫描让父任务恢复并完成，结果里子任务为 `cancelled` |

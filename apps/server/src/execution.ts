@@ -637,7 +637,7 @@ export class ExecutionCoordinator {
     const modelName = fakeMode ? "gpt-4o-mini" : (process.env.MODEL_NAME ?? "deepseek/deepseek-v4.1-flash");
     const apiKey = fakeMode ? "p2-scripted-provider" : (process.env.MODEL_API_KEY ?? process.env.OPENROUTER_API_KEY);
     if (!apiKey) throw new Error("MODEL_API_KEY (or OPENROUTER_API_KEY) is required to execute jobs");
-    this.db.prepare("INSERT OR IGNORE INTO runtime_history(job_id,entry_key,message_json) VALUES(?,?,?)").run(job.job_id, `user:${job.job_id}`, JSON.stringify({ role: "user", content: [{ type: "text", text: job.input_text }], timestamp: job.created_at }));
+    this.db.prepare("INSERT OR IGNORE INTO runtime_history(job_id,entry_key,message_json) VALUES(?,?,?)").run(job.job_id, `user:${job.job_id}`, JSON.stringify({ role: "user", content: [{ type: "text", text: job.verify_command ? `${job.input_text}\n\nWhen you finish, the main node runs this verification command in this workspace; the step succeeds only if it exits 0:\n${job.verify_command}` : job.input_text }], timestamp: job.created_at }));
     // Committed intents from an earlier run finish first, in order, with their original IDs.
     const open = this.db.prepare("SELECT call_id FROM runtime_calls WHERE job_id=? AND status IN ('committed','dispatched','unknown') ORDER BY call_seq").all(job.job_id) as Array<{ call_id: string }>;
     const main = job.session_kind === "main";
@@ -646,6 +646,8 @@ export class ExecutionCoordinator {
       if (main) this.localTool(job, call_id); else await this.dispatch(job.job_id, call_id);
     }
     if (!this.current(job)) return;
+    // After the final answer only the verification remains; the model is not asked again.
+    if (job.verify_command && this.db.prepare("SELECT 1 FROM runtime_history WHERE job_id=? AND entry_key=?").get(job.job_id, `final:${job.job_id}`)) return this.settleVerification(job);
     if (main) this.recordChildResults(job.job_id);
     const messages = this.transcript(job.job_id);
     const pi = await import("@earendil-works/pi-coding-agent");
@@ -661,7 +663,7 @@ export class ExecutionCoordinator {
     const tools = main ? [
       { name: "list_workers", label: "list_workers", description: "List worker machines, whether each can run work now, its queue length and its workspaces.", parameters: typebox.Type.Object({}), execute: local },
       { name: "get_job", label: "get_job", description: "Read the state and final result of a job of this task.", parameters: typebox.Type.Object({ job_id: typebox.Type.String() }), execute: local },
-      { name: "delegate", label: "delegate", description: "Start a task on one worker machine in a new, independent session. It queues behind that machine's other work. depends_on lists delegation keys or job IDs of this task that must succeed first. A repeated delegation_key returns the original task. Files are never copied between machines.", parameters: typebox.Type.Object({ worker_id: typebox.Type.String(), workspace_id: typebox.Type.Optional(typebox.Type.String()), prompt: typebox.Type.String(), delegation_key: typebox.Type.Optional(typebox.Type.String()), depends_on: typebox.Type.Optional(typebox.Type.Array(typebox.Type.String())) }), execute: local },
+      { name: "delegate", label: "delegate", description: "Start a task on one worker machine in a new, independent session. It queues behind that machine's other work. depends_on lists delegation keys or job IDs of this task that must succeed first. A repeated delegation_key returns the original task. Files are never copied between machines. verify is a shell command the main node runs in that workspace after the task's final answer; the task succeeds only if it exits 0, so give it to any step others depend on. After this turn you wait until every delegated task has finished, so delegate dependent steps together in one turn.", parameters: typebox.Type.Object({ worker_id: typebox.Type.String(), workspace_id: typebox.Type.Optional(typebox.Type.String()), prompt: typebox.Type.String(), delegation_key: typebox.Type.Optional(typebox.Type.String()), depends_on: typebox.Type.Optional(typebox.Type.Array(typebox.Type.String())), verify: typebox.Type.Optional(typebox.Type.String()) }), execute: local },
     ] : [
       { name: "read", label: "read", description: "Read bounded UTF-8 text from the fixed remote workspace.", parameters: typebox.Type.Object({ path: typebox.Type.String(), offset: typebox.Type.Optional(typebox.Type.Integer({ minimum: 0 })), limit: typebox.Type.Optional(typebox.Type.Integer({ minimum: 1, maximum: 16384 })) }), execute: async (id: string) => this.piTool(job, id) },
       { name: "write", label: "write", description: "Atomically write a UTF-8 file in the fixed remote workspace. expected_hash is the current SHA-256 or 'missing'.", parameters: typebox.Type.Object({ path: typebox.Type.String(), content: typebox.Type.String(), expected_hash: typebox.Type.String() }), execute: async (id: string) => this.piTool(job, id) },
@@ -714,6 +716,22 @@ export class ExecutionCoordinator {
       }
       if (modelError && this.current(job)) throw new Error(`model_error: ${modelError}`);
     } finally { this.sessions.delete(job.job_id); session?.dispose(); await (runtime as any).dispose?.(); }
+    if (finished && job.verify_command && this.current(job)) {
+      await this.dispatch(job.job_id, `verify-${job.job_id}`);
+      this.settleVerification(job);
+    }
+  }
+
+  /** The verification's exit code alone decides whether a delegated step succeeded. */
+  private settleVerification(job: any) {
+    this.db.transaction(() => {
+      if (!this.current(job)) return;
+      const row = this.call(job.job_id, `verify-${job.job_id}`);
+      if (!row || !SETTLED.has(row.status)) return;
+      const record = JSON.parse(row.result_json!) as ToolRecord;
+      const passed = row.status === "completed" && record.ok && record.result?.exit_code === 0;
+      this.db.prepare("UPDATE jobs SET state=?,end_reason=? WHERE job_id=? AND state='running'").run(passed ? "succeeded" : "failed", passed ? "completed" : "verification_failed", job.job_id);
+    })();
   }
 
   private commitTurn(job: any, turnKey: string, assistantMessage: any, calls: any[]) {
@@ -754,10 +772,18 @@ export class ExecutionCoordinator {
       if (this.openChildren(job.job_id)) { this.db.prepare("UPDATE jobs SET state='waiting_children' WHERE job_id=? AND state='running'").run(job.job_id); return false; }
       this.db.prepare("INSERT INTO runtime_history(job_id,entry_key,message_json) VALUES(?,?,?)").run(job.job_id, `final:${job.job_id}`, JSON.stringify(message));
       this.db.prepare("INSERT INTO messages(message_id,session_id,job_id,seq,content_json) SELECT ?,?,?,COALESCE(MAX(seq),0)+1,? FROM messages WHERE session_id=?").run(randomUUID(), job.session_id, job.job_id, JSON.stringify({ role: "assistant", content: message.content }), job.session_id);
-      // A delegated step succeeds only if its last command did: a failed test never unblocks the next step.
-      const failedCommand = job.parent_job_id ? lastCommandFailure(this.db, job.job_id) : undefined;
-      this.db.prepare("UPDATE jobs SET state=?,end_reason=? WHERE job_id=? AND state='running'").run(failedCommand ? "failed" : "succeeded", failedCommand ?? "completed", job.job_id);
       this.recordUsage(job, `final:${job.job_id}`, message);
+      if (job.verify_command) {
+        // The step is not done yet: the verification call commits with the answer and runs next.
+        const callId = `verify-${job.job_id}`, turnKey = `verify:${job.job_id}`, args = { command: job.verify_command };
+        const assistant = { role: "assistant", content: [{ type: "toolCall", id: callId, name: "bash", arguments: args }], timestamp: this.now() };
+        const seq = (this.db.prepare("SELECT COALESCE(MAX(call_seq),0)+1 n FROM runtime_calls WHERE job_id=?").get(job.job_id) as { n: number }).n;
+        const request = { worker_id: job.worker_id, job_id: job.job_id, call_id: callId, call_seq: seq, workspace_id: job.workspace_id, config_version: job.workspace_version, tool: "bash", arguments: args };
+        this.db.prepare("INSERT INTO runtime_turns VALUES(?,?,?,?,?)").run(job.job_id, turnKey, JSON.stringify(assistant), hash(assistant), this.now());
+        this.db.prepare("INSERT INTO runtime_calls(job_id,turn_key,call_id,call_seq,request_hash,tool_name,arguments_json,status) VALUES(?,?,?,?,?,'bash',?,'committed')").run(job.job_id, turnKey, callId, seq, requestHash(request), JSON.stringify(args));
+        return true;
+      }
+      this.db.prepare("UPDATE jobs SET state='succeeded',end_reason='completed' WHERE job_id=? AND state='running'").run(job.job_id);
       return true;
     })();
   }
@@ -1119,13 +1145,6 @@ function p2Script(job: any): ScriptStep[] {
 
 export function newJobId() { return randomUUID(); }
 
-/** Exit code and termination of a job's last bash call that did not succeed, if its last command failed. */
-function lastCommandFailure(db: Database.Database, jobId: string) {
-  const last = db.prepare("SELECT result_json FROM runtime_calls WHERE job_id=? AND tool_name='bash' ORDER BY call_seq DESC LIMIT 1").get(jobId) as { result_json: string | null } | undefined;
-  if (!last?.result_json) return undefined;
-  const record = JSON.parse(last.result_json) as ToolRecord;
-  return record.ok && record.result?.exit_code === 0 ? undefined : "last_command_failed";
-}
 
 /**
  * The structured outcome of a finished job: what happened, the model's own
@@ -1148,6 +1167,7 @@ export function finalResult(db: Database.Database, jobId: string) {
     if (record.result?.logs?.truncated || STREAMS.some((s) => record.result?.output?.[s]?.truncated)) truncated = true;
   }
   const children = job.worker_id === null ? (db.prepare("SELECT job_id,delegation_id,state FROM jobs WHERE parent_job_id=? ORDER BY created_at,rowid").all(jobId) as any[]) : undefined;
+  const verification = db.prepare("SELECT call_id,status,result_json FROM runtime_calls WHERE job_id=? AND turn_key=?").get(jobId, `verify:${jobId}`) as { call_id: string; status: string; result_json: string | null } | undefined;
   return {
     outcome: job.state,
     summary: text || job.end_reason || job.state,
@@ -1157,6 +1177,7 @@ export function finalResult(db: Database.Database, jobId: string) {
     failed_call_ids: failedCalls,
     truncated,
     ...(children ? { children } : {}),
+    ...(verification ? { verification: { call_id: verification.call_id, status: verification.status, exit_code: verification.result_json ? JSON.parse(verification.result_json).result?.exit_code ?? null : null } } : {}),
   };
 }
 

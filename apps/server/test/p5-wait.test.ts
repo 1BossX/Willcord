@@ -18,14 +18,14 @@ const resultOf = (s: Scenario, id: string) => JSON.parse(job(s, id).result_json)
 const mainSession = async (s: Scenario) => (await s.api("GET", "/api/main")).json().session_id as string;
 
 /** Test on A, then write notes on B once the test passed: one turn, then a summary. */
-const pipeline = (test: string): ScriptStep[] => [
-  { calls: [delegate("p-test", { prompt: test, delegation_key: "test" }), delegate("p-doc", { prompt: "doc", delegation_key: "doc", depends_on: ["test"] })] },
+const pipeline = (test: string, verify: string): ScriptStep[] => [
+  { calls: [delegate("p-test", { prompt: test, delegation_key: "test", verify }), delegate("p-doc", { prompt: "doc", delegation_key: "doc", depends_on: ["test"] })] },
   { text: "pipeline finished" },
 ];
 
 test("P5-B test then notes: the parent waits without model calls, B runs only after A succeeded", { timeout: 60000 }, async () => {
   const s = await startScenario({ scripts: {
-    plan: pipeline("test-ok"),
+    plan: pipeline("test-ok", "grep -q test-end marker.log"),
     "test-ok": bash("ok-1", "echo test-start >> marker.log; sleep 2; echo test-end >> marker.log"),
     doc: bash("doc-1", "echo doc >> marker.log"),
   } });
@@ -41,8 +41,11 @@ test("P5-B test then notes: the parent waits without model calls, B runs only af
     await s.until(() => job(s, parent).state === "succeeded");
     assert.deepEqual(lines(s), ["test-start", "test-end", "doc"]);
     const a = resultOf(s, child(s, parent, "test").job_id);
+    const testJob = child(s, parent, "test").job_id;
     assert.deepEqual([a.outcome, a.exit_code, a.error, a.truncated, a.summary], ["succeeded", 0, null, false, "ok-1 done"]);
-    assert.deepEqual(a.evidence_call_ids, ["ok-1"]);
+    assert.deepEqual(a.evidence_call_ids, ["ok-1", `verify-${testJob}`]);
+    assert.deepEqual(a.verification, { call_id: `verify-${testJob}`, status: "completed", exit_code: 0 });
+    assert.match(JSON.parse(s.one("SELECT message_json FROM runtime_history WHERE entry_key=?", `user:${testJob}`).message_json).content[0].text, /grep -q test-end marker.log/, "the child is told how it will be verified");
     const p = resultOf(s, parent);
     assert.equal(p.outcome, "succeeded");
     assert.deepEqual(p.children.map((c: any) => [c.delegation_id, c.state]), [["test", "succeeded"], ["doc", "succeeded"]]);
@@ -53,9 +56,10 @@ test("P5-B test then notes: the parent waits without model calls, B runs only af
 
 test("P5-B a failed or cancelled prerequisite never starts B", { timeout: 90000 }, async () => {
   const s = await startScenario({ scripts: {
-    failing: pipeline("test-fail"),
+    failing: pipeline("test-fail", "exit 3"),
     cancelling: [{ calls: [delegate("c-test", { prompt: "test-long", delegation_key: "test" }), delegate("c-doc", { prompt: "doc", delegation_key: "doc", depends_on: ["test"] })] }, { text: "stopped" }],
-    "test-fail": bash("fail-1", "echo test-fail >> marker.log; exit 3"),
+    // The child's own command passes and it reports success; only the verification fails.
+    "test-fail": bash("fail-1", "echo test-fail >> marker.log"),
     "test-long": bash("long-1", "echo long >> marker.log; sleep 30; echo late >> marker.log"),
     doc: bash("doc-1", "echo doc >> marker.log"),
   } });
@@ -65,7 +69,7 @@ test("P5-B a failed or cancelled prerequisite never starts B", { timeout: 90000 
     const failing = await s.submit(main, "failing");
     await s.until(() => job(s, failing).state === "succeeded");
     const a = resultOf(s, child(s, failing, "test").job_id);
-    assert.deepEqual([a.outcome, a.exit_code, a.error], ["failed", 3, "last_command_failed"]);
+    assert.deepEqual([a.outcome, a.exit_code, a.error, a.verification.exit_code], ["failed", 3, "verification_failed", 3]);
     const b = child(s, failing, "doc");
     assert.deepEqual([b.state, b.end_reason, b.queue_seq], ["failed", "dependency_failed", null]);
     assert.equal(s.count("doc"), 0);

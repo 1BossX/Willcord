@@ -5,6 +5,10 @@
 # Workers trust the internal root: copy Caddy's root.crt (see docs/operations.md)
 # to each worker and point SSL_CERT_FILE at it.
 {
+	# Caddy's admin API, used by `caddy reload`; local only.
+	admin {$CADDY_ADMIN:localhost:2019}
+	# The root is copied to workers and browsers by hand, never installed here.
+	skip_install_trust
 	pki {
 		ca local {
 			name "Worker Plane"

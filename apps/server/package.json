@@ -11,7 +11,8 @@
     "test": "node --import tsx --test --test-force-exit test/*.test.ts",
     "dev": "tsx src/main.ts",
     "start": "node dist/main.js",
-    "admin": "node dist/admin.js"
+    "admin": "node dist/admin.js",
+    "test:release": "node --import tsx --test --test-force-exit release-test/*.test.ts"
   },
   "dependencies": {
     "@worker-plane/protocol": "workspace:*",

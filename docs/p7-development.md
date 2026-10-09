@@ -46,7 +46,7 @@
 |---|---|
 | `backup <dest>` | 用 SQLite backup API 在线备份，主节点不停。备份后做完整性检查，文件权限 0600 |
 | `verify <file>` | 完整性检查，并报告恢复依赖的计数：未结清调用、调用序号水位、队列水位、等待子任务的父任务、未结束的子任务 |
-| `restore <file>` | 要求主节点已停止（检查 `main.lock`）。现有库连同 `-wal`、`-shm` 改名放在旁边，不删除。备份放回原位后先执行迁移，再写入 `paused=1, reason='restored'` |
+| `restore <file>` | 要求主节点已停止（检查 `main.lock`）。先在旁边的临时文件里生成恢复后的库，执行迁移并写入 `paused=1, reason='restored'`；任何一步失败，现有库都不受影响。成功后，现有库和遗留的 `-wal`、`-shm` 各自改名放在旁边（不删除），再把临时文件换到原位 |
 
 - Pi 会话目录 `pi-sessions/` 不需要备份：每次运行都从 SQLite 里的 transcript 重建。
 - 升级：`openDatabase` 发现有待执行的迁移时，先用 `VACUUM INTO` 把当前库复制到 `pre-migrate-<最后版本>-<时间>.sqlite`，再迁移。新库没有可保留的内容，不复制。
@@ -67,7 +67,7 @@
 - 删除过期的登录会话。
 - 终态任务的调用结束超过保留期后，删除输出分块，并在 `call_log_state` 上标记 `pruned_at`。提交给模型的结果在 `runtime_calls.result_json` 里，不受影响。
 - 删除 `pi-sessions/<session>`，条件是该会话的所有任务都已结束，并且都早于保留期开始。
-- 数据目录剩余空间低于 `MAIN_MIN_FREE_BYTES` 时以 `disk_low` 暂停调度。
+- 数据目录剩余空间低于 `MAIN_MIN_FREE_BYTES` 时以 `disk_low` 暂停调度。启动时先做这项检查，再执行恢复，所以磁盘已满时恢复流程不会启动任何任务。
 
 ### worker 优雅停止（`worker/src/main.rs`）
 
@@ -88,9 +88,11 @@
 7. 遍历所有已注册路由：除 `/health`、`/auth/login`、`/auth/session`、`/ws/worker` 外，未登录一律 401；`/ws/worker` 没有 worker token 也是 401。
 8. `ROLE_TOOLS.main` 恰好是 `list_workers`、`delegate`、`get_job`。脚本让 Main 调用 `bash` 时，没有任何 `tool_call` 发到 worker，side effect 为 0。
 9. worker 源码和 `Cargo.toml` 不含任何模型客户端、模型密钥或模型变量。
+10. 恢复一个无法迁移的备份时失败，现有库原样保留，也不留下临时文件。只剩 `-wal` 没有主库时（改名中途崩溃），这个 WAL 也会被移开。
+11. 磁盘已满时重启，恢复流程不会启动排队中的 Main 任务，调度以 `disk_low` 暂停。去掉这个修复后此测试失败。
 
 另外：`health.test.ts` 更新为新的返回结构，`identity.test.ts` 的迁移计数改为 12，web 的 `feed.test.ts` 增加暂停状态的快照和事件测试。
 
 浏览器检查：在走查环境（`test/support/walkthrough.ts`）里通过 API 暂停调度，页面显示暂停横幅和说明。在横幅里填写说明并点"恢复调度"后，横幅随 `dispatch` 事件消失；再次通过 API 暂停，横幅不刷新页面就出现。web 的 SSE 订阅加上了 `dispatch` 这一类事件。
 
-测试：server 96、web 7、protocol 3 项全部通过。
+测试：server 98、web 7、protocol 3 项全部通过。

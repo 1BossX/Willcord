@@ -1,5 +1,5 @@
 import Database from "better-sqlite3";
-import { chmodSync, existsSync, renameSync } from "node:fs";
+import { chmodSync, existsSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { openDatabase } from "./storage.js";
 
@@ -65,15 +65,29 @@ export function restore(dataDir: string, file: string, now = Date.now()) {
   if (summary.integrity !== "ok") throw new Error(`backup failed integrity check: ${summary.integrity}`);
   const target = join(dataDir, "main.sqlite");
   const aside = `${target}.replaced-${now}`;
-  // The current database and its WAL move aside together; nothing is deleted.
-  if (existsSync(target)) for (const suffix of ["", "-wal", "-shm"]) if (existsSync(target + suffix)) renameSync(target + suffix, aside + suffix);
-  const source = new Database(file, { readonly: true, fileMustExist: true });
-  try { source.prepare("VACUUM INTO ?").run(target); } finally { source.close(); }
-  chmodSync(target, 0o600);
-  // An older backup is migrated now, so the pause below is the first thing it records.
-  const db = openDatabase(target);
+  const staged = `${target}.restoring-${now}`;
+  // The restored database is built and migrated beside the live one first; a
+  // failure here leaves the live database untouched.
   try {
-    db.prepare("UPDATE dispatch_state SET paused=1,reason='restored',note=?,since=? WHERE id=1").run(`restored from ${file}`, now);
-  } finally { db.close(); }
-  return { ...summary, replaced: existsSync(aside) ? aside : null };
+    const source = new Database(file, { readonly: true, fileMustExist: true });
+    try { source.prepare("VACUUM INTO ?").run(staged); } finally { source.close(); }
+    chmodSync(staged, 0o600);
+    // An older backup is migrated now, so the pause below is the first thing it records.
+    const db = openDatabase(staged);
+    try {
+      db.prepare("UPDATE dispatch_state SET paused=1,reason='restored',note=?,since=? WHERE id=1").run(`restored from ${file}`, now);
+      // A single self-contained file: no WAL of its own to carry across the rename.
+      db.pragma("journal_mode = DELETE");
+    } finally { db.close(); }
+  } catch (error) {
+    for (const suffix of ["", "-wal", "-shm", "-journal"]) rmSync(staged + suffix, { force: true });
+    throw error;
+  }
+  // The live database and any WAL or SHM it left move aside, each on its own,
+  // so no stale WAL can be applied to the restored file; nothing is deleted.
+  let replaced = false;
+  for (const suffix of ["", "-wal", "-shm"])
+    if (existsSync(target + suffix)) { renameSync(target + suffix, aside + suffix); replaced = true; }
+  renameSync(staged, target);
+  return { ...summary, replaced: replaced ? aside : null };
 }

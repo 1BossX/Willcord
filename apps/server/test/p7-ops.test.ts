@@ -264,3 +264,47 @@ test("P7-A the worker has no model client, model key or model setting", () => {
   for (const text of sources)
     assert.doesNotMatch(text, /openrouter|anthropic|openai|MODEL_|API_KEY|pi-ai|pi-coding-agent/i);
 });
+
+test("P7-A restore never leaves a half-written database or a stale WAL behind", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "worker-plane-restore-"));
+  try {
+    const live = join(dir, "main.sqlite");
+    openDatabase(live).close();
+    const copy = join(dir, "copy.sqlite");
+    await backup(dir, copy);
+    // A backup that cannot be migrated fails before the live database is touched.
+    const broken = join(dir, "broken.sqlite");
+    const b = openDatabase(broken);
+    b.prepare("DELETE FROM schema_migrations WHERE version='012_p7_ops.sql'").run();
+    b.close();
+    assert.throws(() => restore(dir, broken));
+    assert.deepEqual(readdirSync(dir).filter((f) => f.startsWith("main.sqlite")).sort(), ["main.sqlite"]);
+    assert.equal(inspect(live).integrity, "ok");
+    // A WAL left without its database (a crash mid-rename) moves aside too.
+    rmSync(live);
+    writeFileSync(`${live}-wal`, "stale");
+    const restored = restore(dir, copy, 42);
+    assert.equal(restored.replaced, `${live}.replaced-42`);
+    assert.ok(existsSync(`${live}.replaced-42-wal`) && !existsSync(`${live}-wal`));
+    assert.equal(inspect(live).integrity, "ok");
+    assert.equal(readdirSync(dir).filter((f) => f.includes("restoring")).length, 0);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("P7-A a full disk at startup pauses before recovery starts anything", { timeout: 60000 }, async () => {
+  let free = 10_000;
+  const s = await startScenario({ scripts: { plan: [{ text: "main done" }] }, app: { minFreeBytes: 1000, maintenanceMs: 3600_000, freeBytes: () => free } });
+  try {
+    assert.equal((await s.api("POST", "/api/ops/pause", { note: "hold" })).statusCode, 200);
+    const job = await s.submit(await mainSession(s), "plan");
+    await s.stopMain();
+    free = 10;
+    const db = openDatabase(join(s.dir, "main.sqlite"));
+    db.prepare("UPDATE dispatch_state SET paused=0,reason=NULL,note=NULL,since=NULL").run();
+    db.close();
+    await s.startMain();
+    await sleep(1000);
+    assert.equal(s.one("SELECT reason FROM dispatch_state").reason, "disk_low");
+    assert.equal(s.state(job), "queued", "the recovery pass did not start the queued Main job");
+  } finally { await s.close(); }
+});

@@ -85,7 +85,8 @@ export async function createApp(
   let shuttingDown = false;
   let recovered = false;
   // Main jobs need no worker: a restart resumes them right away.
-  setImmediate(() => { coordinator.advance(); recovered = true; void coordinator.pumpMain(); });
+  // The disk check runs before recovery, so a full disk pauses before anything starts.
+  setImmediate(() => { runMaintenance(); coordinator.advance(); recovered = true; void coordinator.pumpMain(); });
   /** Scheduling is ready once the startup recovery pass ran, the database answers and shutdown has not begun. */
   const schedulingReady = () => {
     if (!recovered || shuttingDown) return false;
@@ -681,7 +682,6 @@ export async function createApp(
     }
   };
   const runMaintenance = () => { if (shuttingDown) return; try { maintain(); } catch (error) { app.log.error({ err: error }, "maintenance failed"); } };
-  setImmediate(runMaintenance);
   const maintenanceTimer = setInterval(runMaintenance, options.maintenanceMs ?? 3600_000);
   maintenanceTimer.unref();
   const timer = setInterval(() => {

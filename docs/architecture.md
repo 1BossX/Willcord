@@ -297,7 +297,7 @@ SSE 用单调 event_id 补放，支持 Last-Event-ID 或 after。UI 先取带游
 
 输出按 call_id、stream、seq 分块：worker 限额落盘，主节点保留受限缓存供离线查看。数据库存结果和日志索引，避免每个 stdout 分块形成永久业务事件。两端输出队列满或触限时继续排空管道、明确记录缺口与截断，不能让输出阻塞命令。
 
-默认每流模型结果 64 KiB、单调用日志总计 10 MiB，账本与日志另设总磁盘预算。未确认结果不得清理；补读 ACK 与 tool result ACK 分开，日志已过期明确提示。主节点流量与磁盘预算也必须有限。
+默认每流结果保留前 64 KiB，模型只看其中的前 8 KiB 加后 8 KiB（输出超出 64 KiB 时只看前 16 KiB）、单调用日志总计 10 MiB，账本与日志另设总磁盘预算。未确认结果不得清理；补读 ACK 与 tool result ACK 分开，日志已过期明确提示。主节点流量与磁盘预算也必须有限。
 
 单用户采用预配置管理员账号、Argon2id 密码 hash、服务端登录 session；Cookie 为 Secure、HttpOnly、SameSite，变更请求校验 Origin/CSRF。登录限速，不开放匿名派发。
 
@@ -314,7 +314,7 @@ Worker token 高熵、独立、可撤销，数据库只存安全校验值。撤�
 | | tool_log / log_fetch：bash 完整 stdout/stderr，worker 每调用最多 10 MiB（`CALL_LOG_LIMIT`） | call_logs.data，主节点总量默认 1 GiB（`MAIN_LOG_CAPACITY_BYTES`），超出部分只记 main_truncated | 高 |
 | | Worker token（连接认证） | worker_tokens 只存 digest | 高 |
 | 主节点 → worker | tool_call：工具名与参数（命令、路径、写入全文） | runtime_calls.arguments_json | 高 |
-| 主节点 → 模型供应商 | 系统提示、用户输入、本会话更早已结束 job 的问答（受 `SESSION_CONTEXT_CHARS` 限制）、本 job 完整历史（含工具参数与 64 KiB 结果视图）；模型密钥作为 API key | messages/runtime_turns/runtime_history、jobs.input_text、jobs.context_json、runtime_checkpoints；`DATA_DIR/pi-sessions/<session>` 由 Pi SessionManager 管理（是否落盘全文 待核实） | 高 |
+| 主节点 → 模型供应商 | 系统提示、用户输入、本会话更早已结束 job 的问答（受 `SESSION_CONTEXT_CHARS` 限制）、本 job 完整历史（含工具参数与每流至多 16 KiB 的结果视图）；模型密钥作为 API key | messages/runtime_turns/runtime_history、jobs.input_text、jobs.context_json、runtime_checkpoints；`DATA_DIR/pi-sessions/<session>` 由 Pi SessionManager 管理（是否落盘全文 待核实） | 高 |
 | | 供应商默认 openrouter（`MODEL_PROVIDER`/`MODEL_NAME`），密钥来自 `MODEL_API_KEY` 环境变量；Pi 另有 `DATA_DIR/pi-auth.json` 路径（是否写入密钥 待核实）。供应商侧留存策略 待核实 | 不入库 | 高 |
 | 浏览器 ↔ 主节点（HTTPS/SSE） | 管理员密码（仅登录请求）、session Cookie 与 CSRF；会话、消息、工具结果、日志、事件 | administrators.password_hash（Argon2id）、auth_sessions.digest/csrf、events.content_json | 高 |
 | 磁盘：主节点 | `DATA_DIR` 下 SQLite（含 WAL）及其备份即全部上述中心数据 | 同上；备份权限与保留期见 6.1，具体策略 待核实 | 高 |

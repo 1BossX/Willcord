@@ -283,7 +283,9 @@ export async function createApp(
       const session=db.prepare("SELECT * FROM sessions WHERE session_id=?").get(job.session_id) as any;
       if(session.kind==="worker"&&!workspaceCurrent(db,session.session_id)) return {code:409,error:"workspace_version_changed"};
       const created=insertJob(session,`retry:${job.job_id}:${randomBytes(8).toString("hex")}`,job.input_text,job.request_hash);
-      db.prepare("INSERT INTO attention_actions(action_id,worker_id,job_id,action,evidence,created_at) VALUES(?,?,?,'retry',?,?)").run(randomBytes(16).toString("hex"),job.worker_id,job.job_id,JSON.stringify({new_job_id:created.job_id}),now());
+      // attention_actions is per worker; a Main job retry is recorded as an event.
+      if(job.worker_id) db.prepare("INSERT INTO attention_actions(action_id,worker_id,job_id,action,evidence,created_at) VALUES(?,?,?,'retry',?,?)").run(randomBytes(16).toString("hex"),job.worker_id,job.job_id,JSON.stringify({new_job_id:created.job_id}),now());
+      else db.prepare("INSERT INTO events(created_at,content_json) VALUES(?,?)").run(now(),JSON.stringify({type:"job_retried",job_id:job.job_id,new_job_id:created.job_id}));
       return {code:202,...created,session};
     }).immediate();
     if("error" in outcome) return reply.code(outcome.code).send({error:outcome.error});

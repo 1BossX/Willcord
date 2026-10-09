@@ -61,6 +61,10 @@ test("P5-A delegate: one atomic child per delegation ID, parent injected, isolat
     const followJob = s.one("SELECT worker_id,session_id,parent_job_id FROM jobs WHERE job_id=?", follow);
     assert.deepEqual([followJob.worker_id, followJob.session_id], ["w", child.session_id]);
     assert.equal(s.count("follow"), 1, "the follow-up ran in the bound workspace");
+    const retried = await s.api("POST", `/api/jobs/${parent}/retry`);
+    assert.equal(retried.statusCode, 202, retried.body);
+    assert.notEqual(retried.json().job_id, parent);
+    assert.equal((await s.api("POST", `/api/jobs/${child.job_id}/retry`)).json().error, "delegated_job_retry_not_allowed");
     const event = s.all("SELECT content_json FROM events").map((e) => JSON.parse(e.content_json)).find((e) => e.type === "job_delegated");
     assert.equal(event.job_id, child.job_id);
   } finally { await s.close(); }

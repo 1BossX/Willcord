@@ -1,3 +1,4 @@
+mod debug;
 mod generated;
 mod ledger;
 mod logs;
@@ -75,6 +76,26 @@ struct Config {
     /// New calls are refused when less space than this is free.
     #[serde(default)]
     min_free_bytes: Option<u64>,
+}
+
+/// Static checks shared by startup and `debug`: nothing here touches the data directory.
+fn validate(config: &Config) -> Result<(), Error> {
+    if !config.url.starts_with("wss://") {
+        return Err("WSS required".into());
+    }
+    if config.workspaces.iter().filter(|w| w.is_default).count() != 1 {
+        return Err("configure exactly one default workspace".into());
+    }
+    let mut ids = std::collections::HashSet::new();
+    for w in &config.workspaces {
+        if !ids.insert(&w.workspace_id)
+            || !PathBuf::from(&w.path).is_absolute()
+            || !PathBuf::from(&w.path).is_dir()
+        {
+            return Err(format!("invalid workspace {}", w.workspace_id).into());
+        }
+    }
+    Ok(())
 }
 
 /// A connection-level failure. The process keeps its ledger and running calls
@@ -192,25 +213,16 @@ async fn main() -> Result<(), Error> {
     rustls::crypto::ring::default_provider()
         .install_default()
         .map_err(|_| "TLS crypto provider unavailable")?;
-    let file = std::env::args()
-        .nth(1)
-        .ok_or("usage: worker-plane-worker config.toml")?;
-    let config: Config = toml::from_str(&fs::read_to_string(file)?)?;
-    if !config.url.starts_with("wss://") {
-        return Err("WSS required".into());
+    const USAGE: &str = "usage: worker-plane-worker [debug [--json]] config.toml";
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("debug") {
+        let json = args.iter().any(|a| a == "--json");
+        let file = args[1..].iter().find(|a| *a != "--json").ok_or(USAGE)?;
+        let ok = debug::run(file, json).await;
+        std::process::exit(if ok { 0 } else { 1 });
     }
-    if config.workspaces.iter().filter(|w| w.is_default).count() != 1 {
-        return Err("configure exactly one default workspace".into());
-    }
-    let mut ids = std::collections::HashSet::new();
-    for w in &config.workspaces {
-        if !ids.insert(&w.workspace_id)
-            || !PathBuf::from(&w.path).is_absolute()
-            || !PathBuf::from(&w.path).is_dir()
-        {
-            return Err("invalid workspace".into());
-        }
-    }
+    let config: Config = toml::from_str(&fs::read_to_string(args.first().ok_or(USAGE)?)?)?;
+    validate(&config)?;
     fs::create_dir_all(&config.data_dir)?;
     #[cfg(unix)]
     {

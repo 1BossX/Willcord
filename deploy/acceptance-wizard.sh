@@ -202,7 +202,8 @@ result() {
   write_env "$key" "$verdict${NOTE:+: $NOTE}"
 }
 # A field of the JSON on stdin, e.g. json '.token' or json '.find(w=>w.worker_id==="a")?.schedulable'.
-json() { node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const v=new Function("x","return x"+process.argv[1])(JSON.parse(s));process.stdout.write(typeof v==="string"?v:JSON.stringify(v))})' "$1"; }
+# The path is the last argument, wherever this Node version puts -e's extra arguments.
+json() { node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const v=new Function("x","return x"+process.argv.at(-1))(JSON.parse(s));process.stdout.write(typeof v==="string"?v:JSON.stringify(v))})' "$1"; }
 api() {
   local method="$1" path="$2" body="${3:-}"
   curl -fsS --cacert "$STATE/ca.pem" -b "$JAR" -H "Origin: https://$SITE" -H "x-csrf-token: $(cat "$STATE/csrf" 2>/dev/null)" \

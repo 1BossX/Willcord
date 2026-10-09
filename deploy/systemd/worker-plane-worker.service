@@ -1,0 +1,28 @@
+[Unit]
+Description=Worker Plane worker
+After=network-online.target
+Wants=network-online.target
+# A revoked token makes the worker exit 1; stop retrying after a few attempts.
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+# The account that owns the workspaces; every command runs as this user.
+User=worker-plane
+Group=worker-plane
+ExecStart=/usr/local/bin/worker-plane-worker /etc/worker-plane/worker.toml
+# Trust the main node's internal CA (Caddy's root.crt) and nothing else.
+Environment=SSL_CERT_FILE=/etc/worker-plane/ca.pem
+# SIGTERM stops running commands through the cancel path and records their
+# results; allow more than kill_grace_secs + 7 s before systemd kills.
+KillSignal=SIGTERM
+TimeoutStopSec=60
+# Any process group a command left behind ends with the unit.
+KillMode=control-group
+Restart=on-failure
+RestartSec=10
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

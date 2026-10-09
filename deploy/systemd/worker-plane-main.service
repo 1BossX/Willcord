@@ -1,0 +1,31 @@
+[Unit]
+Description=Worker Plane main node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=worker-plane
+Group=worker-plane
+EnvironmentFile=/etc/worker-plane/main.env
+Environment=DATA_DIR=/var/lib/worker-plane
+WorkingDirectory=/opt/worker-plane/current/apps/server
+ExecStart=/usr/bin/env node dist/main.js
+# SIGTERM closes connections, the database and the data directory lock.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+# After a crash the data directory lock (main.lock) stays behind on purpose:
+# a restart would only be refused. An operator checks that no main process
+# runs, removes the lock and starts the unit (docs/operations.md).
+Restart=no
+StateDirectory=worker-plane
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/worker-plane
+
+[Install]
+WantedBy=multi-user.target

@@ -46,7 +46,7 @@ Caddy 对外提供 HTTPS/WSS 与静态 UI，Fastify 仅监听 127.0.0.1:3000。�
 cargo run --locked --manifest-path worker/Cargo.toml -- /absolute/private/worker.toml
 ```
 
-Worker 数据目录有 OS 独占文件锁；worker_id 与 ledger_id 持久化 SQLite，boot_id 每次启动随机变化。退出重启保留 ledger_id；用其他 worker_id 打开同一数据目录拒绝启动。连接中断时进程退出，服务重启后 worker 获得更高 epoch，必须先完成 reconcile；自动网络重连留到后续部署阶段。
+Worker 数据目录有 OS 独占文件锁；worker_id 与 ledger_id 持久化 SQLite，boot_id 每次启动随机变化。退出重启保留 ledger_id；用其他 worker_id 打开同一数据目录拒绝启动。连接中断后 worker 以 1 s 起、最长 30 s 的退避自动重连；每次重连获得更高 epoch，必须先完成 reconcile（P1 时连接中断即退出，自动重连在之后的阶段加入）。
 
 主节点首次迁移后设置 WAL/FULL/foreign_keys/busy_timeout。迁移按文件版本事务执行。已有 001 数据库升级至 002 的测试保留身份、epoch 和执行槽；重开数据库清除 online/reconciled，不恢复虚假在线状态。
 

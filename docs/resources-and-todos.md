@@ -15,7 +15,7 @@
 | 主节点可访问地址 | P2 worker 联调前 | worker 能出站访问的 HTTPS/WSS 地址；开发阶段可用临时隧道或测试网络 | 待准备 |
 | 第二台 worker | P5 双机委派联调前 | 第二台 Linux/macOS 机器及唯一 worker 身份/token | 待准备 |
 | Workspace 映射 | P2 联调前 | 每台机器的 workspace_id、cwd、repo_id、remote、默认 workspace | 待提供 |
-| 域名与证书 | P7 上线前 | 若使用自有域名，提供 DNS 控制权；否则选择其他 TLS 终结方式 | 待决定 |
+| 域名与证书 | P7 上线前 | 已决定：Caddy 内部 CA，worker 用 `SSL_CERT_FILE` 信任根证书，不需要公网域名 | 已决定 |
 | 主机与持久存储 | P7 上线前 | 单台常驻 Linux 主机；SQLite、账本、日志和备份有持久磁盘与空间预算 | 待准备 |
 | 管理员凭据配置方式 | P1 部署联调前 | 已实现 INITIAL_ADMIN_PASSWORD 首次启动环境注入；密码本身不发到聊天 | 已提供配置方式，部署联调待验证 |
 
@@ -41,26 +41,28 @@ Git CLI 使用系统钥匙串中的 GitHub 凭据；不要将凭据写入仓库�
 
 ## 集成配置模板（不填入秘密值）
 
-主节点运行时至少需要：
+主节点（`/etc/worker-plane/main.env`，模板 `deploy/main.env.example`，由 `apps/server/src/config.ts` 校验）：
 
 ```text
-DATABASE_PATH=
-SESSION_SECRET=
-INITIAL_ADMIN_PASSWORD=   # 仅首次设置流程需要，部署后移除
-MODEL_PROVIDER=
-MODEL_NAME=
+PUBLIC_BASE_URL=          # 浏览器访问的源，例如 https://plane.internal:8443
+PORT=3000
+MODEL_PROVIDER=openrouter
+MODEL_NAME=deepseek/deepseek-v4.1-flash
 MODEL_API_KEY=
-PUBLIC_BASE_URL=
+INITIAL_ADMIN_PASSWORD=   # 仅首次启动需要，之后删除
+# DATA_DIR 由 systemd 单元设置为 /var/lib/worker-plane
 ```
 
-Worker 配置至少需要：
+Worker（TOML，模板 `deploy/worker.config.toml`）：
 
 ```text
-WORKER_ID=
-WORKER_TOKEN=
-CONTROL_PLANE_WSS_URL=
-WORKER_DATA_DIR=
-WORKSPACES_FILE=
+worker_id = ""
+data_dir = ""
+url = "wss://<主节点>/ws/worker"
+token_file = ""           # 或环境变量 WORKER_TOKEN，二者选一
+[[workspaces]]            # workspace_id、config_version、path、repo_id、is_default
 ```
 
-最终变量名称以实施中的配置 schema 为准。秘密应通过部署环境变量或密钥管理器注入；不需要把秘密内容分享给协作者。
+另需 `SSL_CERT_FILE` 指向主节点内部 CA 根证书。完整步骤见 [运维手册](operations.md)。
+
+秘密应通过部署环境变量或密钥管理器注入；不需要把秘密内容分享给协作者。

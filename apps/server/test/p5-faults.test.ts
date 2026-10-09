@@ -120,7 +120,8 @@ for (const point of ["after_delegate_commit", "after_advance_commit"] as const) 
       rmSync(join(s.dataDir, "main.lock"), { recursive: true });
       await s.start();
       const parent = () => s.one("SELECT * FROM jobs WHERE client_request_id='plan'");
-      await s.until(() => parent()?.state === "succeeded", 30000);
+      // The structured result follows the terminal state in the next advance() pass.
+      await s.until(() => parent()?.state === "succeeded" && parent().result_json !== null, 30000);
       assert.equal(s.one("SELECT count(*) n FROM jobs WHERE parent_job_id=?", parent().job_id).n, 1);
       assert.equal(s.one("SELECT count(*) n FROM runtime_calls WHERE job_id=? AND tool_name='delegate'", parent().job_id).n, 1);
       assert.equal(s.count("child"), 1, "the child ran once");

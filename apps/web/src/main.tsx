@@ -770,16 +770,21 @@ function App() {
         cause instanceof Error ? cause.message : "无法连接主节点，请稍后重试。",
       );
   }
+  /** Bumped on every navigation, so a slow Main lookup cannot override a later click. */
+  const navigation = useRef(0);
   async function selectMain() {
+    const generation = ++navigation.current;
     setError("");
     setEditingSessionId(null);
     localStorage.removeItem("worker-plane-session");
     setSelectedWorker(null);
     try {
       const main = await request<Session>("/api/main");
+      if (generation !== navigation.current) return;
       setSessions((current) => current.some((s) => s.session_id === main.session_id) ? current : [main, ...current]);
       setSessionId(main.session_id);
     } catch (cause) {
+      if (generation !== navigation.current) return;
       report(cause);
       setSessionId(null);
     }
@@ -800,6 +805,7 @@ function App() {
     }, report);
   }
   function selectSession(session: Session) {
+    navigation.current++;
     setError("");
     setEditingSessionId(null);
     setSelectedWorker(session.worker_id);
@@ -811,6 +817,7 @@ function App() {
     localStorage.setItem("worker-plane-session", session.session_id);
   }
   function selectWorker(worker: Worker) {
+    navigation.current++;
     const latest = sessions.find(
       (session) =>
         session.kind === "worker" && session.worker_id === worker.worker_id,
@@ -1647,6 +1654,14 @@ function App() {
                     新建独立会话
                   </button>
                 </div>
+              ) : !messages.length && activeSession?.kind === "main" ? (
+                <div className="empty-state">
+                  <span className="empty-icon">
+                    <Icon name="grid" />
+                  </span>
+                  <h2>你想让几台机器一起完成什么？</h2>
+                  <p>描述目标，Main Agent 会把步骤委派给各台机器的独立会话，前置步骤验证通过后再继续。</p>
+                </div>
               ) : !messages.length ? (
                 <div className="empty-state">
                   <span className="empty-icon">
@@ -1775,7 +1790,9 @@ function App() {
               <div className="composer-footnote">
                 <span>
                   <Icon name="lock" />
-                  {activeWorker?.blocked
+                  {activeSession?.kind === "main"
+                    ? "Main Agent 在主节点运行；委派的任务进入各机器的队列。"
+                    : activeWorker?.blocked
                     ? "消息将保留在队列中，等待机器完成核对。"
                     : !activeWorker?.online
                       ? "机器离线时，消息会等待上线后执行。"

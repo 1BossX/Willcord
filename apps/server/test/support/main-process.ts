@@ -91,7 +91,9 @@ export async function processScenario(scripts: Record<string, unknown>) {
   db.prepare("INSERT INTO administrators VALUES (1,?)").run(await argon2.hash(password, { type: argon2.argon2id }));
   let main: MainProcess | undefined;
   let worker: WorkerProcess | undefined;
-  const proxy = await startTlsProxy(certs, () => main!.port);
+  // While the main process is down its old port may belong to another test's
+  // main node; port 0 makes the worker's connection fail and retry instead.
+  const proxy = await startTlsProxy(certs, () => (main && main.child.exitCode === null && main.child.signalCode === null ? main.port : 0));
   const one = (sql: string, ...params: unknown[]) => db.prepare(sql).get(...params) as any;
   return {
     dir, workspace, dataDir, scriptFile, proxy, one, password,

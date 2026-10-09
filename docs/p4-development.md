@@ -110,7 +110,11 @@ Migration `005_p4_logs.sql` 新增两张表：
   - `bytes_shown`、`bytes_total`；
   - `truncated`；
   - `gap`：前 64 KiB 本应存在却取不回。
-- 模型看到的内容就是已提交的内容，实时执行与 SQLite 恢复一致。
+- 模型看到的内容由已提交的结果算出（`toolOutput`），实时执行与 SQLite 恢复一致。已提交结果、UI 和日志都保留完整的前 64 KiB，模型只看其中一部分，以免一个任务内的工具输出占满上下文：
+  - 完整输出不超过 16 KiB：原样给出。
+  - 完整输出更长（没有超出 64 KiB）：给前 8 KiB 和最后 8 KiB（`MODEL_VIEW_HEAD_BYTES`、`MODEL_VIEW_TAIL_BYTES`），中间写明省略了多少字节。错误和汇总通常在最后。
+  - 超出 64 KiB 被截断：没有真实结尾可给，只给前 16 KiB，并提示用 `| tail -n 100`、`| grep` 等重跑以查看其余部分。
+  - 切点退到 UTF-8 字符边界；`bytes_shown`、`truncated` 按模型实际看到的内容填写。
 - 重复结果的一致性比较忽略主节点附加的 `output`。
 
 补读与容量：

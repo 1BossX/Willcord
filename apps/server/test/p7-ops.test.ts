@@ -2,6 +2,7 @@
 // restore against a real worker ledger, token rotation, retention, the disk
 // check, graceful worker stop, and the boundaries every public entry keeps.
 import { test } from "node:test";
+import Database from "better-sqlite3";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -47,66 +48,94 @@ test("P7-A a paused node starts nothing, reports not ready, and resumes on an op
   } finally { await s.close(); }
 });
 
-test("P7-A a backup taken mid-call restores paused, and the call it holds as in flight never runs twice", { timeout: 90000 }, async () => {
-  const s = await startScenario({ scripts: {
-    slow: bash("slow-1", "echo slow >> marker.log; sleep 3"),
-    after: bash("after-1", "echo after >> marker.log"),
-    next: bash("next-1", "echo next >> marker.log"),
-  } });
+/**
+ * A backup taken while slow-1 runs, then restored after the worker finished it
+ * and also ran after-1, which the backup never saw. `ackAfter` decides whether
+ * the worker ledger recorded after-1 as acknowledged before it stopped.
+ */
+async function midCallRestore(ackAfter: boolean) {
+  let dropAck = !ackAfter;
+  const s = await startScenario({
+    scripts: {
+      slow: bash("slow-1", "echo slow >> marker.log; sleep 3"),
+      after: bash("after-1", "echo after >> marker.log"),
+      next: bash("next-1", "echo next >> marker.log"),
+    },
+    drop: (direction, frame) => dropAck && direction === "to_worker" && frame.type === "tool_ack" && frame.call_id === "after-1",
+  });
   const copy = join(s.dir, "backup.sqlite");
+  // The worker's own ledger, read beside the running worker.
+  const ledger = (callId: string) => {
+    const db = new Database(join(s.dir, "w-data", "ledger.sqlite"), { readonly: true, fileMustExist: true });
+    try { return (db.prepare("SELECT status FROM calls WHERE call_id=?").get(callId) as { status: string } | undefined)?.status; } finally { db.close(); }
+  };
+  s.startWorker(); await s.ready();
+  const session = await s.createSession();
+  const slow = await s.submit(session, "slow");
+  await s.until(() => s.count("slow") === 1);
+  // Online: the main node keeps running and writing while the copy is taken.
+  const summary = await backup(s.dir, copy);
+  assert.equal(summary.integrity, "ok");
+  assert.equal(summary.schema, "012_p7_ops.sql");
+  assert.equal(summary.unsettled_calls, 1, "the copy holds the call as dispatched");
+  assert.deepEqual(inspect(copy), summary);
+  await s.until(() => s.state(slow) === "succeeded");
+  // Work the backup will not know about.
+  const after = await s.submit(session, "after");
+  await s.until(() => s.state(after) === "succeeded");
+  // The worker's ledger is settled before it stops: what it holds is the scenario, not a race.
+  await s.until(() => ledger("slow-1") === "acked" && ledger("after-1") === (ackAfter ? "acked" : "completed"));
+  dropAck = false;
+
+  await s.stopWorker("SIGTERM");
+  await s.stopMain();
+  mkdirSync(join(s.dir, "main.lock"));
+  assert.throws(() => restore(s.dir, copy), /stop the main node/);
+  rmSync(join(s.dir, "main.lock"), { recursive: true });
+  const restored = restore(s.dir, copy);
+  assert.ok(restored.replaced && existsSync(restored.replaced), "the replaced database is kept aside, not deleted");
+  await s.startMain();
+  assert.equal(s.one("SELECT 1 FROM jobs WHERE job_id=?", after), undefined, "the restored records end before the second job");
+  assert.equal(s.callStatus("slow-1"), "dispatched");
+  await new Promise((r) => setImmediate(r));
+  assert.equal((await health(s)).dispatch_paused, "restored");
+  assert.equal((await s.api("POST", "/api/ops/resume", { note: "too early" })).json().error, "workers_not_reconciled");
+
+  s.startWorker();
+  await s.until(() => s.one("SELECT reconciled FROM workers").reconciled === 1);
+  await sleep(1000);
+  assert.equal(s.callStatus("slow-1"), "dispatched", "nothing is re-sent before the operator resumes");
+  assert.equal((await s.api("POST", "/api/ops/resume", { note: "ledgers checked" })).statusCode, 200);
+  return { s, slow, session };
+}
+
+test("P7-A a backup taken mid-call restores paused, and the call it holds as in flight never runs twice", { timeout: 90000 }, async () => {
+  const { s, slow, session } = await midCallRestore(true);
   try {
-    s.startWorker(); await s.ready();
-    const session = await s.createSession();
-    const slow = await s.submit(session, "slow");
-    await s.until(() => s.count("slow") === 1);
-    // Online: the main node keeps running and writing while the copy is taken.
-    const summary = await backup(s.dir, copy);
-    assert.equal(summary.integrity, "ok");
-    assert.equal(summary.schema, "012_p7_ops.sql");
-    assert.equal(summary.unsettled_calls, 1, "the copy holds the call as dispatched");
-    assert.deepEqual(inspect(copy), summary);
-    await s.until(() => s.state(slow) === "succeeded");
-    // Work the backup will not know about.
-    const after = await s.submit(session, "after");
-    await s.until(() => s.state(after) === "succeeded");
-
-    await s.stopWorker();
-    await s.stopMain();
-    mkdirSync(join(s.dir, "main.lock"));
-    assert.throws(() => restore(s.dir, copy), /stop the main node/);
-    rmSync(join(s.dir, "main.lock"), { recursive: true });
-    const restored = restore(s.dir, copy);
-    assert.ok(restored.replaced && existsSync(restored.replaced), "the replaced database is kept aside, not deleted");
-    await s.startMain();
-    assert.equal(s.one("SELECT 1 FROM jobs WHERE job_id=?", after), undefined, "the restored records end before the second job");
-    assert.equal(s.callStatus("slow-1"), "dispatched");
-    await new Promise((r) => setImmediate(r));
-    assert.equal((await health(s)).dispatch_paused, "restored");
-    assert.equal((await s.api("POST", "/api/ops/resume", { note: "too early" })).json().error, "workers_not_reconciled");
-
-    s.startWorker();
-    await s.until(() => s.one("SELECT reconciled FROM workers").reconciled === 1);
-    await sleep(1000);
-    assert.equal(s.callStatus("slow-1"), "dispatched", "nothing is re-sent before the operator resumes");
-    assert.equal((await s.api("POST", "/api/ops/resume", { note: "ledgers checked" })).statusCode, 200);
     // The worker ledger answers with the stored result; the call is not executed again.
-    await s.until(() => s.state(slow) === "succeeded", 40000).catch((error) => {
-      throw new Error(`${error}: ${JSON.stringify({
-        job: s.one("SELECT state,end_reason FROM jobs WHERE job_id=?", slow),
-        call: s.one("SELECT status,result_json FROM runtime_calls WHERE call_id='slow-1'"),
-        worker: s.one("SELECT online,reconciled,blocked FROM workers"),
-        slot: s.one("SELECT active_job_id FROM worker_slots"),
-        dispatch: s.one("SELECT * FROM dispatch_state"),
-        attention: s.all("SELECT action,evidence FROM attention_actions"),
-        frames: s.proxy.frames.slice(-12).map((f) => `${f.direction}:${f.type}`),
-        stderr: s.worker?.stderr().slice(-2000),
-      })}`);
-    });
+    await s.until(() => s.state(slow) === "succeeded");
     assert.equal(s.callStatus("slow-1"), "completed");
+    assert.equal(s.one("SELECT blocked FROM workers").blocked, 0);
     const next = await s.submit(session, "next");
     await s.until(() => s.state(next) === "succeeded");
     assert.equal(s.count("slow"), 1, "the in-flight call ran once");
     assert.equal(s.count("after"), 1, "the call the backup lacked never ran again");
+  } finally { await s.close(); }
+});
+
+test("P7-A after a restore, an unacknowledged call the backup lacks blocks the worker; nothing runs again", { timeout: 90000 }, async () => {
+  const { s, session } = await midCallRestore(false);
+  try {
+    await s.until(() => s.one("SELECT blocked FROM workers").blocked === 1);
+    const reasons = s.all("SELECT evidence FROM attention_actions WHERE action='blocked'").map((r) => JSON.parse(r.evidence));
+    assert.ok(reasons.some((e) => e.reason === "ledger_contradiction" && e.evidence.call_id === "after-1"), JSON.stringify(reasons));
+    const next = await s.submit(session, "next");
+    await sleep(1500);
+    assert.equal(s.callStatus("slow-1"), "dispatched", "a blocked worker is sent nothing");
+    assert.notEqual(s.state(next), "succeeded");
+    assert.equal(s.count("slow"), 1);
+    assert.equal(s.count("after"), 1);
+    assert.equal(s.count("next"), 0);
   } finally { await s.close(); }
 });
 

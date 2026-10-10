@@ -6,7 +6,7 @@
 
 产品展示名采用 **Willcord**，视觉方向采用 B「错位牵引」。工程仓库、包名、CLI、服务名与配置路径仍沿用 WorkerPlane，具体使用现有运维文档中的命令。
 
-- [静态产品介绍页源码](site/index.html)（GitHub Pages 待发布）
+- [静态产品介绍页源码](site/index.html) · [线上页面](https://1bossx.github.io/WorkerPlane/)
 - [品牌资产与规范](docs/brand/willcord/README.md) · [名称核验及待办](docs/brand/naming-shortlist.md)
 
 模型密钥集中在主节点，执行机器无需直接访问模型服务，也无需开放入站端口；执行端仍需访问主节点并保存设备身份与凭据。项目仍处于开发与受控验收阶段，不能把品牌更新视为生产验收完成。
@@ -15,46 +15,29 @@
 
 ## 安装与开始使用
 
-Willcord 是展示名称，下载文件、命令和服务仍使用 `worker-plane`。先部署一个主节点，再在每台执行机器上安装 worker；浏览器和 worker 都必须能访问主节点的 HTTPS 地址。
+推荐流程：**部署主节点 → 信任内部 CA → 登录控制台 → 安装 worker → 核对指纹批准 → 等待可执行 → 完成只读任务**。
 
-### 1. 部署主节点
-
-- **Docker Compose**：按 [Docker 部署指南](docs/docker.md) 配置 `compose.yaml`、`.env` 和 `main.env`，启动主节点与 Caddy。模型 provider、模型名和 API key 只配置在主节点；首次管理员密码至少 16 个字符，启动成功后从环境文件移除。
-- **Linux systemd**：按 [运维手册](docs/operations.md#2-安装主节点linux) 安装同架构的 Node 24 主节点产物、Caddy 和备份服务。
-
-从 [GitHub Releases](https://github.com/1BossX/WorkerPlane/releases) 选择已发布版本并校验 `.sha256`；Docker 镜像固定同一版本，不使用 `latest`。若尚无适用的发布产物，可按上述指南从源码构建。内部 CA 需要由浏览器信任，并分发给 worker；先用 `curl --cacert ca.pem https://plane.internal:8443/health` 检查主节点就绪。
-
-### 2. 安装并授权 worker
-
-从同一 Release 下载二进制和对应 `.sha256`。文件名为 `worker-plane-worker-<版本>-<os>-<arch>`，版本含 `v` 前缀；Linux 使用 `linux-x86_64` / `linux-aarch64`，macOS 使用 `darwin-x86_64` / `darwin-arm64`。替换下面的文件名：
+主节点（Linux x86_64/arm64，提前安装 Docker Compose v2）：
 
 ```sh
-shasum -a 256 -c worker-plane-worker-<版本>-<os>-<arch>.sha256
-chmod +x worker-plane-worker-<版本>-<os>-<arch>
-./worker-plane-worker-<版本>-<os>-<arch> install
+curl -fsSL https://1bossx.github.io/WorkerPlane/install.sh | bash -s -- main
 ```
 
-安装不修改 PATH。将安装输出的绝对路径设为 `WORKER`，然后申请加入：
+向导收集访问地址、模型配置和首次管理员密码，生成配置、启动服务并导出 `ca.pem`。先让浏览器信任这个根证书，再安全复制到执行机器。
+
+worker（Linux/macOS x86_64/arm64，以普通账户运行）：
 
 ```sh
-# Linux；macOS 改为 "$HOME/Library/Application Support/WorkerPlane/bin/worker"
-WORKER="$HOME/.local/share/worker-plane/bin/worker"
-"$WORKER" join https://plane.example.com
-"$WORKER" status --json
+curl -fsSL https://1bossx.github.io/WorkerPlane/install.sh | bash -s -- worker --server 'https://plane.internal:8443' --ca '/absolute/ca.pem'
 ```
 
-使用内部 CA 时，从安装开始为命令设置 `SSL_CERT_FILE=/absolute/ca.pem`，保留服务可读的证书文件。登录主节点控制台，在“机器授权”中核对节点 ID 与指纹并批准；worker 自动领取凭据、注册和对账，等待机器显示“可执行”。
+替换主节点地址和**执行机器上的** CA 绝对路径。常驻服务器加 `--system --user 'ops'`，指定已有非 root 账户；macOS 用户级服务在登录后启动，Linux 用户级服务需 systemd 用户会话。控制台“机器授权 → 添加机器”可以生成对应命令。
 
-用户级服务：Linux 需要 systemd 用户会话，退出登录后持续运行需管理员配置 linger；macOS 在用户登录后启动。需要开机启动时，使用 `sudo ./<二进制> install --system --user <普通账户>`，后续 join/status/workspace 命令加 `--system`。完整步骤见 [worker 安装与授权](docs/worker-onboarding.md)。
+安装器选择最新已发布正式 Release，显示版本并校验 SHA-256；固定版本加 `--version vX.Y.Z`。没有正式 Release 时明确退出。**一行安装须在首个包含新安装器和 CLI 的正式版本发布后使用。** 安装文件、CLI 和服务继续使用 WorkerPlane 工程名称。
 
-### 3. 发起第一个任务
+核对终端与控制台指纹后批准，等待“可执行”，选择默认 workspace 创建独立会话，输入“列出当前工作目录的文件，并报告工作目录路径”。确认任务成功，再添加已有项目目录或使用 Main Agent 跨机器委派。
 
-1. 在工作台选择已可执行的机器与默认 workspace，创建独立会话。默认目录自动创建，不会克隆项目。
-2. 输入一个只读任务，例如“列出当前工作目录的文件，并报告工作目录路径”，检查回复和任务时间线中的执行结果。
-3. 使用已有项目时，先运行 `"$WORKER" workspace add my-app /absolute/projects/my-app`，再创建绑定该 workspace 的新会话。添加时机器须已授权、服务运行且没有在途任务。
-4. 需要跨机器协作时创建 Main 会话，让主节点查看机器并委派任务；执行目标必须在线、已对账且可执行。
-
-断线、任务取消或“需要人工核对”时查看任务时间线，按 [运维手册](docs/operations.md) 处理。升级前暂停调度、等待任务结束并备份，升级后检查状态、对账和真实任务，再恢复调度。
+完整的分步操作、成功标志与故障处理见 [安装与首次使用](docs/installation.md)。[手动 Docker 部署与升级](docs/docker.md) · [worker 详细说明](docs/worker-onboarding.md) · [systemd 与运维手册](docs/operations.md)。
 
 ## 安全与许可证
 

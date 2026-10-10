@@ -1,0 +1,102 @@
+# 安装与首次使用
+
+推荐路线：**部署主节点 → 信任内部 CA → 登录控制台 → 安装 worker → 核对指纹批准 → 等待可执行 → 完成只读任务**。主节点通过 Docker Compose 部署；worker 装在每台执行机器的宿主机上。
+
+安装器需要 Bash 3.2+、curl 和 shasum/sha256sum。它只使用已发布的正式 Release；没有正式版本时退出，不使用草稿、预发布或源码构建结果。省略 `--version` 时下载最新正式版本，并显示实际版本。需要固定版本可加 `--version vX.Y.Z`。首次发布包含此安装器和新 CLI 的版本之后，一行安装入口才可用。
+
+## 1. 在主节点机器部署
+
+准备 Linux x86_64/arm64 主机、Docker 和 Docker Compose v2。浏览器和执行机器必须能解析并访问同一个主节点地址。安装器不安装 Docker，不改变系统权限。
+
+```sh
+curl -fsSL https://1bossx.github.io/WorkerPlane/install.sh | bash -s -- main
+```
+
+向导通过终端收集 HTTPS 地址（默认 `https://plane.internal:8443`）、模型 provider/name、API key 和至少 16 字符的管理员密码。密钥输入不回显。也可以预先指定地址和目录：
+
+```sh
+curl -fsSL https://1bossx.github.io/WorkerPlane/install.sh | bash -s -- main --server 'https://plane.internal:8443' --dir '/opt/my-plane'
+```
+
+目录默认 `./worker-plane`，当前账户必须可写。安装器生成 `compose.yaml`、`.env` 和 `main.env`，固定镜像版本；环境文件权限 0600，不要提交到 Git。不同目录使用独立的 Compose 项目及数据卷。已有部署文件时拒绝覆盖。
+
+**成功标志**：安装器显示“主节点已就绪”、控制台地址及 `ca.pem` 路径，HTTPS `/health` 的 `scheduling_ready` 为 true。成功后环境文件不再保留首次管理员密码；登录使用刚才输入的密码。
+
+**启动失败**：配置和数据卷会保留。在部署目录执行 `docker compose logs main caddy`，检查主机名解析、端口及模型配置；修复后 `docker compose up -d`。确认 HTTPS 就绪后从 `main.env` 删除 `INITIAL_ADMIN_PASSWORD`，再执行 `docker compose up -d main`。不要通过重跑向导覆盖既有部署。
+
+手动 Docker 部署与升级见 [Docker 指南](docker.md)，Linux systemd 部署见 [运维手册](operations.md#2-安装主节点linux)。
+
+## 2. 信任并传递内部 CA
+
+本次安装使用 Caddy 内部 CA，即使地址是公网域名也需要分发根证书。`ca.pem` 是公开根证书，不包含私钥。
+
+- **浏览器机器**：macOS 将证书导入钥匙串并设为受信任的根证书；Linux 按发行版/浏览器的证书管理导入；Firefox 使用其证书设置导入。只信任自己部署导出的证书，不关闭 TLS 校验。
+- **执行机器**：通过可信渠道安全复制 `ca.pem` 到可读的绝对文件路径，记住该路径。此路径属于执行机器，不能照抄主节点上的路径。
+
+复制后可在执行机器确认：
+
+```sh
+curl --cacert '/absolute/ca.pem' 'https://plane.internal:8443/health'
+```
+
+**成功标志**：TLS 校验通过且主节点就绪。保留主节点 `caddy-data` 卷；丢失此卷会生成新 CA，需要重新分发证书。
+
+## 3. 在每台执行机器安装 worker
+
+登录控制台，打开“机器授权 → 添加机器”，选择安装方式、输入执行机器上的 CA 绝对路径，复制生成的一行命令。
+
+### 个人电脑：用户级服务
+
+以普通账户运行，不加 sudo：
+
+```sh
+curl -fsSL https://1bossx.github.io/WorkerPlane/install.sh | bash -s -- worker --server 'https://plane.internal:8443' --ca '/absolute/ca.pem'
+```
+
+Linux 需要 systemd 用户会话；管理员可以通过 `loginctl enable-linger <账户>` 让服务退出登录后及重启时继续运行。macOS LaunchAgent 在用户登录后启动。
+
+### 常驻服务器：系统级服务
+
+先准备已有的非 root 账户，它的实际权限决定任务能访问的文件和执行的命令。安装器不创建账户、不调整已有项目权限；需要时只通过 sudo 执行系统级安装与 join：
+
+```sh
+curl -fsSL https://1bossx.github.io/WorkerPlane/install.sh | bash -s -- worker --server 'https://plane.internal:8443' --ca '/absolute/ca.pem' --system --user 'ops'
+```
+
+支持 Linux/macOS x86_64/arm64。安装器自动选择文件并校验 SHA-256，再安装服务并提交加入申请。CA 被复制到安装目录，后台服务及后续 CLI 自动使用。原始证书文件可在安装成功后移走；保留安装目录内的副本。安装不修改 PATH，命令输出会给出带引号的绝对路径。
+
+**成功标志**：终端显示节点 ID、公钥 SHA-256 指纹及授权状态。申请成功并不意味着已经可执行。
+
+## 4. 在控制台授权
+
+在“机器授权”中核对终端指纹与申请的指纹完全一致，再点击批准。节点 ID 就是公钥 SHA-256 指纹；安装器不会自动批准设备。
+
+| 状态 | 含义与下一步 |
+|---|---|
+| 等待授权 | 申请已提交，需要管理员批准 |
+| 已授权 / 离线 | 已获授权，等待服务领取凭据并连接；持续离线时检查服务和网络 |
+| 对账中 | 已连接，正在核对账本，暂不发起任务 |
+| 需要核对 | 有无法证明执行状态的调用，按运维手册人工处置 |
+| 可执行 | 在线、完成对账且空闲，可以创建会话 |
+
+后台服务每 5 秒检查授权。后续诊断使用安装器输出的 `status --json` 命令；系统级命令带 `--system`。
+
+## 5. 第一个任务
+
+选择“可执行”的机器及默认 workspace，新建独立会话，输入：
+
+> 列出当前工作目录的文件，并报告工作目录路径。
+
+**成功标志**：任务成功，回复和任务时间线有实际执行结果。默认目录自动创建，不会克隆项目或映射整个 home。
+
+已有项目通过 worker 的 `workspace add my-app /absolute/projects/my-app` 添加，再创建绑定该 workspace 的新会话。机器须已授权、服务运行且空闲；系统级命令带 `--system`。跨机器任务通过 Main Agent 委派，文件不会自动在机器之间传输。
+
+## 升级与故障处理
+
+- 升级前暂停主节点调度、等待任务结束并备份。worker 使用同样的安装命令，指定新的正式版本；身份、token 和账本保留，忙时安装失败。升级后验证对账和真实任务，再恢复调度。
+- 主节点向导只用于新部署；升级按 [Docker 指南](docker.md#升级) 操作，不能用新目录冒充原部署的升级。
+- 无正式 Release：等待正式版本发布。404、下载或校验失败：安装器返回非零，不运行下载的二进制。
+- TLS 失败：确认地址、CA 来源和文件内容。换 CA 时重新运行带新 `--ca` 的 worker 安装命令。
+- 用户级与系统级安装各有独立身份，不要克隆数据目录到第二台机器。撤销、未知执行状态和恢复见 [worker 安装与授权](worker-onboarding.md) 与 [运维手册](operations.md)。
+
+安装器与实机验收记录见 [一行安装验收](one-line-install-acceptance.md)。

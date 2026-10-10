@@ -43,6 +43,8 @@ jobs:
       # The P3-C fault tests use this binary; building it here keeps the
       # cold compile from competing with the timed end-to-end tests.
       - run: cargo build --locked --manifest-path worker/Cargo.toml --features fault-injection --target-dir worker/target/fault
+      - run: bash -n deploy/install.sh
+      - run: python3 deploy/test-install.py
       - run: pnpm check
       - run: pnpm test
       - run: pnpm build

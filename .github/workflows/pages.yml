@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'site/**'
+      - 'deploy/install.sh'
       - '.github/workflows/pages.yml'
   workflow_dispatch:
 
@@ -35,6 +36,8 @@ jobs:
           test -f site/style.css
           test -f site/assets/logo.svg
           test -f site/assets/favicon.svg
+      - name: Include canonical installer
+        run: cp deploy/install.sh site/install.sh
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

@@ -38,6 +38,7 @@ jobs:
           toolchain: stable
       - run: cargo build --locked --release --manifest-path worker/Cargo.toml
       - run: cargo test --locked --manifest-path worker/Cargo.toml
+      - run: python3 deploy/test-install.py
       - run: worker/target/release/worker-plane-worker status --json
         env:
           WORKER_PLANE_HOME: ${{ runner.temp }}/worker-smoke
@@ -47,6 +48,8 @@ jobs:
           arch=$(uname -m)
           name="worker-plane-worker-${GITHUB_REF_NAME}-${os}-${arch}"
           mkdir -p release
+          bash -n deploy/install.sh
+          cp deploy/install.sh deploy/docker/compose.yaml release/
           cp worker/target/release/worker-plane-worker "release/$name"
       # The main node runs on Linux; its native modules are built for this
       # runner's architecture and Node 24.
@@ -81,4 +84,4 @@ jobs:
         run: |
           command -v gh >/dev/null || { echo "gh CLI is required on this runner" >&2; exit 1; }
           gh release create "$GITHUB_REF_NAME" release/* --repo "$GITHUB_REPOSITORY" --draft \
-            --title "Worker Plane $GITHUB_REF_NAME" --notes "Install and upgrade: docs/operations.md. Verify each file against its .sha256."
+            --title "Worker Plane $GITHUB_REF_NAME" --notes "One-line installation: README.md and docs/installation.md. Upgrade: docs/operations.md. Verify each file against its .sha256."

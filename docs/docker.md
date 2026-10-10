@@ -11,6 +11,10 @@
 
 每个 `v*` 标签发布 linux/amd64 和 linux/arm64 两个架构，版本号去掉前缀 `v`，例如 `v0.2.0` 对应 `0.2.0`。不发布 `latest`，部署时固定版本。也可以在仓库根目录自行构建：`docker build -f deploy/docker/Dockerfile --target main .`（Caddy 用 `--target caddy`）。
 
+## 推荐：初始化向导
+
+新的 Linux 部署可运行一行安装向导，自动生成配置、启动服务并导出 CA；步骤与成功标志见 [安装与首次使用](installation.md)。已有部署请按本文升级章节操作。下面保留手动配置方式。
+
 ## 安装
 
 1. 准备目录，复制 `deploy/docker/compose.yaml`，并在同一目录写 `.env`：

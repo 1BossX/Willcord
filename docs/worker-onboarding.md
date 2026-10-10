@@ -2,6 +2,10 @@
 
 新机器无需填写 TOML 或复制 token。安装 worker、申请加入、在控制台核对指纹并批准后，worker 自动领取凭据，注册并对账。默认工作目录自动创建；已有项目按需添加。主节点需要包含 migration 013，并让 Caddy 转发 `/enrollment/*`。
 
+## 推荐：一行安装
+
+首次部署和机器接入优先按 [安装与首次使用](installation.md) 操作。控制台“机器授权 → 添加机器”可生成命令。下面保留手动安装、已有节点管理与运维细节。
+
 ## 安装
 
 从版本 Release 下载匹配平台的 `worker-plane-worker-<版本>-<os>-<arch>` 及其 `.sha256`；Linux/macOS 各支持 x86_64 与 arm64（文件架构名由 uname 给出，arm64 为 aarch64 或 arm64）。Linux 需要 systemd 用户会话；macOS 需要登录图形会话。
@@ -56,15 +60,15 @@ worker workspace list
 
 ## 私有 CA
 
-把受信任 CA 的 PEM 放在持久绝对路径。安装时设置 `SSL_CERT_FILE`，安装器将该路径保存到服务环境；join 和 status 使用相同环境。不要使用关闭 TLS 校验的参数。
+把受信任 CA 的 PEM 放在持久绝对路径。安装时设置 `SSL_CERT_FILE`，安装器将证书复制到安装目录，服务和后续 join/status 自动使用这份副本；显式 SSL_CERT_FILE 优先。既有 service-ca 外部路径在重新 install 时迁移为副本。不要使用关闭 TLS 校验的参数。
 
 ```sh
 SSL_CERT_FILE=/absolute/ca.pem worker install
-SSL_CERT_FILE=/absolute/ca.pem worker join https://plane.internal:8443
-SSL_CERT_FILE=/absolute/ca.pem worker status --json
+worker join https://plane.internal:8443
+worker status --json
 ```
 
-CA 文件必须在服务启动时可读；更换路径后重新 install。凭据只保存在私有文件，主节点只保存摘要。入网挑战 5 分钟有效、单次使用，签名绑定操作和申请元数据。
+安装成功后原始 CA 文件可以移走，必须保留安装目录内副本；更换 CA 时带新 SSL_CERT_FILE 重新 install。凭据只保存在私有文件，主节点只保存摘要。入网挑战 5 分钟有效、单次使用，签名绑定操作和申请元数据。
 
 ## 升级、撤销与卸载
 

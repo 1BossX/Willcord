@@ -39,12 +39,12 @@
 
    预期返回 `{"alive":true,"scheduling_ready":true,"dispatch_paused":null,"phase":"P7"}`。启动失败看 `docker compose logs main`，配置问题会一次全部列出。
 
-4. 把 `ca.pem` 交给 worker（`SSL_CERT_FILE`）和浏览器所在机器信任。它是公开证书，不是密钥。
+4. 让浏览器所在机器信任 `ca.pem`。worker 默认从已信任控制台复制带 CA 指纹的安装命令；安装器会验证并保存根证书，无需先把文件交给每台 worker。手动 CA 和旧版本兼容流程仍可使用 `ca.pem`。
 
 ## 必须保留的两个卷
 
 - `main-data`：`main.sqlite`、`main.lock` 和运行数据。放在本地磁盘；不要放在 NFS 或 Docker Desktop 的共享目录上，SQLite 的 WAL 和锁在那里不可靠。
-- `caddy-data`：Caddy 的内部 CA。这个卷丢失后 CA 会重新生成，所有 worker 的 `ca.pem` 立即失效，需要重新分发。
+- `caddy-data`：Caddy 的内部 CA。这个卷丢失后 CA 会重新生成；从可信控制台重新复制带新指纹的安装命令，并重新安装各 worker。
 
 `docker compose down` 保留卷；不要加 `-v`。
 

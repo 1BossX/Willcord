@@ -23,21 +23,21 @@
 curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- main
 ```
 
-向导收集访问地址、模型配置和首次管理员密码，生成配置、启动服务并导出 `ca.pem`。先让浏览器信任这个根证书，再安全复制到执行机器。
+向导收集访问地址、模型配置和首次管理员密码，生成配置、启动服务并导出 `ca.pem`。先让浏览器信任这个根证书；执行机器不必提前复制证书。
 
 worker（Linux/macOS x86_64/arm64，以普通账户运行；Linux 需要 glibc 2.17 或更新）：
 
 ```sh
-curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- worker --server 'https://plane.internal:8443' --ca '/absolute/ca.pem'
+curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- worker --server 'https://plane.internal:8443' --ca-fingerprint '<控制台提供的64位指纹>'
 ```
 
-替换主节点地址和**执行机器上的** CA 绝对路径。常驻服务器加 `--system --user 'ops'`，指定已有非 root 账户；macOS 用户级服务在登录后启动，Linux 用户级服务需 systemd 用户会话。控制台“机器授权 → 添加机器”可以生成对应命令。
+不要手写或从未验证的连接取得指纹：登录已信任的控制台，在“机器授权 → 添加机器”复制完整命令。安装器只下载固定的公开根证书端点，核对 DER SHA-256 指纹后才继续 HTTPS/WSS 连接。常驻服务器加 `--system --user 'ops'`，指定已有非 root 账户；macOS 用户级服务在登录后启动，Linux 用户级服务需 systemd 用户会话。
 
 安装器选择最新已发布正式 Release，显示版本并校验 SHA-256；固定版本加 `--version vX.Y.Z`；验收预发布版本时显式指定 `--version vX.Y.Z-rc.N`。没有正式 Release 时明确退出。**一行安装须在首个包含新安装器和 CLI 的正式版本发布后使用。** 安装文件、CLI 和服务继续使用 WorkerPlane 工程名称。
 
 核对终端与控制台指纹后批准，等待“可执行”，选择默认 workspace 创建独立会话，输入“列出当前工作目录的文件，并报告工作目录路径”。确认任务成功，再添加已有项目目录或使用 Main Agent 跨机器委派。
 
-开发中：本分支支持 **CA 指纹自动接入**，执行机器无需提前复制 CA；公开 v0.2.0 尚未包含此功能。试用步骤见 [CA 指纹自动接入](docs/installation.md#ca-指纹自动接入开发中尚未发布)。
+该流程需要包含 CA 指纹接入的正式版本。公开 v0.2.0 仍应使用[安装指南](docs/installation.md)中的手动 `--ca` 兼容流程；已由系统信任的公共证书不需要 CA 参数。
 
 完整的分步操作、成功标志与故障处理见 [安装与首次使用](docs/installation.md)。[手动 Docker 部署与升级](docs/docker.md) · [worker 详细说明](docs/worker-onboarding.md) · [systemd 与运维手册](docs/operations.md)。
 

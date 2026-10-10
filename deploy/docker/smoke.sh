@@ -10,6 +10,8 @@ here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
 tag=${SMOKE_TAG:-smoke}
 port=${SMOKE_PORT:-38443}
+# An emulated architecture (QEMU) starts much slower.
+ready_secs=${SMOKE_READY_SECS:-90}
 if [ "${SKIP_BUILD:-}" != 1 ]; then
   docker build -f "$here/Dockerfile" --target main -t "local/worker-plane-main:$tag" "$root"
   docker build -f "$here/Dockerfile" --target caddy -t "local/worker-plane-caddy:$tag" "$root"
@@ -35,7 +37,7 @@ cleanup() {
 trap cleanup EXIT
 
 ready() {
-  for _ in $(seq 1 90); do
+  for _ in $(seq 1 "$ready_secs"); do
     if [ -s "$work/ca.pem" ] || dc cp caddy:/data/caddy/pki/authorities/local/root.crt "$work/ca.pem" > /dev/null 2>&1; then
       health=$(curl -fsS --cacert "$work/ca.pem" "https://localhost:$port/health" 2>/dev/null || true)
       case "$health" in *'"scheduling_ready":true'*) echo "health: $health"; return 0 ;; esac

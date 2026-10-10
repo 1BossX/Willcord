@@ -1,0 +1,44 @@
+# Main node with Docker Compose (docs/docker.md). Required in the environment
+# or an .env file beside this one:
+#   WORKER_PLANE_VERSION  image tag, e.g. 0.2.0
+#   WORKER_PLANE_SITE     host:port browsers and workers use, e.g. plane.internal:8443
+#   WORKER_PLANE_PORT     the port in WORKER_PLANE_SITE, published on the host
+# main.env holds PUBLIC_BASE_URL (https://$WORKER_PLANE_SITE), the model key
+# and, on first start only, INITIAL_ADMIN_PASSWORD.
+name: worker-plane
+services:
+  main:
+    image: ${WORKER_PLANE_REGISTRY:-ghcr.io/1bossx}/worker-plane-main:${WORKER_PLANE_VERSION:?set WORKER_PLANE_VERSION}
+    env_file: ${WORKER_PLANE_ENV_FILE:-main.env}
+    volumes:
+      - main-data:/var/lib/worker-plane
+    # SIGTERM stops the node and releases main.lock; give it the unit's 30 s.
+    stop_grace_period: 30s
+    # After a crash main.lock stays behind and a restart is refused on
+    # purpose; an operator checks and removes it (docs/docker.md).
+    restart: "no"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    networks: [internal]
+  caddy:
+    image: ${WORKER_PLANE_REGISTRY:-ghcr.io/1bossx}/worker-plane-caddy:${WORKER_PLANE_VERSION:?set WORKER_PLANE_VERSION}
+    environment:
+      WORKER_PLANE_SITE: ${WORKER_PLANE_SITE:?set WORKER_PLANE_SITE}
+    ports:
+      - "${WORKER_PLANE_PORT:?set WORKER_PLANE_PORT}:${WORKER_PLANE_PORT}"
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on: [main]
+    restart: unless-stopped
+    networks: [internal]
+volumes:
+  main-data:
+  caddy-data:
+  caddy-config:
+networks:
+  internal:

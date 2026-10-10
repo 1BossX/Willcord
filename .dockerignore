@@ -1,0 +1,12 @@
+# Build context for deploy/docker/Dockerfile: sources and lockfile only.
+.git
+.claude
+**/node_modules
+**/dist
+worker
+spikes
+output
+data
+**/*.log
+.env
+.env.*

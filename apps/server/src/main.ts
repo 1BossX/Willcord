@@ -34,7 +34,7 @@ try {
     retentionMs: config.retentionDays * 24 * 3600 * 1000,
     minFreeBytes: config.minFreeBytes,
   });
-  await app.listen({ host: "127.0.0.1", port: config.port });
+  await app.listen({ host: config.host, port: config.port });
   // The listeners stay registered for the whole shutdown: signal-exit (loaded
   // with the Pi SDK) re-raises a signal it sees no other listener for, which
   // would kill the process before the lock is released.

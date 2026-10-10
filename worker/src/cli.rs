@@ -11,8 +11,120 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     process::Command,
+    sync::OnceLock,
 };
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+// sudo drops SSL_CERT_FILE, so system commands take the CA saved at install.
+static SYSTEM_CA: OnceLock<PathBuf> = OnceLock::new();
+// A boot-time service: a root-owned install root holds the binary and
+// system.json; data/ belongs to the account every command runs as.
+pub struct System {
+    root: PathBuf,
+    user: String,
+    uid: u32,
+    gid: u32,
+    home: PathBuf,
+    ca: Option<PathBuf>,
+}
+impl System {
+    fn data(&self) -> PathBuf {
+        self.root.join("data")
+    }
+}
+fn system_root() -> Result<PathBuf, Error> {
+    if let Some(p) = std::env::var_os("WORKER_PLANE_SYSTEM_ROOT") {
+        let path = PathBuf::from(p);
+        if !path.is_absolute() || path == Path::new("/") {
+            return Err("WORKER_PLANE_SYSTEM_ROOT must be an absolute directory".into());
+        }
+        return Ok(path);
+    }
+    Ok(PathBuf::from(if cfg!(target_os = "macos") {
+        "/Library/Application Support/WorkerPlane"
+    } else {
+        "/var/lib/worker-plane-system"
+    }))
+}
+fn valid_user(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && !name.starts_with('-')
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+}
+fn lookup(user: &str) -> Result<(u32, u32, PathBuf), Error> {
+    if !valid_user(user) {
+        return Err("invalid account name".into());
+    }
+    let name = std::ffi::CString::new(user)?;
+    let pw = unsafe { libc::getpwnam(name.as_ptr()) };
+    if pw.is_null() {
+        return Err(format!("account {user} does not exist; create it first").into());
+    }
+    let (uid, gid) = unsafe { ((*pw).pw_uid, (*pw).pw_gid) };
+    if uid == 0 {
+        return Err("the service account must not be root".into());
+    }
+    let home = unsafe { std::ffi::CStr::from_ptr((*pw).pw_dir) };
+    use std::os::unix::ffi::OsStrExt;
+    Ok((
+        uid,
+        gid,
+        PathBuf::from(std::ffi::OsStr::from_bytes(home.to_bytes())),
+    ))
+}
+fn read_system(root: &Path) -> Result<System, Error> {
+    let path = root.join("system.json");
+    let meta = fs::metadata(&path).map_err(|_| "no system install; run install --system first")?;
+    use std::os::unix::fs::MetadataExt;
+    for m in [&meta, &fs::metadata(root)?] {
+        if m.uid() != 0 || m.mode() & 0o022 != 0 {
+            return Err("system install must be owned by root and not writable by others".into());
+        }
+    }
+    let v: Value = serde_json::from_slice(&fs::read(path)?)?;
+    let user = v["user"]
+        .as_str()
+        .ok_or("system.json: missing user")?
+        .to_owned();
+    let (uid, gid, home) = lookup(&user)?;
+    Ok(System {
+        root: root.to_owned(),
+        user,
+        uid,
+        gid,
+        home,
+        ca: v["ca"].as_str().map(PathBuf::from),
+    })
+}
+// join, status and workspace write identity and lock files; they must be
+// created by the service account, never by root.
+fn become_service_user(sys: &System) -> Result<(), Error> {
+    let euid = unsafe { libc::geteuid() };
+    if euid == sys.uid {
+        return Ok(());
+    }
+    if euid != 0 {
+        return Err(format!("run with sudo or as {}", sys.user).into());
+    }
+    let gid = sys.gid as libc::gid_t;
+    let name = std::ffi::CString::new(sys.user.as_str())?;
+    unsafe {
+        // The account's supplementary groups too, as systemd User= and
+        // launchd UserName grant them to the service.
+        if libc::initgroups(name.as_ptr(), gid as _) != 0
+            || libc::setgid(gid) != 0
+            || libc::setuid(sys.uid as libc::uid_t) != 0
+        {
+            return Err("could not switch to the service account".into());
+        }
+        if libc::geteuid() != sys.uid || libc::setuid(0) == 0 {
+            return Err("could not drop root privileges".into());
+        }
+    }
+    Ok(())
+}
 pub fn root() -> Result<PathBuf, Error> {
     if let Some(p) = std::env::var_os("WORKER_PLANE_HOME") {
         let path = PathBuf::from(p);
@@ -95,7 +207,10 @@ async fn client() -> Result<reqwest::Client, Error> {
         .https_only(true)
         .redirect(reqwest::redirect::Policy::none())
         .timeout(std::time::Duration::from_secs(15));
-    if let Some(p) = std::env::var_os("SSL_CERT_FILE") {
+    let ca = std::env::var_os("SSL_CERT_FILE")
+        .map(PathBuf::from)
+        .or_else(|| SYSTEM_CA.get().cloned());
+    if let Some(p) = ca {
         for cert in reqwest::Certificate::from_pem_bundle(&fs::read(p)?)? {
             b = b.add_root_certificate(cert);
         }
@@ -187,61 +302,151 @@ fn worker_running(dir: &Path) -> bool {
         .map(|f| fs2::FileExt::try_lock_exclusive(&f).is_err())
         .unwrap_or(false)
 }
-fn service_running(dir: &Path) -> bool {
+fn launchd_domain(sys: Option<&System>) -> String {
+    match sys {
+        Some(_) => "system".into(),
+        None => format!("gui/{}", unsafe { libc::getuid() }),
+    }
+}
+fn service_running(dir: &Path, sys: Option<&System>) -> bool {
     let name = service_name(dir);
     if cfg!(target_os = "macos") {
         Command::new("launchctl")
-            .args([
-                "print",
-                &format!("gui/{}/{name}", unsafe { libc::getuid() }),
-            ])
+            .args(["print", &format!("{}/{name}", launchd_domain(sys))])
             .output()
             .is_ok_and(|o| o.status.success())
     } else {
-        Command::new("systemctl")
-            .args(["--user", "is-active", &format!("{name}.service")])
+        let mut c = Command::new("systemctl");
+        if sys.is_none() {
+            c.arg("--user");
+        }
+        c.args(["is-active", &format!("{name}.service")])
             .output()
             .is_ok_and(|o| o.status.success())
     }
 }
-fn wait_stopped(dir: &Path) -> Result<(), Error> {
+fn wait_stopped(dir: &Path, sys: Option<&System>) -> Result<(), Error> {
     for _ in 0..300 {
-        if !service_running(dir) && !worker_running(dir) {
+        if !service_running(dir, sys) && !worker_running(dir) {
             return Ok(());
         }
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
     Err("service is still running; operation stopped before data removal".into())
 }
-fn service(dir: &Path, install: bool) -> Result<(), Error> {
+fn xml(p: &Path) -> String {
+    p.to_string_lossy()
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+fn unit_quote(p: &Path) -> String {
+    p.to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('%', "%%")
+}
+fn launchd_plist(
+    name: &str,
+    exe: &Path,
+    dir: &Path,
+    ca: Option<&Path>,
+    user: Option<(&str, &Path)>,
+) -> String {
+    // A LaunchDaemon also gets the stop grace of deploy/launchd: SIGTERM
+    // cancels running commands before launchd kills the job.
+    let daemon = user
+        .map(|(u, _)| format!("<key>UserName</key><string>{u}</string><key>ExitTimeOut</key><integer>60</integer><key>ThrottleInterval</key><integer>60</integer><key>Umask</key><integer>63</integer>"))
+        .unwrap_or_default();
+    format!(
+        "<?xml version=\"1.0\"?><!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\"><plist version=\"1.0\"><dict><key>Label</key><string>{name}</string>{daemon}<key>ProgramArguments</key><array><string>{}</string><string>run</string></array><key>EnvironmentVariables</key><dict><key>WORKER_PLANE_HOME</key><string>{}</string>{}</dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>StandardErrorPath</key><string>{}</string></dict></plist>",
+        xml(exe),
+        xml(dir),
+        // launchd sets no HOME for daemons; commands need the account's.
+        user.map(|(_, h)| format!("<key>HOME</key><string>{}</string>", xml(h)))
+            .unwrap_or_default()
+            + &ca
+                .map(|p| format!("<key>SSL_CERT_FILE</key><string>{}</string>", xml(p)))
+                .unwrap_or_default(),
+        xml(&dir.join("service.log"))
+    )
+}
+fn systemd_unit(exe: &Path, dir: &Path, ca: Option<&Path>, user: Option<&str>) -> String {
+    let ca = ca
+        .map(|p| format!("Environment=\"SSL_CERT_FILE={}\"\n", unit_quote(p)))
+        .unwrap_or_default();
+    match user {
+        None => format!(
+            "[Unit]\nDescription=WorkerPlane worker\n[Service]\nExecStart=\"{}\" run\nEnvironment=\"WORKER_PLANE_HOME={}\"\n{ca}Restart=on-failure\nRestartSec=5\n[Install]\nWantedBy=default.target\n",
+            unit_quote(exe),
+            unit_quote(dir)
+        ),
+        // Mirrors deploy/systemd/worker-plane-worker.service.
+        Some(u) => format!(
+            "[Unit]\nDescription=WorkerPlane worker\nAfter=network-online.target\nWants=network-online.target\nStartLimitIntervalSec=600\nStartLimitBurst=5\n[Service]\nType=simple\nUser={u}\nExecStart=\"{}\" run\nEnvironment=\"WORKER_PLANE_HOME={}\"\n{ca}KillSignal=SIGTERM\nTimeoutStopSec=60\nKillMode=control-group\nRestart=on-failure\nRestartSec=10\nUMask=0077\n[Install]\nWantedBy=multi-user.target\n",
+            unit_quote(exe),
+            unit_quote(dir)
+        ),
+    }
+}
+// Service definitions are read by launchd/systemd, not the worker: 0644.
+fn save_public(p: &Path, bytes: &[u8]) -> Result<(), Error> {
+    save(p, bytes)?;
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(p, fs::Permissions::from_mode(0o644))?;
+    Ok(())
+}
+fn service(dir: &Path, sys: Option<&System>, install: bool) -> Result<(), Error> {
     let name = service_name(dir);
-    let exe = dir.join("bin/worker");
-    let config = dir.join("worker.toml");
-    let ca = fs::read_to_string(dir.join("service-ca")).ok();
-    let home = PathBuf::from(std::env::var_os("HOME").ok_or("HOME required")?);
+    let exe = match sys {
+        Some(s) => s.root.join("bin/worker"),
+        None => dir.join("bin/worker"),
+    };
+    let ca = match sys {
+        Some(s) => s.ca.clone(),
+        None => fs::read_to_string(dir.join("service-ca"))
+            .ok()
+            .map(PathBuf::from),
+    };
+    let user = sys.map(|s| s.user.as_str());
     if cfg!(target_os = "macos") {
-        let directory = std::env::var_os("WORKER_PLANE_LAUNCH_AGENT_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| home.join("Library/LaunchAgents"));
+        let directory = match sys {
+            Some(_) => PathBuf::from("/Library/LaunchDaemons"),
+            None => std::env::var_os("WORKER_PLANE_LAUNCH_AGENT_DIR")
+                .map(PathBuf::from)
+                .map_or_else(
+                    || {
+                        std::env::var_os("HOME")
+                            .map(|h| PathBuf::from(h).join("Library/LaunchAgents"))
+                            .ok_or("HOME required")
+                    },
+                    Ok,
+                )?,
+        };
         if !directory.is_absolute() {
             return Err("LaunchAgent directory must be absolute".into());
         }
         let path = directory.join(format!("{name}.plist"));
+        let domain = launchd_domain(sys);
         if install {
-            fs::create_dir_all(path.parent().unwrap())?;
-            let xml = |p: &Path| {
-                p.to_string_lossy()
-                    .replace('&', "&amp;")
-                    .replace('<', "&lt;")
-                    .replace('>', "&gt;")
-            };
-            save(&path,format!("<?xml version=\"1.0\"?><!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\"><plist version=\"1.0\"><dict><key>Label</key><string>{name}</string><key>ProgramArguments</key><array><string>{}</string><string>run</string></array><key>EnvironmentVariables</key><dict><key>WORKER_PLANE_HOME</key><string>{}</string>{}</dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>StandardErrorPath</key><string>{}</string></dict></plist>",xml(&exe),xml(dir),ca.as_ref().map(|p|format!("<key>SSL_CERT_FILE</key><string>{}</string>",xml(Path::new(p)))).unwrap_or_default(),xml(&dir.join("service.log"))).as_bytes())?;
-            let domain = format!("gui/{}", unsafe { libc::getuid() });
+            fs::create_dir_all(&directory)?;
+            let plist = launchd_plist(
+                &name,
+                &exe,
+                dir,
+                ca.as_deref(),
+                sys.map(|s| (s.user.as_str(), s.home.as_path())),
+            );
+            if sys.is_some() {
+                save_public(&path, plist.as_bytes())?;
+            } else {
+                save(&path, plist.as_bytes())?;
+            }
             let _ = Command::new("launchctl")
                 .args(["bootout", &domain])
                 .arg(&path)
                 .output();
-            wait_stopped(dir)?;
+            wait_stopped(dir, sys)?;
             if !Command::new("launchctl")
                 .args(["bootstrap", &domain])
                 .arg(path)
@@ -251,90 +456,207 @@ fn service(dir: &Path, install: bool) -> Result<(), Error> {
                 return Err("launchctl bootstrap failed".into());
             }
         } else {
-            let target = format!("gui/{}/{name}", unsafe { libc::getuid() });
             let _ = Command::new("launchctl")
-                .args(["bootout", &target])
+                .args(["bootout", &format!("{domain}/{name}")])
                 .output();
             if path.exists() {
                 fs::remove_file(path)?;
             }
         }
     } else {
-        let path = home.join(format!(".config/systemd/user/{name}.service"));
+        let path = match sys {
+            Some(_) => PathBuf::from(format!("/etc/systemd/system/{name}.service")),
+            None => PathBuf::from(std::env::var_os("HOME").ok_or("HOME required")?)
+                .join(format!(".config/systemd/user/{name}.service")),
+        };
+        let scope: &[&str] = if sys.is_some() { &[] } else { &["--user"] };
+        let unit = format!("{name}.service");
         if install {
             fs::create_dir_all(path.parent().unwrap())?;
-            let quote = |p: &Path| {
-                p.to_string_lossy()
-                    .replace('\\', "\\\\")
-                    .replace('"', "\\\"")
-                    .replace('%', "%%")
-            };
-            save(&path,format!("[Unit]\nDescription=WorkerPlane worker\n[Service]\nExecStart=\"{}\" run\nEnvironment=\"WORKER_PLANE_HOME={}\"\n{}Restart=on-failure\nRestartSec=5\n[Install]\nWantedBy=default.target\n",quote(&exe),quote(dir),ca.as_ref().map(|p|format!("Environment=\"SSL_CERT_FILE={}\"\n",quote(Path::new(p)))).unwrap_or_default()).as_bytes())?;
+            let text = systemd_unit(&exe, dir, ca.as_deref(), user);
+            if sys.is_some() {
+                save_public(&path, text.as_bytes())?;
+            } else {
+                save(&path, text.as_bytes())?;
+            }
             for args in [
-                &["--user", "daemon-reload"][..],
-                &["--user", "enable", &format!("{name}.service")][..],
-                &["--user", "restart", &format!("{name}.service")][..],
+                &["daemon-reload"][..],
+                &["enable", &unit][..],
+                &["restart", &unit][..],
             ] {
-                if !Command::new("systemctl").args(args).status()?.success() {
-                    return Err("systemctl failed; a user session is required".into());
+                if !Command::new("systemctl")
+                    .args(scope)
+                    .args(args)
+                    .status()?
+                    .success()
+                {
+                    return Err(if sys.is_some() {
+                        "systemctl failed".into()
+                    } else {
+                        "systemctl failed; a user session is required".into()
+                    });
                 }
             }
         } else {
             let _ = Command::new("systemctl")
-                .args(["--user", "disable", "--now", &format!("{name}.service")])
+                .args(scope)
+                .args(["disable", "--now", &unit])
                 .output();
             if path.exists() {
                 fs::remove_file(path)?;
             }
+            let _ = Command::new("systemctl")
+                .args(scope)
+                .arg("daemon-reload")
+                .output();
         }
     }
-    let _ = (config, ca);
     if !install {
-        wait_stopped(dir)?;
+        wait_stopped(dir, sys)?;
     }
     Ok(())
 }
-pub async fn dispatch() -> Result<Option<PathBuf>, Error> {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let Some(command) = args.first().map(String::as_str) else {
-        return Err("usage: worker install|join URL|status [--json]|workspace add ID PATH|workspace list|run|uninstall [--delete-data]|config.toml".into());
+fn install_system(root: &Path, user: Option<&str>) -> Result<System, Error> {
+    if unsafe { libc::geteuid() } != 0 {
+        return Err("install --system must run as root (sudo)".into());
+    }
+    let user = user
+        .ok_or("install --system requires --user ACCOUNT, the existing account commands run as")?;
+    let (uid, gid, home) = lookup(user)?;
+    let old = root
+        .join("system.json")
+        .exists()
+        .then(|| read_system(root))
+        .transpose()?;
+    if let Some(old) = &old {
+        if old.user != user {
+            return Err(format!(
+                "this system install runs as {}; uninstall it before changing the account",
+                old.user
+            )
+            .into());
+        }
+    }
+    use std::os::unix::fs::PermissionsExt;
+    for d in [root.to_owned(), root.join("bin")] {
+        fs::create_dir_all(&d)?;
+        std::os::unix::fs::chown(&d, Some(0), Some(0))?;
+        fs::set_permissions(&d, fs::Permissions::from_mode(0o755))?;
+    }
+    // Root can read a CA the service account cannot (under /root or a 0700
+    // home), so keep a public copy inside the install root.
+    let ca = match std::env::var_os("SSL_CERT_FILE") {
+        Some(p) => {
+            let pem = fs::read(p)?;
+            let copy = root.join("ca.pem");
+            save_public(&copy, &pem)?;
+            Some(copy)
+        }
+        None => old.and_then(|o| o.ca),
     };
+    let sys = System {
+        root: root.to_owned(),
+        user: user.to_owned(),
+        uid,
+        gid,
+        home,
+        ca,
+    };
+    private_dir(&sys.data())?;
+    std::os::unix::fs::chown(sys.data(), Some(uid), Some(gid))?;
+    save_public(
+        &root.join("system.json"),
+        serde_json::to_string(&json!({"user": user, "ca": sys.ca}))?.as_bytes(),
+    )?;
+    Ok(sys)
+}
+pub async fn dispatch() -> Result<Option<PathBuf>, Error> {
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let Some(command) = args.first().cloned() else {
+        return Err("usage: worker install [--system --user ACCOUNT]|join URL|status [--json]|workspace add ID PATH|workspace list|run|uninstall [--delete-data] (add --system to manage the system service)|config.toml".into());
+    };
+    let command = command.as_str();
     if !["install", "join", "status", "workspace", "run", "uninstall"].contains(&command) {
         return Ok(Some(PathBuf::from(command)));
     }
-    let dir = root()?;
-    private_dir(&dir)?;
+    let system = take_flag(&mut args, "--system");
+    let account = take_value(&mut args, "--user")?;
+    if account.is_some() && !(system && command == "install") {
+        return Err("--user only applies to install --system".into());
+    }
+    if system && command == "run" {
+        return Err("run takes WORKER_PLANE_HOME from the service definition".into());
+    }
+    let sys = if !system {
+        None
+    } else if command == "install" {
+        Some(install_system(&system_root()?, account.as_deref())?)
+    } else {
+        Some(read_system(&system_root()?)?)
+    };
+    if let Some(ca) = sys.as_ref().and_then(|s| s.ca.clone()) {
+        let _ = SYSTEM_CA.set(ca);
+    }
+    let dir = match &sys {
+        Some(s) => {
+            if !["install", "uninstall"].contains(&command) {
+                become_service_user(s)?;
+            } else if unsafe { libc::geteuid() } != 0 {
+                return Err(format!("{command} --system must run as root (sudo)").into());
+            }
+            s.data()
+        }
+        None => {
+            if command == "install" && unsafe { libc::geteuid() } == 0 {
+                return Err("install as root needs --system --user ACCOUNT; run without sudo for a per-user service".into());
+            }
+            let dir = root()?;
+            private_dir(&dir)?;
+            dir
+        }
+    };
+    let sys = sys.as_ref();
     match command {
         "install" => {
-            let running = fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(dir.join("worker.lock"))
-                .ok()
-                .map(|f| fs2::FileExt::try_lock_exclusive(&f).is_err())
-                .unwrap_or(false);
-            if running {
+            if worker_running(&dir) {
                 proof(&dir, "workspace").await?;
             }
-            if let Ok(ca) = std::env::var("SSL_CERT_FILE") {
-                let ca = fs::canonicalize(ca)?;
-                save(&dir.join("service-ca"), ca.to_string_lossy().as_bytes())?;
-            }
-            private_dir(&dir.join("bin"))?;
             use std::os::unix::fs::PermissionsExt;
-            let target = dir.join("bin/worker");
+            let (target, mode) = match sys {
+                Some(s) => (s.root.join("bin/worker"), 0o755),
+                None => {
+                    if let Ok(ca) = std::env::var("SSL_CERT_FILE") {
+                        let ca = fs::canonicalize(ca)?;
+                        save(&dir.join("service-ca"), ca.to_string_lossy().as_bytes())?;
+                    }
+                    private_dir(&dir.join("bin"))?;
+                    (dir.join("bin/worker"), 0o700)
+                }
+            };
             let current = std::env::current_exe()?;
             if current != target {
                 save(&target, &fs::read(current)?)?;
-                fs::set_permissions(&target, fs::Permissions::from_mode(0o700))?;
+                fs::set_permissions(&target, fs::Permissions::from_mode(mode))?;
             }
-            save(&dir.join("managed-install"), b"worker-plane-managed-v1")?;
-            service(&dir, true)?;
+            let marker = sys.map_or_else(|| dir.clone(), |s| s.root.clone());
+            if sys.is_some() {
+                save_public(&marker.join("managed-install"), b"worker-plane-managed-v1")?;
+            } else {
+                save(&marker.join("managed-install"), b"worker-plane-managed-v1")?;
+            }
+            service(&dir, sys, true)?;
             println!("Service: {}", service_name(&dir));
-            println!(
-                "Installed. Run: {} join https://your-server",
-                target.display()
-            );
+            match sys {
+                Some(s) => println!(
+                    "Installed as a system service running as {}. Run: sudo {} join --system https://your-server",
+                    s.user,
+                    target.display()
+                ),
+                None => println!(
+                    "Installed. Run: {} join https://your-server",
+                    target.display()
+                ),
+            }
         }
         "join" => {
             let url = reqwest::Url::parse(args.get(1).ok_or("join requires HTTPS URL")?)?;
@@ -442,8 +764,12 @@ pub async fn dispatch() -> Result<Option<PathBuf>, Error> {
                 .map(|f| fs2::FileExt::try_lock_exclusive(&f).is_err())
                 .unwrap_or(false);
             state["worker_running"] = json!(running);
-            state["service_running"] = json!(service_running(&dir));
+            state["service_running"] = json!(service_running(&dir, sys));
             state["service_name"] = json!(service_name(&dir));
+            state["service_scope"] = json!(if sys.is_some() { "system" } else { "user" });
+            if let Some(s) = sys {
+                state["service_account"] = json!(s.user);
+            }
             if dir.join("enrollment.json").exists() {
                 let m: Value = serde_json::from_slice(&fs::read(dir.join("enrollment.json"))?)?;
                 state["server"] = m["url"].clone();
@@ -482,18 +808,36 @@ pub async fn dispatch() -> Result<Option<PathBuf>, Error> {
             }
         }
         "uninstall" => {
-            service(&dir, false)?;
+            service(&dir, sys, false)?;
             if args.iter().any(|a| a == "--delete-data") {
-                if fs::read(dir.join("managed-install"))? != b"worker-plane-managed-v1" {
+                // A system install is removed whole: binary, system.json and data.
+                let installed = sys.map_or_else(|| dir.clone(), |s| s.root.clone());
+                if fs::read(installed.join("managed-install"))? != b"worker-plane-managed-v1" {
                     return Err("refusing to delete an unmanaged directory".into());
                 }
-                fs::remove_dir_all(&dir)?;
+                fs::remove_dir_all(&installed)?;
             }
             println!("Uninstalled");
         }
         _ => unreachable!(),
     }
     Ok(None)
+}
+fn take_flag(args: &mut Vec<String>, flag: &str) -> bool {
+    let before = args.len();
+    args.retain(|a| a != flag);
+    args.len() != before
+}
+fn take_value(args: &mut Vec<String>, flag: &str) -> Result<Option<String>, Error> {
+    let Some(i) = args.iter().position(|a| a == flag) else {
+        return Ok(None);
+    };
+    if i + 1 >= args.len() {
+        return Err(format!("{flag} requires a value").into());
+    }
+    let value = args.remove(i + 1);
+    args.remove(i);
+    Ok(Some(value))
 }
 
 #[cfg(test)]
@@ -544,5 +888,63 @@ mod tests {
         );
         assert_ne!(service_name(&d), service_name(&d.join("other")));
         fs::remove_dir_all(d).unwrap();
+    }
+    #[test]
+    fn user_unit_is_unchanged_and_system_unit_runs_as_the_account_at_boot() {
+        let (exe, dir, ca) = (
+            Path::new("/w/bin/worker"),
+            Path::new("/w"),
+            Path::new("/c/ca.pem"),
+        );
+        assert_eq!(
+            systemd_unit(exe, dir, Some(ca), None),
+            "[Unit]\nDescription=WorkerPlane worker\n[Service]\nExecStart=\"/w/bin/worker\" run\nEnvironment=\"WORKER_PLANE_HOME=/w\"\nEnvironment=\"SSL_CERT_FILE=/c/ca.pem\"\nRestart=on-failure\nRestartSec=5\n[Install]\nWantedBy=default.target\n"
+        );
+        let unit = systemd_unit(exe, dir, Some(ca), Some("ops"));
+        for line in [
+            "User=ops\n",
+            "ExecStart=\"/w/bin/worker\" run\n",
+            "Environment=\"WORKER_PLANE_HOME=/w\"\n",
+            "Environment=\"SSL_CERT_FILE=/c/ca.pem\"\n",
+            "KillMode=control-group\n",
+            "TimeoutStopSec=60\n",
+            "WantedBy=multi-user.target\n",
+        ] {
+            assert!(unit.contains(line), "{line}");
+        }
+        assert!(!unit.contains("default.target"));
+        let agent = launchd_plist("n", exe, dir, None, None);
+        assert!(!agent.contains("UserName") && !agent.contains("SSL_CERT_FILE"));
+        let daemon = launchd_plist(
+            "n",
+            exe,
+            dir,
+            Some(ca),
+            Some(("ops", Path::new("/Users/ops"))),
+        );
+        assert!(daemon.contains("<key>UserName</key><string>ops</string>"));
+        assert!(daemon.contains("<key>HOME</key><string>/Users/ops</string>"));
+        assert!(daemon.contains("<key>ExitTimeOut</key><integer>60</integer>"));
+        assert!(daemon.contains("<key>SSL_CERT_FILE</key><string>/c/ca.pem</string>"));
+    }
+    #[test]
+    fn system_flags_and_accounts_are_validated() {
+        let mut a: Vec<String> = ["install", "--system", "--user", "ops"]
+            .map(String::from)
+            .into();
+        assert!(take_flag(&mut a, "--system"));
+        assert_eq!(
+            take_value(&mut a, "--user").unwrap().as_deref(),
+            Some("ops")
+        );
+        assert_eq!(a, ["install"]);
+        let mut b: Vec<String> = ["install", "--user"].map(String::from).into();
+        assert!(take_value(&mut b, "--user").is_err());
+        for bad in ["", "-x", "a b", "a/b", "a\nUser=root"] {
+            assert!(!valid_user(bad), "{bad:?}");
+        }
+        assert!(valid_user("worker-plane"));
+        assert!(lookup("root").is_err());
+        assert!(lookup("no-such-account-wp").is_err());
     }
 }

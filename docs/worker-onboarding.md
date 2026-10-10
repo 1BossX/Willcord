@@ -21,7 +21,27 @@ worker status --json
 
 控制台打开“机器授权”，核对终端节点 ID 与控制台指纹，再批准。服务每 5 秒检查授权；获准后自动注册、完成对账。机器上线不等于可执行，需显示“可执行”。创建独立会话时选择默认 workspace 即可。
 
-Linux 服务名含数据目录摘要；`worker status` 显示 `service_name`。需要用户退出后及重启时保持运行，由管理员配置 `loginctl enable-linger <用户名>`。macOS LaunchAgent 在用户登录后启动，不提供登录前系统级运行。
+Linux 服务名含数据目录摘要；`worker status` 显示 `service_name`。用户级服务在用户退出后及重启时保持运行，需要管理员配置 `loginctl enable-linger <用户名>`；macOS LaunchAgent 只在用户登录后启动。服务器需要开机即运行时，改用下面的系统级服务。
+
+## 系统级服务
+
+系统级服务开机启动、不依赖登录会话，所有命令以指定的普通账户运行。账户需事先存在、不能是 root，并对要执行的工作目录有权限：
+
+```sh
+sudo ./worker-plane-worker-<版本>-<os>-<arch> install --system --user <账户>
+sudo <安装输出的路径> join --system https://plane.example.com
+sudo <安装输出的路径> status --system --json
+```
+
+| | Linux | macOS |
+|---|---|---|
+| 服务定义 | `/etc/systemd/system/<服务名>.service`，`WantedBy=multi-user.target` | `/Library/LaunchDaemons/<服务名>.plist` |
+| 二进制与 `system.json` | `/var/lib/worker-plane-system/`，root 所有 | `/Library/Application Support/WorkerPlane/`，root 所有 |
+| 身份、账本、token、默认目录 | 上述目录下的 `data/`，服务账户所有，0700 | 同左 |
+
+二进制和 `system.json` 归 root 所有，服务账户不能替换自己运行的程序。`join`、`status`、`workspace` 加 `--system` 后先切换到服务账户再读写数据，不会生成 root 所有的文件，可以用 sudo 运行，也可以直接以服务账户运行。私有 CA 在 install 时用 `sudo SSL_CERT_FILE=/absolute/ca.pem ... install --system --user <账户>` 传入，安装器把它复制为安装根目录下的 `ca.pem`（0644，root 所有），之后的命令和服务自动使用这份副本，原文件放在 `/root` 等服务账户读不到的位置也可以。更换 CA 时带上新的 `SSL_CERT_FILE` 重新 install。macOS 的 LaunchDaemon 写入服务账户的 `HOME`；systemd 的 `User=` 会自动设置。
+
+同一台机器上的用户级安装和系统级安装是两个独立节点，各有身份和服务名。升级时用新二进制重新运行同样的 `install --system --user <账户>`；更换账户需要先卸载。`WORKER_PLANE_SYSTEM_ROOT` 可指定其他安装根目录。
 
 ## 工作目录
 
@@ -55,6 +75,7 @@ CA 文件必须在服务启动时可读；更换路径后重新 install。凭据
 ```sh
 worker uninstall                 # 停止服务，保留数据
 worker uninstall --delete-data   # 同时删除该安装的数据
+sudo worker uninstall --system [--delete-data]   # 系统级服务；--delete-data 删除整个安装根目录
 ```
 
 私钥和账本应一起保留，不能克隆给第二台机器。身份丢失时不要按相同显示名称接管旧机器；撤销旧设备、核对未完成任务，以新身份重新加入。token 文件丢失且旧凭据已确认时，先撤销设备再批准，允许安全重新签发。

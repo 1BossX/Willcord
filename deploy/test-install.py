@@ -100,14 +100,14 @@ class InstallerTests(unittest.TestCase):
  def test_latest_and_system_account(self):
   r=self.run_worker('--system','--user','ops');self.assertEqual(r.returncode,0,r.stderr)
   self.assertIn('安装版本：v1.2.3',r.stdout)
-  self.assertTrue((self.root/'system data/bin/worker').exists())
+  self.assertTrue((Path(self.env['WORKER_PLANE_SYSTEM_ROOT'])/'bin/worker').exists())
   self.assertTrue(any('--system' in a and 'join' in a for _,a in self.calls()))
  def test_no_release_hash_download_and_account_fail_before_install(self):
   for env,args in [({'TEST_NO_RELEASE':'1'},[]),({'TEST_PRERELEASE':'1'},[]),({'TEST_BAD_HASH':'1'},[]),({'TEST_DOWNLOAD_FAIL':'1'},[]),({},['--system','--user','root']),({},['--system','--user','missing']),({'TEST_ARCH':'riscv64'},[])]:
    with self.subTest(env=env,args=args):
     r=self.run_worker(*args,env=env);self.assertNotEqual(r.returncode,0)
-    self.assertFalse((self.root/'user data/bin/worker').exists())
-    self.assertFalse((self.root/'system data/bin/worker').exists())
+    self.assertFalse((Path(self.env['WORKER_PLANE_HOME'])/'bin/worker').exists())
+    self.assertFalse((Path(self.env['WORKER_PLANE_SYSTEM_ROOT'])/'bin/worker').exists())
     self.clean_tmp()
  def test_reinstall_preserves_identity_and_ledger(self):
   data=self.root/"user's data";data.mkdir()
@@ -142,8 +142,8 @@ class InstallerTests(unittest.TestCase):
   self.assertEqual((deploy/'main.env').stat().st_mode&0o777,0o600)
   self.assertEqual((deploy/'.env').stat().st_mode&0o777,0o600)
   self.assertNotIn('INITIAL_ADMIN_PASSWORD',(deploy/'main.env').read_text())
-  self.assertIn("MODEL_API_KEY='key$with#special'",(deploy/'main.env').read_text())
-  self.assertIn("WORKER_PLANE_PORT='8443'",(deploy/'.env').read_text())
+  self.assertIn('MODEL_API_KEY="key$$with#special"',(deploy/'main.env').read_text())
+  self.assertIn('WORKER_PLANE_PORT="8443"',(deploy/'.env').read_text())
   self.assertIn('COMPOSE_PROJECT_NAME=',(deploy/'.env').read_text())
   self.assertEqual((deploy/'ca.pem').stat().st_mode&0o777,0o644)
   self.assertNotIn('long\'password',out)

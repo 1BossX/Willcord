@@ -46,12 +46,15 @@ prompt() {
   fi
   printf -v "$variable" '%s' "${value:-$fallback}"
 }
-# Compose env files support single-quoted literal values, including $ and #.
+# Preserve arbitrary single-line secrets with Compose's double-quote rules.
+# $$ prevents interpolation; backslashes and double quotes are escaped first.
 env_line() {
   local value="$2"
   [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] || fail "配置值不能包含换行。"
-  value=${value//\'/\\\'}
-  printf "%s='%s'\n" "$1" "$value"
+  value=${value//\\/\\\\}
+  value=${value//\"/\\\"}
+  value=${value//\$/\$\$}
+  printf '%s="%s"\n' "$1" "$value"
 }
 resolve_version() {
   local resolved

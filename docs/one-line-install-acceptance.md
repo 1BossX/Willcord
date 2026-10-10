@@ -10,6 +10,7 @@
 - 真实 HTTPS/WSS 测试：CLI 不设置 SSL_CERT_FILE 时使用已保存 CA；显式 SSL_CERT_FILE 覆盖保存副本；join 指纹与主节点公钥摘要一致；授权、任务、取消、超时、重启、撤销及重新批准均通过。
 - macOS arm64 实机用户级 LaunchAgent：安装器下载校验夹具产物并真实安装服务、申请、批准、对账、执行任务、再次安装；online=1、reconciled=1、blocked=0，任务 succeeded，ledger_id 保持不变。结束时卸载服务并删除隔离目录。
 - 经用户授权的 Linux x86_64 实机：使用已有普通账户及独立临时安装根目录，安装真实 systemd 系统级服务；经 loopback SSH 反向隧道连接隔离主节点，完成申请、批准、对账、真实任务和重装。online=1、reconciled=1、blocked=0，任务 succeeded，账本身份保持。结束时卸载服务、清理目录并关闭隧道。
+- Compose 密钥往返：真实容器验证 10 个组合，包含单引号、反斜杠紧邻引号、末尾反斜杠、双引号、美元符号、Unicode 与 Tab；已纳入两架构 Docker CI。
 - Docker 初始化：在 Linux 容器中运行真实交互向导，使用本地构建的 main/Caddy 镜像；生成独立 Compose 项目、环境文件 0600；HTTPS 就绪、管理员登录成功，首次密码从文件移除后重新启动仍就绪。容器实际 API key 保留 `$`/`#`，管理员密码保留单引号及 `$`/`#`。Release 元数据与模板下载为本地校验夹具。
 - Chrome：真实 HTTPS 测试页面登录，打开“机器授权 → 添加机器”，验证用户/系统级切换、拒绝 root、带空格及单引号 CA 路径、生成命令、剪贴板内容一致。390px 手机宽度下无横向溢出；桌面与手机截图已视觉检查。测试浏览器只对生成的隔离 HTTPS 夹具忽略证书错误；worker 和安装器使用真实 CA 校验。
 

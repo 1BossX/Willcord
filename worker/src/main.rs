@@ -1,3 +1,4 @@
+mod cli;
 mod generated;
 mod ledger;
 mod logs;
@@ -21,8 +22,8 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::{
-    net::TcpStream,
-    sync::{Notify, mpsc, watch},
+    net::{TcpStream, UnixListener, UnixStream},
+    sync::{Notify, mpsc, oneshot, watch},
 };
 use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream, connect_async_with_config,
@@ -51,7 +52,7 @@ const DEFAULT_COMMAND_PATH: &str = "/usr/local/bin:/usr/bin:/bin";
 /// Chunks answered per log_fetch; the main node asks again for more.
 const LOG_FETCH_BATCH: u64 = 64;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Config {
     worker_id: String,
@@ -152,6 +153,88 @@ struct Worker {
     shutdown: Arc<Notify>,
 }
 
+struct WorkspaceChange {
+    config: String,
+    response: oneshot::Sender<Result<(), String>>,
+}
+
+async fn handle_workspace_control(
+    mut socket: UnixStream,
+    data_dir: PathBuf,
+    config_file: PathBuf,
+    updates: &mpsc::Sender<WorkspaceChange>,
+) -> Result<(), Error> {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    let result: Result<(), Error> = async {
+        let mut reader = BufReader::new(&mut socket);
+        let mut line = String::new();
+        let bytes =
+            tokio::time::timeout(Duration::from_secs(5), reader.read_line(&mut line)).await??;
+        if bytes == 0 || line.len() > 4096 {
+            return Err("invalid workspace control request".into());
+        }
+        let request: Value = serde_json::from_str(&line)?;
+        let id = request["workspace_id"]
+            .as_str()
+            .ok_or("workspace ID required")?;
+        let path = request["path"].as_str().ok_or("workspace path required")?;
+        let mut config: Config = toml::from_str(&fs::read_to_string(&config_file)?)?;
+        if id.is_empty()
+            || id.len() > 128
+            || !PathBuf::from(path).is_absolute()
+            || !PathBuf::from(path).is_dir()
+            || config.workspaces.iter().any(|w| w.workspace_id == id)
+        {
+            return Err("invalid or duplicate workspace".into());
+        }
+
+        // The server rejects this while a job owns the slot and leaves its WSS
+        // connection intact. Only a successful idle preflight may interrupt it.
+        cli::proof(&data_dir, "workspace").await?;
+
+        let version = config
+            .workspaces
+            .iter()
+            .map(|w| w.config_version)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or("workspace version exhausted")?;
+        for workspace in &mut config.workspaces {
+            workspace.config_version = version;
+        }
+        config.workspaces.push(Workspace {
+            workspace_id: id.into(),
+            path: path.into(),
+            repo_id: format!("local/{id}"),
+            config_version: version,
+            is_default: false,
+        });
+
+        let (response, accepted) = oneshot::channel();
+        updates
+            .send(WorkspaceChange {
+                config: toml::to_string_pretty(&config)?,
+                response,
+            })
+            .await
+            .map_err(|_| "worker is shutting down")?;
+        match tokio::time::timeout(Duration::from_secs(10), accepted).await?? {
+            Ok(()) => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+    .await;
+
+    let response = match result {
+        Ok(()) => "ok\n".to_owned(),
+        Err(error) => format!("{error}\n"),
+    };
+    socket.write_all(response.as_bytes()).await?;
+    Ok(())
+}
+
 fn validator() -> &'static jsonschema::Validator {
     static VALIDATOR: OnceLock<jsonschema::Validator> = OnceLock::new();
     VALIDATOR.get_or_init(|| {
@@ -197,10 +280,10 @@ async fn main() -> Result<(), Error> {
     rustls::crypto::ring::default_provider()
         .install_default()
         .map_err(|_| "TLS crypto provider unavailable")?;
-    let file = std::env::args()
-        .nth(1)
-        .ok_or("usage: worker-plane-worker config.toml")?;
-    let config: Config = toml::from_str(&fs::read_to_string(file)?)?;
+    let Some(file) = cli::dispatch().await? else {
+        return Ok(());
+    };
+    let config: Config = toml::from_str(&fs::read_to_string(&file)?)?;
     if !config.url.starts_with("wss://") {
         return Err("WSS required".into());
     }
@@ -284,7 +367,7 @@ async fn main() -> Result<(), Error> {
     });
     let token = TokenSource::new(config.token_file, std::env::var("WORKER_TOKEN").ok())?;
     token.read()?;
-    let worker = Worker {
+    let mut worker = Worker {
         worker_id: config.worker_id,
         url: config.url,
         token,
@@ -309,8 +392,45 @@ async fn main() -> Result<(), Error> {
         live_logs,
         shutdown,
     };
+    let socket_path = worker.data_dir.join("control.sock");
+    if socket_path.exists() {
+        fs::remove_file(&socket_path)?;
+    }
+    let control = UnixListener::bind(&socket_path)?;
+    let (control_updates, mut control_updates_rx) = mpsc::channel::<WorkspaceChange>(1);
+    let control_data_dir = worker.data_dir.clone();
+    let control_config_file = file.clone();
+    tokio::spawn(async move {
+        loop {
+            match control.accept().await {
+                Ok((socket, _)) => {
+                    if let Err(error) = handle_workspace_control(
+                        socket,
+                        control_data_dir.clone(),
+                        control_config_file.clone(),
+                        &control_updates,
+                    )
+                    .await
+                    {
+                        eprintln!("workspace control request failed: {error}");
+                    }
+                }
+                Err(error) => {
+                    eprintln!("workspace control socket failed: {error}");
+                    break;
+                }
+            }
+        }
+    });
     let mut backoff = Duration::from_secs(1);
     loop {
+        if worker.data_dir.join("enrollment.json").exists() {
+            if let Ok(credential) = cli::proof(&worker.data_dir, "credentials").await {
+                if let Some(token) = credential["token"].as_str() {
+                    cli::save(&worker.data_dir.join("token"), token.as_bytes())?;
+                }
+            }
+        }
         let mut registered = false;
         // Shutdown cancels the session wherever it is waiting: inside a frame
         // handler, a chunked transfer or the handshake. Ledger writes are
@@ -318,6 +438,18 @@ async fn main() -> Result<(), Error> {
         let outcome = tokio::select! {
             outcome = session(&worker, &mut completed_rx, &mut live_logs_rx, &mut registered) => outcome,
             _ = worker.shutdown.notified() => return stop_running(&worker).await,
+            change = control_updates_rx.recv() => {
+                if let Some(change) = change {
+                    let result: Result<(), Error> = (|| {
+                        let config: Config = toml::from_str(&change.config)?;
+                        cli::save(&file, change.config.as_bytes())?;
+                        worker.workspaces = Arc::new(config.workspaces);
+                        Ok(())
+                    })();
+                    let _ = change.response.send(result.map_err(|error| error.to_string()));
+                }
+                continue;
+            },
         };
         match outcome {
             Ok(()) => return Ok(()),
@@ -325,9 +457,13 @@ async fn main() -> Result<(), Error> {
                 if registered {
                     backoff = Duration::from_secs(1);
                 }
+                cli::record_status(&worker.data_dir, Some(error.to_string()));
                 eprintln!("connection lost: {error}; reconnecting in {backoff:?}");
             }
-            Err(error) => return Err(error),
+            Err(error) => {
+                cli::record_status(&worker.data_dir, Some(error.to_string()));
+                return Err(error);
+            }
         }
         tokio::select! {
             _ = tokio::time::sleep(backoff) => {}
@@ -366,6 +502,14 @@ async fn connect(worker: &Worker) -> Result<Socket, Error> {
         // HTTP 4xx: both need an operator, not another attempt.
         Err(tungstenite::Error::Io(e)) if e.kind() != std::io::ErrorKind::InvalidData => {
             Err(retry(e))
+        }
+        Err(tungstenite::Error::Http(response))
+            if worker.data_dir.join("enrollment.json").exists()
+                && matches!(response.status().as_u16(), 401 | 403) =>
+        {
+            Err(retry(
+                "device authorization unavailable; awaiting administrator",
+            ))
         }
         Err(tungstenite::Error::Http(response)) if response.status().is_server_error() => {
             Err(retry(format!("HTTP {}", response.status())))
@@ -562,6 +706,7 @@ async fn session(
                         }
                         if ack.ack_type == "reconcile" && !reconciled {
                             reconciled = true;
+                            cli::record_status(&worker.data_dir, None);
                             send(&mut socket, &generated::WorkerReady {
                                 protocol_version: 1,
                                 kind: "worker_ready".into(),

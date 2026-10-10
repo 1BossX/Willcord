@@ -1,0 +1,2 @@
+77075e4af2c9691d445a9f7aa99e8455f8d68754be4ad838a9a99addf80d07f5  worker/target/release/worker-plane-worker
+77075e4af2c9691d445a9f7aa99e8455f8d68754be4ad838a9a99addf80d07f5  /tmp/worker-plane-service-AATxYZ/data/bin/worker

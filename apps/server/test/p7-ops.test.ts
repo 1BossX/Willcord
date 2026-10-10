@@ -76,7 +76,7 @@ async function midCallRestore(ackAfter: boolean) {
   // Online: the main node keeps running and writing while the copy is taken.
   const summary = await backup(s.dir, copy);
   assert.equal(summary.integrity, "ok");
-  assert.equal(summary.schema, "012_p7_ops.sql");
+  assert.equal(summary.schema, "013_enrollment.sql");
   assert.equal(summary.unsettled_calls, 1, "the copy holds the call as dispatched");
   assert.deepEqual(inspect(copy), summary);
   await s.until(() => s.state(slow) === "succeeded");
@@ -174,7 +174,7 @@ test("P7-A an upgrade keeps unsettled calls, dedupe watermarks and parent waits,
     db = openDatabase(path);
     db.close();
     const after = inspect(path);
-    assert.equal(after.schema, "012_p7_ops.sql");
+    assert.equal(after.schema, "013_enrollment.sql");
     const { schema: _a, ...kept } = after, { schema: _b, ...was } = before;
     assert.deepEqual(kept, was);
     assert.deepEqual([after.unsettled_calls, after.call_seq_watermark, after.queue_seq_watermark, after.waiting_parents, after.open_children], [1, 2, 7, 1, 1]);
@@ -270,7 +270,7 @@ test("P7-A SIGTERM stops a worker gracefully: the running command's process grou
   } finally { await s.close(); }
 });
 
-test("P7-A every route except health, login, session probe and the worker socket needs a login", async () => {
+test("P7-A every route except health, login, session probe the worker socket and signed enrollment need a login", async () => {
   const db = openDatabase(":memory:");
   const app = await createApp(db, "https://localhost:8443", { logging: false });
   try {
@@ -280,7 +280,7 @@ test("P7-A every route except health, login, session probe and the worker socket
       const m = line.match(/(\/\S*) \(([^)]+)\)/);
       if (m) for (const method of m[2].split(", ")) routes.add(`${method} ${m[1]}`);
     }
-    const open = new Set(["GET /health", "HEAD /health", "POST /auth/login", "GET /auth/session", "HEAD /auth/session", "GET /ws/worker", "HEAD /ws/worker"]);
+    const open = new Set(["GET /health", "HEAD /health", "POST /auth/login", "GET /auth/session", "HEAD /auth/session", "GET /ws/worker", "HEAD /ws/worker", "POST /enrollment/challenge", "POST /enrollment/apply", "POST /enrollment/status", "POST /enrollment/credentials", "POST /enrollment/workspace"]);
     assert.ok(routes.size > 25, [...routes].join("\n"));
     for (const route of routes) {
       if (open.has(route)) continue;

@@ -22,7 +22,7 @@
 	# API, login, the worker socket (WSS) and the event stream (SSE) go to the
 	# main node. Responses are flushed as written, and a config reload keeps
 	# open sockets for a while instead of cutting every worker off at once.
-	@server path /api/* /auth/* /ws/worker /health
+	@server path /enrollment/* /api/* /auth/* /ws/worker /health
 	handle @server {
 		reverse_proxy 127.0.0.1:3000 {
 			flush_interval -1

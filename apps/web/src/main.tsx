@@ -1,3 +1,4 @@
+import { EnrollmentPanel } from "./enrollment";
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { marked } from "marked";
@@ -8,6 +9,7 @@ import "./style.css";
 
 type Worker = {
   worker_id: string;
+  display_name?: string | null;
   online: number;
   reconciled: number;
   blocked: number;
@@ -1311,6 +1313,7 @@ function App() {
             <small>多机器任务协调</small>
           </span>
         </button>
+        <EnrollmentPanel />
         <div className="sidebar-section-label">
           <span>机器</span>
           <span>{workers.length.toString().padStart(2, "0")}</span>
@@ -1333,7 +1336,7 @@ function App() {
                     />
                   </span>
                   <span className="worker-name">
-                    <strong>{worker.worker_id}</strong>
+                    <strong title={worker.worker_id}>{worker.display_name ?? worker.worker_id}</strong>
                     <small>{worker.online ? "在线" : "离线"}</small>
                   </span>
                   <span className={`worker-state tone-${state.tone}`}>
@@ -1474,7 +1477,7 @@ function App() {
             <span className="breadcrumb">
               工作台
               <Icon name="chevron" />
-              {selectedWorker ?? "Main Agent"}
+              {activeWorker?.display_name ?? selectedWorker ?? "Main Agent"}
             </span>
             <h1>
               {activeSession?.title ?? activeSession?.workspace_id ??
@@ -1593,7 +1596,7 @@ function App() {
                         {state.label}
                       </span>
                     </div>
-                    <strong>{worker.worker_id}</strong>
+                    <strong title={worker.worker_id}>{worker.display_name ?? worker.worker_id}</strong>
                     <span className="machine-card-bottom">
                       <span
                         className={`connection-label ${worker.online ? "is-online" : ""}`}
@@ -1631,7 +1634,7 @@ function App() {
             <div className="target-bar">
               <Icon name="lock" />
               <span>固定目标</span>
-              <strong>{selectedWorker}</strong>
+              <strong title={selectedWorker ?? undefined}>{activeWorker?.display_name ?? selectedWorker}</strong>
               <span className="target-separator">/</span>
               <strong>
                 {activeSession?.workspace_id ?? "尚未选择工作目录"}
@@ -1674,7 +1677,7 @@ function App() {
                   <span className="empty-icon">
                     <Icon name="chat" />
                   </span>
-                  <h2>为 {selectedWorker} 开始一个独立会话</h2>
+                  <h2>为 {activeWorker?.display_name ?? selectedWorker} 开始一个独立会话</h2>
                   <p>明确选择工作目录后，这个会话始终在同一目标上执行。</p>
                   <button
                     className="primary-button"
@@ -2052,7 +2055,7 @@ function App() {
           >
             {workers.map((worker) => (
               <option key={worker.worker_id} value={worker.worker_id}>
-                {worker.worker_id} · {worker.online ? "在线" : "离线"}
+                {worker.display_name ?? worker.worker_id} · {worker.online ? "在线" : "离线"}
               </option>
             ))}
           </select>

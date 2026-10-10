@@ -1,0 +1,14 @@
+{
+  "blocked": 0,
+  "data_dir": "/var/folders/6l/bl0m_k4x5yx3j3v9w3dgb01m0000gn/T/worker-plane-p3c-3fZevn/managed",
+  "default_directory": "/var/folders/6l/bl0m_k4x5yx3j3v9w3dgb01m0000gn/T/worker-plane-p3c-3fZevn/managed/workspaces/default",
+  "last_error": null,
+  "online": 1,
+  "reconciled": 1,
+  "server": "https://localhost:65393",
+  "service_name": "org.workerplane.worker.8043eceda8dc",
+  "service_running": true,
+  "state": "approved",
+  "worker_id": "14e3558be8ab808fb01a4c8391847948edb161353503347742744f82daef28e5",
+  "worker_running": true
+}

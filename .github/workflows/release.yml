@@ -13,12 +13,21 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: macos
-            runs-on: '["self-hosted", "macOS"]'
-          - name: linux
-            runs-on: '["self-hosted", "Linux"]'
+          - name: macos-arm64
+            arch: arm64
+            runs-on: '["macos-14"]'
+          - name: macos-x86_64
+            arch: x86_64
+            runs-on: '["macos-15-intel"]'
+          - name: linux-x86_64
+            arch: x86_64
+            runs-on: '["ubuntu-24.04"]'
+          - name: linux-arm64
+            arch: aarch64
+            runs-on: '["ubuntu-24.04-arm"]'
     runs-on: ${{ fromJSON(matrix.runs-on) }}
     steps:
+      - run: test "$(uname -m)" = "${{ matrix.arch }}"
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
@@ -28,6 +37,10 @@ jobs:
         with:
           toolchain: stable
       - run: cargo build --locked --release --manifest-path worker/Cargo.toml
+      - run: cargo test --locked --manifest-path worker/Cargo.toml
+      - run: worker/target/release/worker-plane-worker status --json
+        env:
+          WORKER_PLANE_HOME: ${{ runner.temp }}/worker-smoke
       - name: Package worker
         run: |
           os=$(uname -s | tr '[:upper:]' '[:lower:]')

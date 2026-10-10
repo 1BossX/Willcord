@@ -1,3 +1,4 @@
+import { enrollmentPaths, registerEnrollment } from "./enrollment.js";
 import Fastify from "fastify";
 import type { FastifyLoggerOptions } from "fastify";
 import cookie from "@fastify/cookie";
@@ -129,6 +130,7 @@ export async function createApp(
     Boolean(token && db.prepare("SELECT 1 FROM auth_sessions WHERE digest=? AND expires_at>?").get(digest(token), now()));
   app.addHook("onRequest", async (req, reply) => {
     if (
+      enrollmentPaths.has(req.url.split("?")[0]) ||
       req.url.split("?")[0] === "/health" ||
       req.url.split("?")[0] === "/auth/login" ||
       req.url.split("?")[0] === "/auth/session" ||
@@ -392,10 +394,16 @@ export async function createApp(
       return reply.code(409).send({ error: "workspace_selection_required" });
     return { workspace: workspaces[0] };
   });
+  registerEnrollment(app, db, now, (id) => {
+    const c = connections.get(id);
+    if (c) { offline(id, c.epoch); c.socket.close(1008, "device authorization revoked"); connections.delete(id); }
+  });
   app.post("/api/worker-tokens", async (req, reply) => {
     const id = (req.body as { worker_id?: unknown } | null)?.worker_id;
     if (typeof id !== "string" || !id.length || id.length > 128)
       return reply.code(400).send({ error: "worker_id" });
+    const device = db.prepare("SELECT state FROM enrollments WHERE worker_id=?").get(id) as {state:string}|undefined;
+    if (device && device.state !== "approved") return reply.code(403).send({error:"device_not_approved"});
     const token = secret();
     db.prepare("INSERT INTO worker_tokens VALUES (?,?,NULL)").run(
       digest(token),
@@ -580,6 +588,7 @@ export async function createApp(
               socket,
               tokenDigest: workerTokenDigest,
             });
+            db.prepare("UPDATE enrollments SET confirmed_digest=?,pending_digest=NULL WHERE worker_id=? AND pending_digest=? AND state='approved'").run(workerTokenDigest, id, workerTokenDigest);
             old?.socket.close(1008, "connection replaced");
             clearTimeout(registrationDeadline);
             socket.send(

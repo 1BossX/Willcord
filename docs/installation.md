@@ -4,17 +4,17 @@
 
 安装器需要 Bash 3.2+、curl 和 shasum/sha256sum。它只使用已发布的正式 Release；没有正式版本时退出，不使用草稿、预发布或源码构建结果。省略 `--version` 时下载最新正式版本，并显示实际版本。需要固定版本可加 `--version vX.Y.Z`。预发布版本（如 `v0.1.0-rc.1`）只用于验收，必须用 `--version` 显式指定，安装器会标明“预发布”。首次发布包含此安装器和新 CLI 的版本之后，一行安装入口才可用。
 
-## CA 指纹自动接入（开发中，尚未发布）
+## CA 指纹自动接入
 
-本分支的控制台“机器授权 → 添加机器”默认选择“自动获取 CA”。浏览器仍需先信任主节点导出的根证书；执行机器无需提前复制证书。控制台通过已信任的 HTTPS 获取公开根证书，计算证书 DER 的 SHA-256 指纹，并写入安装命令。
+控制台“机器授权 → 添加机器”默认选择“自动获取 CA”。浏览器仍需先信任主节点导出的根证书；执行机器无需提前复制证书。控制台通过已信任的 HTTPS 获取公开根证书，计算证书 DER 的 SHA-256 指纹，并写入安装命令。
 
-使用本分支的安装器和更新后的 Caddy 配置，可以在执行机器运行：
+在执行机器运行控制台复制的命令；命令形如：
 
 ```sh
-bash ./deploy/install.sh worker --version v0.2.0 --server 'https://plane.internal:8443' --ca-fingerprint '<控制台提供的64位十六进制指纹>'
+curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- worker --server 'https://plane.internal:8443' --ca-fingerprint '<控制台提供的64位十六进制指纹>'
 ```
 
-该命令可以使用现有 v0.2.0 worker 二进制，但公开 Pages 安装器及 v0.2.0 主节点镜像尚不包含此入口；目前请使用本分支安装器，并更新 Caddy 配置。正式发布后，控制台的一行命令才适用于公开下载入口。
+该命令须使用包含此能力的正式 Release；公开 v0.2.0 安装器及主节点镜像尚不包含该入口。未升级时继续使用本页的手动 CA 兼容流程。
 
 安装器仅在获取 `/.well-known/willcord/ca.pem` 时暂不验证证书，不携带登录凭据、不跟随重定向，并限制响应大小。核对根证书指纹后，所有 HTTPS/WSS 请求恢复完整证书链及主机名验证。错误指纹会在安装前退出。不要从同一条未经验证的连接取得并信任指纹；应从已信任的控制台或管理员渠道复制。
 
@@ -44,31 +44,31 @@ curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- main --serv
 
 手动 Docker 部署与升级见 [Docker 指南](docker.md)，Linux systemd 部署见 [运维手册](operations.md#2-安装主节点linux)。
 
-## 2. 信任并传递内部 CA
+## 2. 信任内部 CA
 
 本次安装使用 Caddy 内部 CA，即使地址是公网域名也需要分发根证书。`ca.pem` 是公开根证书，不包含私钥。
 
 - **浏览器机器**：macOS 将证书导入钥匙串并设为受信任的根证书；Linux 按发行版/浏览器的证书管理导入；Firefox 使用其证书设置导入。只信任自己部署导出的证书，不关闭 TLS 校验。
-- **执行机器**：通过可信渠道安全复制 `ca.pem` 到可读的绝对文件路径，记住该路径。此路径属于执行机器，不能照抄主节点上的路径。
+- **执行机器**：默认不需要保存 `ca.pem`。从已经信任的控制台复制带 CA 指纹的安装命令；安装器下载公开根证书、核对指纹并把它保存到 worker 的私有安装目录。
 
-复制后可在执行机器确认：
+手动 CA 兼容流程才需要复制证书；复制后可在执行机器确认：
 
 ```sh
 curl --cacert '/absolute/ca.pem' 'https://plane.internal:8443/health'
 ```
 
-**成功标志**：TLS 校验通过且主节点就绪。保留主节点 `caddy-data` 卷；丢失此卷会生成新 CA，需要重新分发证书。
+**成功标志**：浏览器能安全打开控制台，worker 安装器显示“CA 指纹已核对”。保留主节点 `caddy-data` 卷；丢失此卷会生成新 CA，须从可信控制台获取新的安装命令。
 
 ## 3. 在每台执行机器安装 worker
 
-登录控制台，打开“机器授权 → 添加机器”，选择安装方式、输入执行机器上的 CA 绝对路径，复制生成的一行命令。
+登录控制台，打开“机器授权 → 添加机器”，选择安装方式，保留“自动获取 CA”，复制生成的一行命令。它包含主节点地址和 CA 指纹，不包含模型 key、管理员密码或设备 token。
 
 ### 个人电脑：用户级服务
 
 以普通账户运行，不加 sudo：
 
 ```sh
-curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- worker --server 'https://plane.internal:8443' --ca '/absolute/ca.pem'
+curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- worker --server 'https://plane.internal:8443' --ca-fingerprint '<控制台提供的64位指纹>'
 ```
 
 Linux 需要 systemd 用户会话；管理员可以通过 `loginctl enable-linger <账户>` 让服务退出登录后及重启时继续运行。macOS LaunchAgent 在用户登录后启动。
@@ -78,10 +78,10 @@ Linux 需要 systemd 用户会话；管理员可以通过 `loginctl enable-linge
 先准备已有的非 root 账户，它的实际权限决定任务能访问的文件和执行的命令。安装器不创建账户、不调整已有项目权限；需要时只通过 sudo 执行系统级安装与 join：
 
 ```sh
-curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- worker --server 'https://plane.internal:8443' --ca '/absolute/ca.pem' --system --user 'ops'
+curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- worker --server 'https://plane.internal:8443' --ca-fingerprint '<控制台提供的64位指纹>' --system --user 'ops'
 ```
 
-支持 Linux/macOS x86_64/arm64；Linux 二进制需要 glibc 2.17 或更新。安装器自动选择文件并校验 SHA-256，再安装服务并提交加入申请。CA 被复制到安装目录，后台服务及后续 CLI 自动使用。原始证书文件可在安装成功后移走；保留安装目录内的副本。安装不修改 PATH，命令输出会给出带引号的绝对路径。
+支持 Linux/macOS x86_64/arm64；Linux 二进制需要 glibc 2.17 或更新。安装器自动选择文件并校验 SHA-256，核对 CA 指纹，再安装服务并提交加入申请。CA 被保存到安装目录，后台服务及后续 CLI 自动使用。安装不修改 PATH，命令输出会给出带引号的绝对路径。
 
 **成功标志**：终端显示节点 ID、公钥 SHA-256 指纹及授权状态。申请成功并不意味着已经可执行。
 
@@ -114,7 +114,7 @@ curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- worker --se
 - 升级前暂停主节点调度、等待任务结束并备份。worker 使用同样的安装命令，指定新的正式版本；身份、token 和账本保留，忙时安装失败。升级后验证对账和真实任务，再恢复调度。
 - 主节点向导只用于新部署；升级按 [Docker 指南](docker.md#升级) 操作，不能用新目录冒充原部署的升级。
 - 无正式 Release：等待正式版本发布。404、下载或校验失败：安装器返回非零，不运行下载的二进制。
-- TLS 失败：确认地址、CA 来源和文件内容。换 CA 时重新运行带新 `--ca` 的 worker 安装命令。
+- TLS 失败：确认地址和浏览器/控制台的信任状态。根 CA 变化后，从可信控制台重新复制带新指纹的安装命令；手动 CA 模式则重新运行带新 `--ca` 的安装命令。
 - 用户级与系统级安装各有独立身份，不要克隆数据目录到第二台机器。撤销、未知执行状态和恢复见 [worker 安装与授权](worker-onboarding.md) 与 [运维手册](operations.md)。
 
 安装器与实机验收记录见 [一行安装验收](one-line-install-acceptance.md)。

@@ -82,10 +82,10 @@ sudo install -d -m 0755 /etc/worker-plane
    - 执行 `sudo systemctl restart caddy`。
    - `WORKER_PLANE_SITE` 可以是主机名或 IP，worker 和浏览器都用这个地址访问。
 
-6. 分发内部 CA：Caddy 第一次签发证书后，根证书在它的数据目录里。用系统包安装时一般是 `/var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt`。
-   - 把这个文件复制到每台 worker 的 `ca.pem`。它是公开证书，不是密钥。
-   - 浏览器所在的机器也要信任这个根证书，否则无法登录。
-   - 在 worker 上用 `curl --cacert ca.pem https://plane.internal:8443/health` 验证。
+6. 配置内部 CA 信任：Caddy 第一次签发证书后，根证书在它的数据目录里。用系统包安装时一般是 `/var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt`。
+   - 浏览器所在的机器要信任这个根证书，否则无法安全登录。
+   - worker 使用控制台“机器授权 → 添加机器”生成的带 CA 指纹命令；安装器会下载固定公开证书端点，核对指纹后保存根证书。
+   - 旧版或手动配置的 worker 才复制这个文件并以 `curl --cacert ca.pem https://plane.internal:8443/health` 验证。
 
 7. 启用每日备份：
 

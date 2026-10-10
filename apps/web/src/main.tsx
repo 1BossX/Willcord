@@ -709,7 +709,7 @@ function ChatMessage({ message, agent = "Worker Agent", onOpenSession, delegatio
       className={`chat-message ${value.role === "user" ? "from-user" : "from-agent"}`}
     >
       <span className="message-avatar">
-        {value.role === "user" ? "你" : <Icon name="plane" />}
+        {value.role === "user" ? "你" : <img src="/brand/logo-on-dark.svg" alt="" />}
       </span>
       <div className="message-body">
         <div className="message-author">
@@ -786,7 +786,7 @@ function PendingCall({ call, log }: { call: Call; log?: LogState }) {
 function DraftMessage({ draft, agent }: { draft: Draft; agent: string }) {
   return (
     <div className={`chat-message from-agent draft-message ${draft.state === "interrupted" ? "is-interrupted" : ""}`}>
-      <span className="message-avatar"><Icon name="plane" /></span>
+      <span className="message-avatar"><img src="/brand/logo-on-dark.svg" alt="" /></span>
       <div className="message-body">
         <div className="message-author">
           {agent}
@@ -1199,7 +1199,7 @@ function App() {
     return (
       <div className="auth-loading">
         <span className="brand-mark">
-          <Icon name="plane" />
+          <img src="/brand/logo-on-dark.svg" alt="" />
         </span>
         <p>正在连接工作台…</p>
       </div>
@@ -1210,21 +1210,21 @@ function App() {
         <section className="login-story">
           <div className="brand">
             <span className="brand-mark">
-              <Icon name="plane" />
+              <img src="/brand/logo-on-dark.svg" alt="" />
             </span>
-            <span>Worker Plane</span>
+            <span>Willcord</span>
           </div>
           <div>
-            <span className="eyebrow">YOUR MACHINES. ONE WORKSPACE.</span>
+            <span className="eyebrow">ONE PLAN. MANY HANDS.</span>
             <h1>
-              让任务，
+              大脑留在中心，
               <br />
-              在正确的机器上完成。
+              机器只管执行。
             </h1>
             <p>
-              独立会话、固定工作目录。
+              面向内网与生产环境的 AI 运维控制面。
               <br />
-              从每一次执行到最终结果，进度始终清晰可见。
+              断线先对账，未知不重跑。
             </p>
           </div>
           <span className="login-footnote">
@@ -1287,10 +1287,10 @@ function App() {
       >
         <div className="brand">
           <span className="brand-mark">
-            <Icon name="plane" />
+            <img src="/brand/logo-on-dark.svg" alt="" />
           </span>
           <span>
-            Worker Plane<small>REMOTE OPERATIONS</small>
+            Willcord<small>AI OPERATIONS</small>
           </span>
           <button
             ref={navClose}

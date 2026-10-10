@@ -1,10 +1,9 @@
 name: Docker
 # Main node images on GHCR: ghcr.io/1bossx/worker-plane-main and -caddy.
-# Runs on a self-hosted Linux x86_64 runner with Docker, buildx and compose.
-# amd64 builds natively; arm64 builds under QEMU on the same runner (native
-# modules compile in the emulated image, so that build is slow). Both images
-# pass deploy/docker/smoke.sh before a v* tag pushes the multi-arch tags.
-# Pull requests only build and smoke-test.
+# Each architecture builds natively on its own runner (native modules compile
+# in the image) and passes deploy/docker/smoke.sh before anything is pushed.
+# A v* tag pushes by digest per architecture, then one job joins them into
+# multi-arch tags. Pull requests only build and smoke-test.
 on:
   push:
     tags: ['v*']
@@ -27,57 +26,85 @@ concurrency:
   cancel-in-progress: true
 jobs:
   build:
-    # The repository is public: never run a fork's pull request on the
-    # self-hosted runner (this job starts privileged containers).
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ["self-hosted", "Linux", "X64"]
-    timeout-minutes: 120
+    name: build (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            arch: amd64
+            runs-on: ubuntu-24.04
+          - platform: linux/arm64
+            arch: arm64
+            runs-on: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runs-on }}
     permissions:
       contents: read
       packages: write
     steps:
-      - name: Check Docker
-        run: |
-          test "$(uname -m)" = x86_64
-          docker info --format 'Docker {{.ServerVersion}} {{.OSType}}/{{.Architecture}}'
-          docker buildx version
-          docker compose version
       - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
       - uses: docker/setup-buildx-action@v3
-      - name: Build and smoke-test
+      - name: Build images for the smoke test
         run: |
-          for arch in amd64 arm64; do
-            for target in main caddy; do
-              docker buildx build --load --platform "linux/$arch" \
-                -f deploy/docker/Dockerfile --target "$target" \
-                -t "local/worker-plane-$target:smoke-$arch" .
-            done
+          for target in main caddy; do
+            docker buildx build --load --platform ${{ matrix.platform }} \
+              -f deploy/docker/Dockerfile --target "$target" \
+              --cache-from type=gha,scope=${{ matrix.arch }} \
+              --cache-to type=gha,mode=max,scope=${{ matrix.arch }} \
+              -t "local/worker-plane-$target:smoke" .
           done
-          SKIP_BUILD=1 SMOKE_TAG=smoke-amd64 deploy/docker/smoke.sh
-          SKIP_BUILD=1 SMOKE_TAG=smoke-arm64 SMOKE_READY_SECS=300 deploy/docker/smoke.sh
+      - run: SKIP_BUILD=1 deploy/docker/smoke.sh
       - if: startsWith(github.ref, 'refs/tags/v')
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      # Same builder as the smoke builds, so these reuse their layers.
-      - name: Push multi-arch tags
+      - name: Push by digest
         if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          for target in main caddy; do
+            docker buildx build --platform ${{ matrix.platform }} \
+              -f deploy/docker/Dockerfile --target "$target" \
+              --cache-from type=gha,scope=${{ matrix.arch }} \
+              --label org.opencontainers.image.source=https://github.com/${{ github.repository }} \
+              --label org.opencontainers.image.revision=${{ github.sha }} \
+              --output "type=image,name=$REGISTRY/worker-plane-$target,push-by-digest=true,name-canonical=true,push=true" \
+              --metadata-file "$RUNNER_TEMP/meta-$target.json" .
+            jq -r '."containerimage.digest"' "$RUNNER_TEMP/meta-$target.json" > "$RUNNER_TEMP/digests/$target-${{ matrix.arch }}"
+          done
+      - if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digests-*
+          path: digests
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Tag multi-arch images
         run: |
           version=${GITHUB_REF_NAME#v}
           for target in main caddy; do
             image="$REGISTRY/worker-plane-$target"
-            docker buildx build --push --platform linux/amd64,linux/arm64 \
-              -f deploy/docker/Dockerfile --target "$target" \
-              --label org.opencontainers.image.source=https://github.com/${{ github.repository }} \
-              --label org.opencontainers.image.revision=${{ github.sha }} \
-              -t "$image:$version" .
+            docker buildx imagetools create -t "$image:$version" \
+              "$image@$(cat digests/$target-amd64)" "$image@$(cat digests/$target-arm64)"
             docker buildx imagetools inspect "$image:$version"
           done
-      - name: Remove smoke images
-        if: always()
-        run: docker image rm -f local/worker-plane-{main,caddy}:smoke-{amd64,arm64} > /dev/null 2>&1 || true

@@ -91,23 +91,6 @@ docker compose start main
 
 compose 中主节点以非 root 用户运行，根文件系统只读（`/tmp` 为 tmpfs），去掉全部 capability 并设置 `no-new-privileges`；容器 3000 端口只在 compose 内部网络开放，对外只有 Caddy 的 HTTPS 端口。模型 key 只在 `main.env` 里，不进入镜像。
 
-## CI runner 要求
-
-`.github/workflows/docker.yml` 只在带 `self-hosted`、`Linux`、`X64` 三个标签的 runner 上运行，第一步会检查下面前三项，缺一项就失败并给出版本信息。
-
-| 要求 | 原因 |
-|---|---|
-| Linux x86_64 | amd64 原生构建；arm64 由 QEMU 模拟 |
-| Docker Engine，runner 账户能直接使用（在 `docker` 组里，无需 sudo） | 构建、加载和运行镜像 |
-| Docker buildx 插件和 Docker Compose v2 插件（`docker compose`） | 多架构构建；冒烟测试用 compose 启动 |
-| 允许运行特权容器 | `docker/setup-qemu-action` 用 `tonistiigi/binfmt` 特权容器注册 arm64 模拟；rootless Docker 不行 |
-| 网络能访问 Docker Hub、npm registry 和 Debian 软件源；发布时能访问 `ghcr.io` | 拉基础镜像、安装依赖、推送镜像 |
-| 磁盘至少约 20 GB 空闲，内存建议 8 GB 以上 | 两个架构的构建缓存和镜像；模拟架构下编译原生模块很占资源 |
-| 本机端口 38443 空闲 | 冒烟测试临时发布的 HTTPS 端口，结束后释放 |
-| 运行时间 | 无缓存时 arm64 模拟构建明显慢于原生，单次任务上限 120 分钟 |
-
-冒烟测试结束后会删除它的容器、卷和 `local/worker-plane-*:smoke-*` 镜像。buildx 构建器每次任务新建、结束时删除，不跨任务保留缓存。
-
 ## 验收
 
-`deploy/docker/smoke.sh` 在本机构建两个镜像，用 compose 启动并检查：经 Caddy 内部 CA 的 HTTPS 就绪、在线备份校验、`docker stop` 退出码 0 且释放锁、再次启动就绪。CI 在自托管 Linux x86_64 runner 上运行它：amd64 原生构建，arm64 经 QEMU 构建并同样冒烟测试，两者都通过后才推送镜像。
+`deploy/docker/smoke.sh` 在本机构建两个镜像，用 compose 启动并检查：经 Caddy 内部 CA 的 HTTPS 就绪、在线备份校验、`docker stop` 退出码 0 且释放锁、再次启动就绪。CI 在 GitHub 托管的 amd64（`ubuntu-24.04`）和 arm64（`ubuntu-24.04-arm`）runner 上各自原生构建并运行它，通过后才推送镜像。

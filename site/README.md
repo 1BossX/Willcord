@@ -13,7 +13,7 @@ GitHub Pages 通过主仓库的 `.github/workflows/pages.yml` 发布，将规范
 3. 在 Actions 中手动运行 **Publish Willcord site**。单独改变仓库可见性不会触发此工作流。
 4. 确认工作流成功后，打开 deployment 返回的 `page_url`，检查页面及 Logo 实际可访问。
 
-按当前仓库名，发布地址为 https://1bossx.github.io/WorkerPlane/ （已发布）；改仓库名后以工作流返回的地址为准。
+按当前仓库名，发布地址为 https://1bossx.github.io/Willcord/ （已发布）；改仓库名后以工作流返回的地址为准。
 
 后续 `main` 上的 `site/**`、`deploy/install.sh` 或发布工作流变更会自动触发更新，不需要 Node.js 或 Vite。
 

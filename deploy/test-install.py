@@ -38,7 +38,7 @@ elif name=='sudo':
 elif name=='curl':
  url=next((a for a in args if a.startswith('https://')), '')
  if os.environ.get('TEST_NO_RELEASE')=='1': sys.exit(22)
- if url.endswith('/latest'): print('https://github.com/1BossX/WorkerPlane/releases/tag/v1.2.3',end='');sys.exit()
+ if url.endswith('/latest'): print('https://github.com/1BossX/Willcord/releases/tag/v1.2.3',end='');sys.exit()
  dest=p(args[args.index('-o')+1])
  if '/releases/tags/' in url: data=json.dumps({'draft':False,'prerelease':os.environ.get('TEST_PRERELEASE')=='1'}).encode()
  elif url.endswith('/health'): data=b'{"alive":true,"scheduling_ready":true}'

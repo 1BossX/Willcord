@@ -56,13 +56,13 @@ env_line() {
 resolve_version() {
   local resolved
   if [[ -z "$version" ]]; then
-    resolved=$(curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 60 -o /dev/null -w '%{url_effective}' "https://github.com/1BossX/WorkerPlane/releases/latest") || fail "没有可访问的正式 Release。请等待发布，或用 --version 指定已发布版本。"
+    resolved=$(curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 60 -o /dev/null -w '%{url_effective}' "https://github.com/1BossX/Willcord/releases/latest") || fail "没有可访问的正式 Release。请等待发布，或用 --version 指定已发布版本。"
     version=${resolved##*/}
   fi
   [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "版本必须是正式版本 vX.Y.Z。"
-  fetch "https://api.github.com/repos/1BossX/WorkerPlane/releases/tags/$version" "$tmp/release.json"
+  fetch "https://api.github.com/repos/1BossX/Willcord/releases/tags/$version" "$tmp/release.json"
   grep -Eq '"draft":[[:space:]]*false' "$tmp/release.json" && grep -Eq '"prerelease":[[:space:]]*false' "$tmp/release.json" || fail "版本尚未正式发布。"
-  release="https://github.com/1BossX/WorkerPlane/releases/download/$version"
+  release="https://github.com/1BossX/Willcord/releases/download/$version"
   printf '安装版本：%s\n' "$version"
 }
 worker_install() {

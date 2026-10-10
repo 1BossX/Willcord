@@ -6,7 +6,7 @@
 
 产品展示名采用 **Willcord**，视觉方向采用 B「错位牵引」。工程仓库、包名、CLI、服务名与配置路径仍沿用 WorkerPlane，具体使用现有运维文档中的命令。
 
-- [静态产品介绍页源码](site/index.html) · [线上页面](https://1bossx.github.io/WorkerPlane/)
+- [静态产品介绍页源码](site/index.html) · [线上页面](https://1bossx.github.io/Willcord/)
 - [品牌资产与规范](docs/brand/willcord/README.md) · [名称核验及待办](docs/brand/naming-shortlist.md)
 
 模型密钥集中在主节点，执行机器无需直接访问模型服务，也无需开放入站端口；执行端仍需访问主节点并保存设备身份与凭据。项目仍处于开发与受控验收阶段，不能把品牌更新视为生产验收完成。
@@ -20,7 +20,7 @@
 主节点（Linux x86_64/arm64，提前安装 Docker Compose v2）：
 
 ```sh
-curl -fsSL https://1bossx.github.io/WorkerPlane/install.sh | bash -s -- main
+curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- main
 ```
 
 向导收集访问地址、模型配置和首次管理员密码，生成配置、启动服务并导出 `ca.pem`。先让浏览器信任这个根证书，再安全复制到执行机器。
@@ -28,7 +28,7 @@ curl -fsSL https://1bossx.github.io/WorkerPlane/install.sh | bash -s -- main
 worker（Linux/macOS x86_64/arm64，以普通账户运行）：
 
 ```sh
-curl -fsSL https://1bossx.github.io/WorkerPlane/install.sh | bash -s -- worker --server 'https://plane.internal:8443' --ca '/absolute/ca.pem'
+curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- worker --server 'https://plane.internal:8443' --ca '/absolute/ca.pem'
 ```
 
 替换主节点地址和**执行机器上的** CA 绝对路径。常驻服务器加 `--system --user 'ops'`，指定已有非 root 账户；macOS 用户级服务在登录后启动，Linux 用户级服务需 systemd 用户会话。控制台“机器授权 → 添加机器”可以生成对应命令。

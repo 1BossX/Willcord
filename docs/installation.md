@@ -9,13 +9,13 @@
 准备 Linux x86_64/arm64 主机、Docker 和 Docker Compose v2。浏览器和执行机器必须能解析并访问同一个主节点地址。安装器不安装 Docker，不改变系统权限。
 
 ```sh
-curl -fsSL https://1bossx.github.io/WorkerPlane/install.sh | bash -s -- main
+curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- main
 ```
 
 向导通过终端收集 HTTPS 地址（默认 `https://plane.internal:8443`）、模型 provider/name、API key 和至少 16 字符的管理员密码。密钥输入不回显。也可以预先指定地址和目录：
 
 ```sh
-curl -fsSL https://1bossx.github.io/WorkerPlane/install.sh | bash -s -- main --server 'https://plane.internal:8443' --dir '/opt/my-plane'
+curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- main --server 'https://plane.internal:8443' --dir '/opt/my-plane'
 ```
 
 目录默认 `./worker-plane`，当前账户必须可写。安装器生成 `compose.yaml`、`.env` 和 `main.env`，固定镜像版本；环境文件权限 0600，不要提交到 Git。不同目录使用独立的 Compose 项目及数据卷。已有部署文件时拒绝覆盖。
@@ -50,7 +50,7 @@ curl --cacert '/absolute/ca.pem' 'https://plane.internal:8443/health'
 以普通账户运行，不加 sudo：
 
 ```sh
-curl -fsSL https://1bossx.github.io/WorkerPlane/install.sh | bash -s -- worker --server 'https://plane.internal:8443' --ca '/absolute/ca.pem'
+curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- worker --server 'https://plane.internal:8443' --ca '/absolute/ca.pem'
 ```
 
 Linux 需要 systemd 用户会话；管理员可以通过 `loginctl enable-linger <账户>` 让服务退出登录后及重启时继续运行。macOS LaunchAgent 在用户登录后启动。
@@ -60,7 +60,7 @@ Linux 需要 systemd 用户会话；管理员可以通过 `loginctl enable-linge
 先准备已有的非 root 账户，它的实际权限决定任务能访问的文件和执行的命令。安装器不创建账户、不调整已有项目权限；需要时只通过 sudo 执行系统级安装与 join：
 
 ```sh
-curl -fsSL https://1bossx.github.io/WorkerPlane/install.sh | bash -s -- worker --server 'https://plane.internal:8443' --ca '/absolute/ca.pem' --system --user 'ops'
+curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- worker --server 'https://plane.internal:8443' --ca '/absolute/ca.pem' --system --user 'ops'
 ```
 
 支持 Linux/macOS x86_64/arm64。安装器自动选择文件并校验 SHA-256，再安装服务并提交加入申请。CA 被复制到安装目录，后台服务及后续 CLI 自动使用。原始证书文件可在安装成功后移走；保留安装目录内的副本。安装不修改 PATH，命令输出会给出带引号的绝对路径。

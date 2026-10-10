@@ -59,8 +59,11 @@ export function startWorker(options: { dir: string; id: string; url: string; ca:
       (options.extraConfig ?? "") +
       `[[workspaces]]\nworkspace_id = "repo"\nconfig_version = ${options.configVersion ?? 1}\npath = "${options.workspace}"\nrepo_id = "github.com/1BossX/WorkerPlane"\nis_default = true\n`,
   );
+  const env = { ...process.env, WORKER_TOKEN: options.token, SSL_CERT_FILE: options.ca, ...options.env };
+  // rustls-native-certs prefers SSL_CERT_DIR over SSL_CERT_FILE when both are set.
+  delete env.SSL_CERT_DIR;
   const child = spawn(options.binary ?? join(repoRoot, "worker/target/debug/worker-plane-worker"), [config], {
-    env: { ...process.env, WORKER_TOKEN: options.token, SSL_CERT_FILE: options.ca, ...options.env },
+    env,
     stdio: ["ignore", "ignore", "pipe"],
   });
   let stderr = "";

@@ -30,11 +30,14 @@ test("managed worker joins with a stable identity, runs in automatic workspace, 
   assert.equal(readFileSync(join(dir,"workspaces/default/marker"),"utf8"),"once\n");
   const status=JSON.parse((await cli("status","--json")).stdout);assert.equal(status.worker_running,true);assert.equal(status.reconciled,1);assert.equal(status.token,undefined);
   const hold=await s.submit(session,"hold");await s.until(()=>s.state(hold)==="running");
+  const connectionEpoch=s.one("SELECT connection_epoch FROM workers WHERE worker_id=?",id).connection_epoch;
   const path=join(s.dir,"existing");mkdirSync(path);
   const before=readFileSync(join(dir,"worker.toml"),"utf8");
   await assert.rejects(()=>cli("workspace","add","existing",path));
   assert.equal(readFileSync(join(dir,"worker.toml"),"utf8"),before);
   await s.until(()=>s.state(hold)==="succeeded");
+  assert.equal(s.one("SELECT connection_epoch FROM workers WHERE worker_id=?",id).connection_epoch,connectionEpoch);
+  assert.equal(s.one("SELECT online FROM workers WHERE worker_id=?",id).online,1);
   await cli("workspace","add","existing",path);await s.until(ready);
   assert.equal(JSON.parse((await cli("workspace","list")).stdout).length,2);
   const nextSession=(await s.api("POST","/api/sessions",{worker_id:id,workspace_id:"default"})).json().session_id;

@@ -22,8 +22,8 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::{
-    net::TcpStream,
-    sync::{Notify, mpsc, watch},
+    net::{TcpStream, UnixListener, UnixStream},
+    sync::{Notify, mpsc, oneshot, watch},
 };
 use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream, connect_async_with_config,
@@ -151,6 +151,88 @@ struct Worker {
     /// SIGINT, stored until observed. A `ctrl_c()` future made per loop
     /// iteration misses signals that arrive while a frame is being handled.
     shutdown: Arc<Notify>,
+}
+
+struct WorkspaceChange {
+    config: String,
+    response: oneshot::Sender<Result<(), String>>,
+}
+
+async fn handle_workspace_control(
+    mut socket: UnixStream,
+    data_dir: PathBuf,
+    config_file: PathBuf,
+    updates: &mpsc::Sender<WorkspaceChange>,
+) -> Result<(), Error> {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    let result: Result<(), Error> = async {
+        let mut reader = BufReader::new(&mut socket);
+        let mut line = String::new();
+        let bytes =
+            tokio::time::timeout(Duration::from_secs(5), reader.read_line(&mut line)).await??;
+        if bytes == 0 || line.len() > 4096 {
+            return Err("invalid workspace control request".into());
+        }
+        let request: Value = serde_json::from_str(&line)?;
+        let id = request["workspace_id"]
+            .as_str()
+            .ok_or("workspace ID required")?;
+        let path = request["path"].as_str().ok_or("workspace path required")?;
+        let mut config: Config = toml::from_str(&fs::read_to_string(&config_file)?)?;
+        if id.is_empty()
+            || id.len() > 128
+            || !PathBuf::from(path).is_absolute()
+            || !PathBuf::from(path).is_dir()
+            || config.workspaces.iter().any(|w| w.workspace_id == id)
+        {
+            return Err("invalid or duplicate workspace".into());
+        }
+
+        // The server rejects this while a job owns the slot and leaves its WSS
+        // connection intact. Only a successful idle preflight may interrupt it.
+        cli::proof(&data_dir, "workspace").await?;
+
+        let version = config
+            .workspaces
+            .iter()
+            .map(|w| w.config_version)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or("workspace version exhausted")?;
+        for workspace in &mut config.workspaces {
+            workspace.config_version = version;
+        }
+        config.workspaces.push(Workspace {
+            workspace_id: id.into(),
+            path: path.into(),
+            repo_id: format!("local/{id}"),
+            config_version: version,
+            is_default: false,
+        });
+
+        let (response, accepted) = oneshot::channel();
+        updates
+            .send(WorkspaceChange {
+                config: toml::to_string_pretty(&config)?,
+                response,
+            })
+            .await
+            .map_err(|_| "worker is shutting down")?;
+        match tokio::time::timeout(Duration::from_secs(10), accepted).await?? {
+            Ok(()) => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+    .await;
+
+    let response = match result {
+        Ok(()) => "ok\n".to_owned(),
+        Err(error) => format!("{error}\n"),
+    };
+    socket.write_all(response.as_bytes()).await?;
+    Ok(())
 }
 
 fn validator() -> &'static jsonschema::Validator {
@@ -314,7 +396,32 @@ async fn main() -> Result<(), Error> {
     if socket_path.exists() {
         fs::remove_file(&socket_path)?;
     }
-    let control = tokio::net::UnixListener::bind(&socket_path)?;
+    let control = UnixListener::bind(&socket_path)?;
+    let (control_updates, mut control_updates_rx) = mpsc::channel::<WorkspaceChange>(1);
+    let control_data_dir = worker.data_dir.clone();
+    let control_config_file = file.clone();
+    tokio::spawn(async move {
+        loop {
+            match control.accept().await {
+                Ok((socket, _)) => {
+                    if let Err(error) = handle_workspace_control(
+                        socket,
+                        control_data_dir.clone(),
+                        control_config_file.clone(),
+                        &control_updates,
+                    )
+                    .await
+                    {
+                        eprintln!("workspace control request failed: {error}");
+                    }
+                }
+                Err(error) => {
+                    eprintln!("workspace control socket failed: {error}");
+                    break;
+                }
+            }
+        }
+    });
     let mut backoff = Duration::from_secs(1);
     loop {
         if worker.data_dir.join("enrollment.json").exists() {
@@ -331,29 +438,15 @@ async fn main() -> Result<(), Error> {
         let outcome = tokio::select! {
             outcome = session(&worker, &mut completed_rx, &mut live_logs_rx, &mut registered) => outcome,
             _ = worker.shutdown.notified() => return stop_running(&worker).await,
-            incoming = control.accept() => {
-                if let Ok((socket, _)) = incoming {
-                    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-                    let mut socket = BufReader::new(socket);
-                    let mut line = String::new();
-                    let result: Result<(), Error> = async {
-                        tokio::time::timeout(Duration::from_secs(5), socket.read_line(&mut line)).await??;
-                        if line.len() > 4096 { return Err("oversized control request".into()); }
-                        let request: Value = serde_json::from_str(&line)?;
-                        let id = request["workspace_id"].as_str().ok_or("workspace ID required")?;
-                        let path = request["path"].as_str().ok_or("workspace path required")?;
-                        let mut config: Config = toml::from_str(&fs::read_to_string(&file)?)?;
-                        if id.is_empty() || id.len()>128 || !PathBuf::from(path).is_absolute() || !PathBuf::from(path).is_dir() || config.workspaces.iter().any(|w|w.workspace_id==id) { return Err("invalid or duplicate workspace".into()); }
-                        cli::proof(&worker.data_dir, "workspace").await?;
-                        let version = config.workspaces.iter().map(|w|w.config_version).max().unwrap_or(0).checked_add(1).ok_or("workspace version exhausted")?;
-                        for w in &mut config.workspaces { w.config_version = version; }
-                        config.workspaces.push(Workspace { workspace_id:id.into(), path:path.into(), repo_id:format!("local/{id}"), config_version:version, is_default:false });
-                        cli::save(&file, toml::to_string_pretty(&config)?.as_bytes())?;
+            change = control_updates_rx.recv() => {
+                if let Some(change) = change {
+                    let result: Result<(), Error> = (|| {
+                        let config: Config = toml::from_str(&change.config)?;
+                        cli::save(&file, change.config.as_bytes())?;
                         worker.workspaces = Arc::new(config.workspaces);
                         Ok(())
-                    }.await;
-                    let response = match result { Ok(()) => "ok\n".into(), Err(e) => format!("{e}\n") };
-                    let _ = socket.get_mut().write_all(response.as_bytes()).await;
+                    })();
+                    let _ = change.response.send(result.map_err(|error| error.to_string()));
                 }
                 continue;
             },

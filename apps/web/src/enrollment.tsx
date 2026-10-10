@@ -25,7 +25,7 @@ export function EnrollmentPanel() {
       loading = true;
       try {
         const data = await request<{ devices: Device[] }>("/api/enrollments", { signal: controller.signal });
-        if (!controller.signal.aborted) setDevices(data.devices);
+        if (!controller.signal.aborted) { setError(""); setDevices(data.devices); }
       } catch (e) { if (!controller.signal.aborted) setError(String(e)); }
       finally { loading = false; }
     }
@@ -33,7 +33,7 @@ export function EnrollmentPanel() {
     const timer = setInterval(() => void refresh(), 5000);
     return () => { controller.abort(); clearInterval(timer); };
   }, [open, revision]);
-  function close() { dialog.current?.close(); setOpen(false); setEditing(null); }
+  function close() { dialog.current?.close(); setOpen(false); setEditing(null); setError(""); }
   async function mutate(url: string, method: string, body: object) {
     setBusy(true); setError("");
     try { await request(url, { method, body: JSON.stringify(body) }); setRevision(r => r + 1); setEditing(null); }

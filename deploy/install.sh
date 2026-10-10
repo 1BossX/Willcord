@@ -78,10 +78,31 @@ resolve_version() {
   fi
   release="https://github.com/1BossX/Willcord/releases/download/$version"
 }
+bootstrap_ca() {
+  [[ "$fingerprint" =~ ^[a-fA-F0-9]{64}$ ]] || fail "CA 指纹必须是证书 DER 的 64 位 SHA-256。"
+  need openssl; need head; need wc
+  local actual size
+  # Only this fixed, credential-free certificate request may skip verification.
+  # No redirects; head caps streamed responses even on older curl versions.
+  curl --disable --fail --silent --show-error --insecure --proto '=https' --connect-timeout 5 --max-time 15 "$server/.well-known/willcord/ca.pem" | head -c 65537 > "$tmp/bootstrap.pem" || fail "根证书获取失败。"
+  size=$(wc -c < "$tmp/bootstrap.pem")
+  (( size > 0 && size <= 65536 )) || fail "根证书响应过大或为空。"
+  [[ $(grep -c '^-----BEGIN CERTIFICATE-----' "$tmp/bootstrap.pem") == 1 && $(grep -c '^-----END CERTIFICATE-----' "$tmp/bootstrap.pem") == 1 ]] || fail "必须提供单张根证书。"
+  openssl x509 -in "$tmp/bootstrap.pem" -outform DER -out "$tmp/ca.der" || fail "根证书格式无效。"
+  actual=$(sha256 "$tmp/ca.der"); actual=${actual%% *}
+  fingerprint=$(printf '%s' "$fingerprint" | tr 'A-F' 'a-f')
+  [[ "$actual" == "$fingerprint" ]] || fail "CA 指纹不匹配，未安装或申请加入。"
+  openssl x509 -inform DER -in "$tmp/ca.der" -out "$tmp/ca.pem"
+  ca="$tmp/ca.pem"
+  printf 'CA 指纹已核对：%s\n' "$fingerprint"
+}
 worker_install() {
-  [[ -n "$server" && -n "$ca" ]] || fail "worker 需要 --server HTTPS_ORIGIN --ca /absolute/ca.pem。"
+  [[ -n "$server" ]] || fail "worker 需要 --server HTTPS_ORIGIN。"
   origin "$server"
-  [[ "$ca" == /* && -r "$ca" && -f "$ca" ]] || fail "CA 必须是可读的绝对文件路径。请先安全复制主节点导出的 ca.pem。"
+  [[ -z "$ca" || -z "$fingerprint" ]] || fail "--ca 与 --ca-fingerprint 不能同时使用。"
+  if [[ -n "$ca" ]]; then
+    [[ "$ca" == /* && -r "$ca" && -f "$ca" ]] || fail "CA 必须是可读的绝对文件路径。"
+  fi
   if [[ "$system" == true ]]; then
     [[ "$account" =~ ^[A-Za-z0-9._-]+$ && "$account" != -* && ${#account} -le 64 ]] || fail "--system 需要 --user 指定已有普通账户。"
     local uid; uid=$(id -u "$account") || fail "账户不存在：$account"
@@ -98,7 +119,10 @@ worker_install() {
     need launchctl
     [[ "$system" == true ]] || launchctl print "gui/$(id -u)" >/dev/null || fail "macOS 用户级服务需要登录图形会话。"
   fi
-  curl --fail --silent --show-error --cacert "$ca" --connect-timeout 5 --max-time 15 "$server/health" -o "$tmp/worker-health.json" || fail "无法通过 CA 验证主节点 HTTPS，请检查证书、地址与网络。"
+  [[ -z "$fingerprint" ]] || bootstrap_ca
+  local tls_args=()
+  [[ -z "$ca" ]] || tls_args=(--cacert "$ca")
+  curl --disable --fail --silent --show-error ${tls_args[@]+"${tls_args[@]}"} --connect-timeout 5 --max-time 15 "$server/health" -o "$tmp/worker-health.json" || fail "无法通过 CA 验证主节点 HTTPS，请检查证书、地址与网络。"
   local name="worker-plane-worker-$version-$os-$arch" installed
   verified "$name"
   chmod 700 "$tmp/$name"
@@ -109,17 +133,19 @@ worker_install() {
     fi
     installed="$system_root/bin/worker"
     if [[ $(id -u) == 0 ]]; then
-      SSL_CERT_FILE="$ca" "$tmp/$name" install --system --user "$account"
+      if [[ -n "$ca" ]]; then SSL_CERT_FILE="$ca" "$tmp/$name" install --system --user "$account"; else "$tmp/$name" install --system --user "$account"; fi
       "$installed" join --system "$server"
     else
-      sudo env "SSL_CERT_FILE=$ca" "WORKER_PLANE_SYSTEM_ROOT=$system_root" "$tmp/$name" install --system --user "$account"
+      local install_env=("WORKER_PLANE_SYSTEM_ROOT=$system_root")
+      [[ -z "$ca" ]] || install_env+=("SSL_CERT_FILE=$ca")
+      sudo env "${install_env[@]}" "$tmp/$name" install --system --user "$account"
       sudo env "WORKER_PLANE_SYSTEM_ROOT=$system_root" "$installed" join --system "$server"
     fi
   else
     if [[ -n "${WORKER_PLANE_HOME:-}" ]]; then installed="$WORKER_PLANE_HOME/bin/worker"
     elif [[ "$os" == darwin ]]; then installed="$HOME/Library/Application Support/WorkerPlane/bin/worker"
     else installed="$HOME/.local/share/worker-plane/bin/worker"; fi
-    SSL_CERT_FILE="$ca" "$tmp/$name" install
+    if [[ -n "$ca" ]]; then SSL_CERT_FILE="$ca" "$tmp/$name" install; else "$tmp/$name" install; fi
     "$installed" join "$server"
   fi
   printf '\n申请已提交。登录 %s，在“机器授权”核对终端指纹并批准。\n' "$server"
@@ -129,7 +155,7 @@ worker_install() {
 }
 main_install() {
   [[ "$os" == linux ]] || fail "主节点向导支持 Linux amd64/arm64。"
-  [[ "$system" == false && -z "$account" && -z "$ca" ]] || fail "main 不接受 --system、--user 或 --ca。"
+  [[ "$system" == false && -z "$account" && -z "$ca" && -z "$fingerprint" ]] || fail "main 不接受 --system、--user 或 CA 参数。"
   need docker; need stty
   docker compose version >/dev/null || fail "请先安装 Docker Compose v2。"
   docker info >/dev/null || fail "无法访问 Docker，请检查 Docker 服务及当前账户权限。"
@@ -192,18 +218,18 @@ main_install() {
   [[ "$ready" == true ]] || { printf '移除首次密码后的主节点未就绪，请查看 docker compose logs main。\n' >&2; return 1; }
   trap - ERR
   printf '\n主节点已就绪：%s\n根证书：%s/ca.pem\n' "$server" "$directory"
-  printf '请先让浏览器信任此根证书，并安全复制到执行机器。登录控制台，在“机器授权 → 添加机器”复制安装命令。\n'
+  printf '请先让浏览器信任此根证书。登录控制台，在“机器授权 → 添加机器”复制安装命令。\n'
 }
 sha256_stdin() { if command -v shasum >/dev/null 2>&1; then shasum -a 256; else sha256sum; fi; }
 main() {
-  local role="${1:-}"; [[ "$role" == worker || "$role" == main ]] || fail '用法：install.sh main|worker [--version vX.Y.Z] [--server HTTPS_ORIGIN] [--ca /absolute/ca.pem] [--system --user ACCOUNT] [--dir PATH]'
+  local role="${1:-}"; [[ "$role" == worker || "$role" == main ]] || fail '用法：install.sh main|worker [--version vX.Y.Z] [--server HTTPS_ORIGIN] [--ca /absolute/ca.pem | --ca-fingerprint SHA256] [--system --user ACCOUNT] [--dir PATH]'
   shift
-  version=''; server=''; ca=''; system=false; account=''; directory="$PWD/worker-plane"
+  version=''; server=''; ca=''; fingerprint=''; system=false; account=''; directory="$PWD/worker-plane"
   while (( $# )); do
     case "$1" in
-      --version|--server|--ca|--user|--dir)
+      --version|--server|--ca|--ca-fingerprint|--user|--dir)
         (( $# >= 2 )) && [[ -n "$2" && "$2" != --* ]] || fail "$1 缺少参数。"
-        case "$1" in --version) version="$2";; --server) server="$2";; --ca) ca="$2";; --user) account="$2";; --dir) [[ "$role" == main ]] || fail '--dir 只用于 main。'; directory="$2";; esac
+        case "$1" in --version) version="$2";; --server) server="$2";; --ca) ca="$2";; --ca-fingerprint) fingerprint="$2";; --user) account="$2";; --dir) [[ "$role" == main ]] || fail '--dir 只用于 main。'; directory="$2";; esac
         shift 2;;
       --system) system=true; shift;;
       *) fail "未知参数：$1";;

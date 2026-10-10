@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { request } from "./api";
-import { installCommand } from "./install-command";
+import { installCommand, loadCaFingerprint } from "./install-command";
 
 type Device = {
   worker_id: string; name: string; os: string; arch: string; state: string; created_at: number;
@@ -20,11 +20,24 @@ export function EnrollmentPanel() {
   const [adding, setAdding] = useState(false);
   const [system, setSystem] = useState(false);
   const [ca, setCa] = useState("");
+  const [trustMode, setTrustMode] = useState("pin");
+  const [fingerprint, setFingerprint] = useState("");
+  const [trustError, setTrustError] = useState("");
+  useEffect(() => {
+    if (!open || !adding || trustMode !== "pin") return;
+    const controller = new AbortController();
+    setFingerprint(""); setTrustError("");
+    void loadCaFingerprint(controller.signal).then(value => {
+      if (!controller.signal.aborted) setFingerprint(value);
+    }).catch(e => { if (!controller.signal.aborted) setTrustError(String(e)); });
+    return () => controller.abort();
+  }, [open, adding, trustMode]);
   const [account, setAccount] = useState("");
   const [copyStatus, setCopyStatus] = useState("");
   let command = "", commandError = "";
-  try { command = installCommand(window.location.origin, ca, system, account); }
+  try { command = installCommand(window.location.origin, trustMode === "file" ? ca : "", system, account, trustMode === "pin" ? fingerprint : undefined); }
   catch (e) { commandError = e instanceof Error ? e.message : String(e); }
+  if (trustMode === "file" && !ca) { command = ""; commandError = "请填写 CA 绝对路径"; }
   async function copyCommand() {
     try { await navigator.clipboard.writeText(command); setCopyStatus("已复制安装命令"); }
     catch { setCopyStatus("复制失败，请选中下方命令手动复制"); }
@@ -60,12 +73,17 @@ export function EnrollmentPanel() {
       <button className="secondary-button" aria-expanded={adding} onClick={() => { setAdding(v => !v); setCopyStatus(""); }}>添加机器</button>
       {adding && <section className="enrollment-install" aria-label="添加机器">
         <p>主节点：<strong>{window.location.origin}</strong></p>
-        <p>先将主节点导出的 ca.pem 安全复制到执行机器，再运行下面的命令。安装器下载最新正式版本并校验文件。</p>
+        <p>从可信控制台复制命令，安装器自动获取并核对 CA，无需提前复制证书文件。安装后仍需批准设备。</p>
         <label>安装方式<select value={system ? "system" : "user"} onChange={e => { setSystem(e.target.value === "system"); setCopyStatus(""); }}>
           <option value="user">个人电脑：用户级服务</option><option value="system">常驻服务器：系统级服务</option>
         </select></label>
         <p>{system ? "系统级安装需要 sudo，以指定账户执行；账户必须已存在。" : "macOS 登录后运行；Linux 退出登录后持续运行需要管理员配置 linger。"}</p>
-        <label>执行机器上的 CA 绝对路径<input value={ca} placeholder="/absolute/ca.pem" onChange={e => { setCa(e.target.value); setCopyStatus(""); }} /></label>
+        <label>证书信任<select value={trustMode} onChange={e => { setTrustMode(e.target.value); setCopyStatus(""); }}>
+          <option value="pin">自动获取 CA（推荐）</option><option value="file">手动 CA 文件</option><option value="system">系统信任（公共或已信任证书）</option>
+        </select></label>
+        {trustMode === "pin" && <><p>主节点 CA 指纹（与设备指纹不同）</p><code>{fingerprint || trustError || "正在读取 CA 指纹…"}</code></>}
+        {trustMode === "file" && <label>执行机器上的 CA 绝对路径<input value={ca} placeholder="/absolute/ca.pem" onChange={e => { setCa(e.target.value); setCopyStatus(""); }} /></label>}
+        {trustMode === "system" && <p>仅适用于执行机器已经信任主节点证书的部署；验证失败会停止，不会自动盲信。</p>}
         {system && <label>已有非 root 执行账户<input value={account} placeholder="ops" onChange={e => { setAccount(e.target.value); setCopyStatus(""); }} /></label>}
         {command ? <><textarea aria-label="一行安装命令" readOnly value={command} rows={4} /><button className="primary-button" onClick={() => void copyCommand()}>复制安装命令</button></> : <p>{commandError}</p>}
         <p role="status">{copyStatus}</p>

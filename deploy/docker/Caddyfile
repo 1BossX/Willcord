@@ -2,7 +2,7 @@
 #   WORKER_PLANE_SITE  address browsers and workers use, e.g. plane.internal:8443;
 #                      PUBLIC_BASE_URL must be https://<this>
 # The internal CA lives in /data: keep that volume, or every worker's CA file
-# stops matching. Copy /data/caddy/pki/authorities/local/root.crt to workers.
+# stops matching. Workers can fetch root.crt using a trusted CA fingerprint.
 {
 	skip_install_trust
 	pki {
@@ -14,6 +14,19 @@
 
 {$WORKER_PLANE_SITE} {
 	tls internal
+
+	# Public certificate only; never expose the CA directory or admin API.
+	@bootstrap {
+		method GET
+		path /.well-known/willcord/ca.pem
+	}
+	handle @bootstrap {
+		root * {$WORKER_PLANE_CA_ROOT:/data/caddy/pki/authorities/local}
+		rewrite * /root.crt
+		header Content-Type application/x-pem-file
+		header Cache-Control "no-store"
+		file_server
+	}
 
 	@server path /enrollment/* /api/* /auth/* /ws/worker /health
 	handle @server {

@@ -114,7 +114,7 @@ export type RelayedFrame = { direction: Direction; type: string; call_id?: strin
  * `duplicate` delivers a frame twice; every relayed frame is recorded in
  * `frames` as evidence.
  */
-export async function startTlsProxy(certs: ReturnType<typeof createCertificates>, target: () => number, options: { drop?: (direction: Direction, frame: any) => boolean; duplicate?: (direction: Direction, frame: any) => boolean } = {}) {
+export async function startTlsProxy(certs: ReturnType<typeof createCertificates>, target: () => number, options: { drop?: (direction: Direction, frame: any) => boolean; duplicate?: (direction: Direction, frame: any) => boolean; serveRoot?: boolean } = {}) {
   const frames: RelayedFrame[] = [];
   const relay = (direction: Direction, to: WebSocket, data: string) => {
     const frame = JSON.parse(data);
@@ -126,6 +126,9 @@ export async function startTlsProxy(certs: ReturnType<typeof createCertificates>
   };
   const server: Server = createServer({ key: readFileSync(certs.key), cert: readFileSync(certs.cert) });
   server.on("request", (req, res) => {
+    if (options.serveRoot && req.method === "GET" && req.url === "/.well-known/willcord/ca.pem") {
+      res.setHeader("content-type", "application/x-pem-file"); res.end(readFileSync(certs.ca)); return;
+    }
     const upstream = httpRequest({ hostname: "127.0.0.1", port: target(), path: req.url, method: req.method, headers: req.headers }, response => {
       res.writeHead(response.statusCode ?? 502, response.headers); response.pipe(res);
     });

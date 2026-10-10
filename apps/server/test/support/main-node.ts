@@ -19,6 +19,7 @@ type AppOptions = Parameters<typeof createApp>[2];
 
 export async function startScenario(options: {
   scripts: Record<string, ScriptStep[]>;
+  serveRoot?: boolean;
   drop?: (direction: Direction, frame: any) => boolean;
   duplicate?: (direction: Direction, frame: any) => boolean;
   app?: AppOptions;
@@ -44,7 +45,7 @@ export async function startScenario(options: {
     main = { db, app: app_, port: (app_.server.address() as { port: number }).port };
   };
   const stopMain = async () => { await main!.app.close(); main!.db.close(); main = undefined; };
-  const proxy = await startTlsProxy(certs, () => main!.port, { drop: options.drop, duplicate: options.duplicate });
+  const proxy = await startTlsProxy(certs, () => main!.port, { drop: options.drop, duplicate: options.duplicate, serveRoot: options.serveRoot });
   await startMain();
   for (const id of ids) main!.db.prepare("INSERT INTO worker_tokens VALUES (?,?,NULL)").run(createHash("sha256").update(tokenOf(id)).digest("hex"), id);
   main!.db.prepare("INSERT INTO administrators VALUES (1,?)").run(await argon2.hash(password, { type: argon2.argon2id }));

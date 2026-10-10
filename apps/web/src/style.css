@@ -1001,6 +1001,11 @@ summary:focus-visible {
   width: 17px;
   height: 17px;
 }
+.message-avatar img {
+  width: 17px;
+  height: 17px;
+  object-fit: contain;
+}
 .from-user .message-avatar {
   background: #e9edf2;
   color: #8795a5;

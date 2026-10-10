@@ -32,7 +32,7 @@ worker 在 SQLite 中先记 running，再执行并保存结果；同 call ID 不
 | 离线可提交 | SQLite/API 测试创建 `waiting_worker` job；真实 UI 见下方离线截图 |
 | WSS 注册与对账 | linux-test-worker 最终验收连接代次 12，online/reconciled=1；worker_ready 后恢复调度 |
 | Pi 和远程工具闭环 | Job `a8a081ff-5c9a-4b90-8165-3bc118cde44b` 经 UI 创建，offline 时等待，worker 重连后执行 read、README write、138,000 字节 large write 和 bash，最终 succeeded；四个 call 按 1–4 序号完成且远端 ledger 均标为 acked |
-| 未选 workspace 不变 | `/home/junlin/workspace/worker-plane-p2/workspaces/other/marker.txt` 保持 `DO NOT MODIFY`，SHA-256 `08e3dfc089e66c44ae8abd3476b0f810f11f4cfc2ab925f1607c7df21345d639` |
+| 未选 workspace 不变 | `[redacted-home]/workspace/worker-plane-p2/workspaces/other/marker.txt` 保持 `DO NOT MODIFY`，SHA-256 `08e3dfc089e66c44ae8abd3476b0f810f11f4cfc2ab925f1607c7df21345d639` |
 | 64 KiB 帧分块 | `apps/server/test/execution.test.ts` 用 100 KB write 验证每帧 ≤ 65,536 字节；真实 linux-test-worker 写入 138,000 字节，worker 校验传输 SHA-256，远程 `wc -c` 与 bash 校验通过 |
 | Pi/SQLite 与协议回归 | Pi spike 80 项、协议 3 项、Rust worker 5 项、服务端 14 项通过；Linux x86_64 远端 Rust 1.93.1 `cargo build --locked --release` 与 `cargo test --locked` 通过 |
 | 浏览器证据 | 等待 worker 上线（原始截图仅本地保留，见 output/playwright/README.md）、远程任务完成（原始截图仅本地保留，见 output/playwright/README.md） |

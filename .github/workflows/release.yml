@@ -124,11 +124,4 @@ jobs:
       - name: Draft release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          command -v gh >/dev/null || { echo "gh CLI is required on this runner" >&2; exit 1; }
-          # A tag such as v0.1.0-rc.1 is a pre-release: GitHub never marks it
-          # latest, so the one-line installer keeps choosing formal versions.
-          prerelease=''
-          [[ "$GITHUB_REF_NAME" != *-* ]] || prerelease='--prerelease'
-          gh release create "$GITHUB_REF_NAME" release/* --repo "$GITHUB_REPOSITORY" --draft $prerelease \
-            --title "Willcord $GITHUB_REF_NAME" --notes "One-line installation: README.md and docs/installation.md; upgrade: docs/operations.md. Linux workers need glibc 2.17 or newer. Verify each file against its .sha256."
+        run: deploy/release-publish.sh

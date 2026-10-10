@@ -41,17 +41,18 @@ jobs:
           test -f site/assets/favicon.svg
       # Serve the installer attached to the latest formal Release, never the
       # copy on main: it must match the images and binaries it downloads.
-      # gh skips drafts and pre-releases when no tag is given.
       - name: Include the latest Release's installer
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           dir="$RUNNER_TEMP/installer"
-          gh release download --repo "$GITHUB_REPOSITORY" --pattern 'install.sh' --pattern 'install.sh.sha256' --dir "$dir"
+          tag=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "latest Release is not a formal version: $tag" >&2; exit 1; }
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern 'install.sh' --pattern 'install.sh.sha256' --dir "$dir"
           (cd "$dir" && shasum -a 256 -c install.sh.sha256)
           bash -n "$dir/install.sh"
           cp "$dir/install.sh" site/install.sh
-          echo "Installer from $(gh release view --repo "$GITHUB_REPOSITORY" --json tagName -q .tagName)" >> "$GITHUB_STEP_SUMMARY"
+          echo "Installer from $tag" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

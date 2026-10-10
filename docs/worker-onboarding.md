@@ -4,7 +4,7 @@
 
 ## 安装
 
-从版本 Release 下载匹配平台的 `worker-plane-worker-<版本>-<os>-<arch>` 及其 `.sha256`；Linux/macOS 各支持 x86_64 与 arm64（文件架构名由 uname 给出，arm64 为 aarch64 或 arm64）。Linux 需要 systemd 用户会话；macOS 需要登录图形会话。
+从版本 Release 下载匹配平台的 `worker-plane-worker-<版本>-<os>-<arch>` 及其 `.sha256`；Linux/macOS 各支持 x86_64 与 arm64（文件架构名由 uname 给出，arm64 为 aarch64 或 arm64）。Linux 二进制按 glibc 2.17 链接，可在 CentOS 7、Debian 10、Ubuntu 20.04 及更新的发行版上运行；发布流程会在旧发行版容器中实际运行它。Linux 需要 systemd 用户会话；macOS 需要登录图形会话。
 
 ```sh
 shasum -a 256 -c worker-plane-worker-<版本>-<os>-<arch>.sha256

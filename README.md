@@ -26,7 +26,7 @@ Willcord 是展示名称，下载文件、命令和服务仍使用 `worker-plane
 
 ### 2. 安装并授权 worker
 
-从同一 Release 下载二进制和对应 `.sha256`。文件名为 `worker-plane-worker-<版本>-<os>-<arch>`，版本含 `v` 前缀；Linux 使用 `linux-x86_64` / `linux-aarch64`，macOS 使用 `darwin-x86_64` / `darwin-arm64`。替换下面的文件名：
+从同一 Release 下载二进制和对应 `.sha256`。文件名为 `worker-plane-worker-<版本>-<os>-<arch>`，版本含 `v` 前缀；Linux 使用 `linux-x86_64` / `linux-aarch64`，macOS 使用 `darwin-x86_64` / `darwin-arm64`。Linux 二进制需要 glibc 2.17 或更新（CentOS 7、Debian 10、Ubuntu 20.04 及以后）。替换下面的文件名：
 
 ```sh
 shasum -a 256 -c worker-plane-worker-<版本>-<os>-<arch>.sha256

@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   test:
-    runs-on: [self-hosted, macOS]
+    runs-on: macos-15
     defaults:
       run:
         working-directory: spikes/pi-runtime

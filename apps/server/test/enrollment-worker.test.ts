@@ -11,6 +11,9 @@ test("managed worker joins with a stable identity, runs in automatic workspace, 
  const s=await startScenario({scripts:{cancel:[{tool:"bash",id:"cancel",arguments:{command:"echo started > cancellation-start; sleep 30; echo never >> marker"}},{text:"done"}],timeout:[{tool:"bash",id:"timeout",arguments:{command:"sleep 30; echo never >> marker",timeout_secs:1}},{text:"done"}],run:[{tool:"bash",id:"run",arguments:{command:"echo once >> marker"}},{text:"done"}],hold:[{tool:"bash",id:"hold",arguments:{command:"sleep 3; echo held >> marker"}},{text:"done"}]}});
  const dir=join(s.dir,"managed"),binary=join(repoRoot,"worker/target/debug/worker-plane-worker");
  const env={...process.env,WORKER_PLANE_HOME:dir,SSL_CERT_FILE:join(s.dir,"ca.pem")};delete env.WORKER_TOKEN;
+ // rustls-native-certs prefers SSL_CERT_DIR over SSL_CERT_FILE when both are set.
+ // Keep this integration fixture isolated to its freshly generated test CA.
+ delete env.SSL_CERT_DIR;
  const cli=(...args:string[])=>exec(binary,args,{env,timeout:15000});
  let worker:ChildProcess|undefined,errors="";
  const start=()=>{worker=spawn(binary,["run"],{env,stdio:["ignore","ignore","pipe"]});worker.stderr!.on("data",d=>errors+=d);};

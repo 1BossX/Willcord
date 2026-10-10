@@ -11,5 +11,6 @@
     "check": "pnpm --filter @worker-plane/protocol build && pnpm -r check",
     "test": "pnpm --filter @worker-plane/protocol build && pnpm -r test",
     "protocol:generate": "node scripts/generate-protocol.mjs"
-  }
+  },
+  "license": "Apache-2.0"
 }

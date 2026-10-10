@@ -197,7 +197,7 @@ Migration `004_p3_recovery.sql` 给 `runtime_calls` 增加 `completed_at`，用�
 
 ### 总验收
 
-验收环境：macOS arm64，Node 22.22.3，Rust 1.93.1，本机临时 CA，worker 与主节点均在本机。未在 venus-local 远端复验。命令：`cargo build --locked --manifest-path worker/Cargo.toml` 后执行 `PATH=/opt/homebrew/bin:$PATH pnpm test`（server 39 项、protocol 3 项全部通过）；`cargo test --locked`（含 `--features fault-injection`）12 项通过。job ID 为下面这次运行的记录，测试每次运行通过 `t.diagnostic` 输出新的 job ID。
+验收环境：macOS arm64，Node 22.22.3，Rust 1.93.1，本机临时 CA，worker 与主节点均在本机。未在 linux-test-worker 远端复验。命令：`cargo build --locked --manifest-path worker/Cargo.toml` 后执行 `PATH=/opt/homebrew/bin:$PATH pnpm test`（server 39 项、protocol 3 项全部通过）；`cargo test --locked`（含 `--features fault-injection`）12 项通过。job ID 为下面这次运行的记录，测试每次运行通过 `t.diagnostic` 输出新的 job ID。
 
 **故障程序：worker 四个崩溃窗口**（`p3-faults.test.ts`，call `crash-1` / `done-1`）
 

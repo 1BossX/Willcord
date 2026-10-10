@@ -12,22 +12,24 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: self-hosted
-            runs-on: '["self-hosted", "macOS"]'
-          - name: self-hosted-linux
-            runs-on: '["self-hosted", "Linux"]'
+          - name: macos
+            runs-on: '["macos-15"]'
+          - name: linux
+            runs-on: '["ubuntu-24.04"]'
     runs-on: ${{ fromJSON(matrix.runs-on) }}
     steps:
       - uses: actions/checkout@v4
+      - if: runner.os == 'macOS'
+        run: |
+          brew install bash
+          echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
+      # Set Node after adding Homebrew so the preinstalled Homebrew Node does
+      # not shadow the requested toolchain in subsequent pnpm steps.
       - uses: actions/setup-node@v4
         with:
           node-version: '24.12.0'
       - run: corepack enable
       - run: pnpm install --frozen-lockfile
-      - if: runner.os == 'macOS'
-        run: |
-          brew install bash
-          echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
       - uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           toolchain: stable

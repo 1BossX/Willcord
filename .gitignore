@@ -8,3 +8,10 @@ coverage/
 .DS_Store
 worker/target/
 data/
+
+# Private acceptance originals; never publish raw machine data.
+.private-evidence/
+# Rendered Willcord review boards are reproducible from source SVGs.
+/output/brand/willcord/*.png
+/output/playwright/willcord-brand/*.png
+/output/playwright/willcord-site/*.png

@@ -1,15 +1,16 @@
 {
-  "host_alias": "colo",
+  "host_alias": "[redacted for public release]",
   "platform": "Linux 6.8.0-117-generic x86_64",
-  "worker_id": "f7f93c55b780bf57de7ca7fd580fffa0f70b5b8a5859c6587626b23a1eb4135d",
-  "service_name": "worker-plane-7b817cd3708e",
+  "worker_id": "[redacted for public release]",
+  "service_name": "[redacted for public release]",
   "online": 1,
   "reconciled": 1,
   "blocked": 0,
   "ledger_preserved_on_upgrade": true,
-  "task_id": "cf8633b0-f1f5-4f9a-bb21-734aabdc3024",
+  "task_id": "[redacted for public release]",
   "task_state": "succeeded",
-  "default_workspace_marker": "colo-worker-ok",
+  "default_workspace_marker": "[redacted for public release]",
   "worker_sha256": "aae2cb464449cef93048f36ef8196126529776e8584c15442a205fa68ed256d1",
-  "cleanup": "user service, app data, staging directory and SSH tunnel removed"
+  "cleanup": "user service, app data, staging directory and SSH tunnel removed",
+  "public_release_redacted": true
 }

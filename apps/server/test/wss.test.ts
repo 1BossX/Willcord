@@ -4,12 +4,13 @@ import { createServer } from "node:https";
 import { readFileSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { spawn, execFileSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { WebSocket, WebSocketServer } from "ws";
 import { openDatabase } from "../src/storage.js";
 import { createApp } from "../src/app.js";
+import { createCertificates } from "./support/worker-harness.js";
 const waitFor = async (check: () => boolean) => {
   const deadline = Date.now() + 10000;
   while (!check()) {
@@ -23,65 +24,7 @@ test(
   async () => {
     const dir = mkdtempSync(join(tmpdir(), "worker-plane-wss-"));
     const root = resolve("../..");
-    const cert = join(dir, "cert.pem"),
-      key = join(dir, "key.pem"),
-      ca = join(dir, "ca.pem"),
-      caKey = join(dir, "ca-key.pem"),
-      csr = join(dir, "cert.csr"),
-      ext = join(dir, "cert.ext");
-    const openssl = (args: string[]) =>
-      execFileSync("openssl", args, { stdio: "ignore" });
-    openssl([
-      "req",
-      "-x509",
-      "-newkey",
-      "rsa:2048",
-      "-nodes",
-      "-keyout",
-      caKey,
-      "-out",
-      ca,
-      "-days",
-      "1",
-      "-subj",
-      "/CN=Worker Plane Test CA",
-      "-addext",
-      "basicConstraints=critical,CA:TRUE",
-    ]);
-    openssl([
-      "req",
-      "-new",
-      "-newkey",
-      "rsa:2048",
-      "-nodes",
-      "-keyout",
-      key,
-      "-out",
-      csr,
-      "-subj",
-      "/CN=localhost",
-    ]);
-    writeFileSync(
-      ext,
-      "basicConstraints=critical,CA:FALSE\nsubjectAltName=DNS:localhost\nextendedKeyUsage=serverAuth\nkeyUsage=digitalSignature,keyEncipherment\n",
-    );
-    openssl([
-      "x509",
-      "-req",
-      "-in",
-      csr,
-      "-CA",
-      ca,
-      "-CAkey",
-      caKey,
-      "-CAcreateserial",
-      "-out",
-      cert,
-      "-days",
-      "1",
-      "-extfile",
-      ext,
-    ]);
+    const { cert, key, ca } = createCertificates(dir);
     const db = openDatabase(join(dir, "main.sqlite"));
     const tokens = {
       a: "controlled-wss-token-a",
@@ -145,11 +88,14 @@ test(
         config,
         `worker_id = "${id}"\ndata_dir = "${dir}/${id}"\nurl = "wss://localhost:${port}/ws/worker"\n[[workspaces]]\nworkspace_id = "repo"\nconfig_version = 1\npath = "${root}"\nrepo_id = "github.com/1BossX/WorkerPlane"\nis_default = true\n`,
       );
+      const env = { ...process.env, WORKER_TOKEN: tokens[id], SSL_CERT_FILE: ca };
+      // rustls-native-certs prefers SSL_CERT_DIR over SSL_CERT_FILE when both are set.
+      delete env.SSL_CERT_DIR;
       const child = spawn(
         join(root, "worker/target/debug/worker-plane-worker"),
         [config],
         {
-          env: { ...process.env, WORKER_TOKEN: tokens[id], SSL_CERT_FILE: ca },
+          env,
           stdio: ["ignore", "ignore", "pipe"],
         },
       );

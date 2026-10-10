@@ -34,16 +34,16 @@ Main Agent 首页展示协调入口和机器概览；P5 起点击即进入唯一
 
 这些截图证明界面及 API 行为，不能作为真实 worker 执行或 P6 全量故障恢复证据。已有 P2 真实 worker 执行证据仍见 [P2 记录](p2-development.md)。
 
-- [登录页](../output/playwright/ui-redesign/01-login.webp)
-- [Main Agent 与机器概览](../output/playwright/ui-redesign/02-main-agent.webp)
-- [三栏会话工作台](../output/playwright/ui-redesign/03-conversation.webp)
-- [展开工具输出](../output/playwright/ui-redesign/04-tool-output.webp)
-- [固定目标选择](../output/playwright/ui-redesign/05-fixed-target-dialog.webp)
-- [离线等待与截止时间](../output/playwright/ui-redesign/06-offline-queue.webp)
-- [需要核对](../output/playwright/ui-redesign/07-needs-attention.webp)
-- [手机会话](../output/playwright/ui-redesign/08-mobile-conversation.webp)
-- [手机导航](../output/playwright/ui-redesign/09-mobile-navigation.webp)
-- [手机时间线](../output/playwright/ui-redesign/10-mobile-timeline.webp)
+- 登录页（原始截图仅本地保留，见 output/playwright/README.md）
+- Main Agent 与机器概览（原始截图仅本地保留，见 output/playwright/README.md）
+- 三栏会话工作台（原始截图仅本地保留，见 output/playwright/README.md）
+- 展开工具输出（原始截图仅本地保留，见 output/playwright/README.md）
+- 固定目标选择（原始截图仅本地保留，见 output/playwright/README.md）
+- 离线等待与截止时间（原始截图仅本地保留，见 output/playwright/README.md）
+- 需要核对（原始截图仅本地保留，见 output/playwright/README.md）
+- 手机会话（原始截图仅本地保留，见 output/playwright/README.md）
+- 手机导航（原始截图仅本地保留，见 output/playwright/README.md）
+- 手机时间线（原始截图仅本地保留，见 output/playwright/README.md）
 
 TypeScript 检查、Vite 生产构建和服务端 14 项回归覆盖该改动。API 断言验证了未登录认证检查、执行槽字段和跨 session 机器队列位置。
 

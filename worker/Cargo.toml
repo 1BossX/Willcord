@@ -1,6 +1,7 @@
 [package]
 name = "worker-plane-worker"
 version = "0.1.0"
+license = "Apache-2.0"
 edition = "2024"
 [features]
 # Test-only crash points for the P3 fault program. Never enable in releases.

@@ -17,4 +17,4 @@ GitHub Pages 通过主仓库的 `.github/workflows/pages.yml` 发布，仅上传
 
 后续 `main` 上的 `site/**` 或发布工作流变更会自动触发更新，不需要 Node.js 或 Vite。
 
-此目录承载公开介绍页。产品仍在开发与受控验收阶段，此页不是安装指南。不需要另建 `willcord-site` 仓库。
+此目录承载公开介绍页。产品仍在开发与受控验收阶段，此页包含安装与首次任务概览，完整操作步骤链接至主仓库 README、Docker 部署指南、worker 安装授权和运维手册。不需要另建 `willcord-site` 仓库。

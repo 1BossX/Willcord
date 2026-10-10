@@ -27,6 +27,9 @@ concurrency:
   cancel-in-progress: true
 jobs:
   build:
+    # The repository is public: never run a fork's pull request on the
+    # self-hosted runner (this job starts privileged containers).
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ["self-hosted", "Linux", "X64"]
     timeout-minutes: 120
     permissions:

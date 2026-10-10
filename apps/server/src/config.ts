@@ -4,6 +4,8 @@ export type ModelConfig = { provider: string; name: string; apiKey: string | und
 
 export type MainConfig = {
   dataDir: string;
+  /** Listen address; 127.0.0.1 behind a local Caddy, 0.0.0.0 inside a container. */
+  host: string;
   port: number;
   publicBaseUrl: string;
   logCapacityBytes?: number;
@@ -46,6 +48,8 @@ export function loadConfig(env: NodeJS.ProcessEnv): MainConfig {
   try {
     if (new URL(publicBaseUrl).protocol !== "https:") errors.push("PUBLIC_BASE_URL must be an https URL");
   } catch { errors.push("PUBLIC_BASE_URL must be an https URL"); }
+  const host = env.HOST || "127.0.0.1";
+  if (!/^[0-9a-fA-F.:]+$/.test(host)) errors.push("HOST must be an IP address");
   const port = int("PORT", 1) ?? 3000;
   if (port > 65535) errors.push("PORT must be <= 65535");
   const scriptFile = env.P3_FAKE_SCRIPT_FILE || undefined;
@@ -61,6 +65,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): MainConfig {
   if (errors.length) throw new Error(`invalid main node configuration:\n- ${errors.join("\n- ")}`);
   return {
     dataDir: env.DATA_DIR ?? "./data",
+    host,
     port,
     publicBaseUrl,
     ...(logCapacityBytes !== undefined ? { logCapacityBytes } : {}),

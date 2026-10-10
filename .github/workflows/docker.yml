@@ -1,0 +1,110 @@
+name: Docker
+# Main node images on GHCR: ghcr.io/1bossx/worker-plane-main and -caddy.
+# Each architecture builds natively on its own runner (native modules compile
+# in the image) and passes deploy/docker/smoke.sh before anything is pushed.
+# A v* tag pushes by digest per architecture, then one job joins them into
+# multi-arch tags. Pull requests only build and smoke-test.
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+    paths:
+      - 'apps/**'
+      - 'packages/**'
+      - 'migrations/**'
+      - 'pnpm-lock.yaml'
+      - 'deploy/docker/**'
+      - '.dockerignore'
+      - '.github/workflows/docker.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  REGISTRY: ghcr.io/1bossx
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    name: build (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            arch: amd64
+            runs-on: ubuntu-24.04
+          - platform: linux/arm64
+            arch: arm64
+            runs-on: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runs-on }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build images for the smoke test
+        run: |
+          for target in main caddy; do
+            docker buildx build --load --platform ${{ matrix.platform }} \
+              -f deploy/docker/Dockerfile --target "$target" \
+              --cache-from type=gha,scope=${{ matrix.arch }} \
+              --cache-to type=gha,mode=max,scope=${{ matrix.arch }} \
+              -t "local/worker-plane-$target:smoke" .
+          done
+      - run: SKIP_BUILD=1 deploy/docker/smoke.sh
+      - if: startsWith(github.ref, 'refs/tags/v')
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push by digest
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          for target in main caddy; do
+            docker buildx build --platform ${{ matrix.platform }} \
+              -f deploy/docker/Dockerfile --target "$target" \
+              --cache-from type=gha,scope=${{ matrix.arch }} \
+              --label org.opencontainers.image.source=https://github.com/${{ github.repository }} \
+              --label org.opencontainers.image.revision=${{ github.sha }} \
+              --output "type=image,name=$REGISTRY/worker-plane-$target,push-by-digest=true,name-canonical=true,push=true" \
+              --metadata-file "$RUNNER_TEMP/meta-$target.json" .
+            jq -r '."containerimage.digest"' "$RUNNER_TEMP/meta-$target.json" > "$RUNNER_TEMP/digests/$target-${{ matrix.arch }}"
+          done
+      - if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digests-*
+          path: digests
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Tag multi-arch images
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          for target in main caddy; do
+            image="$REGISTRY/worker-plane-$target"
+            docker buildx imagetools create -t "$image:$version" \
+              "$image@$(cat digests/$target-amd64)" "$image@$(cat digests/$target-arm64)"
+            docker buildx imagetools inspect "$image:$version"
+          done

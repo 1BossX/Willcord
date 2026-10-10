@@ -4,7 +4,7 @@
 
 文中路径是建议值，和 `deploy/` 下的模板一致。改动路径时，单元文件、配置和命令要一起改。任何密钥（模型 key、管理员密码、worker token）都不要写进仓库、聊天或命令行参数。
 
-新节点优先使用 [简化安装与授权流程](worker-onboarding.md)，下文保留手动配置部署方式。
+新节点优先使用 [简化安装与授权流程](worker-onboarding.md)，下文保留手动配置部署方式。主节点也可以用 Docker Compose 部署，见 [用 Docker 部署主节点](docker.md)。
 
 ## 1. 组成
 

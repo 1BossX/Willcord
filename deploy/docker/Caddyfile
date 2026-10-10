@@ -1,0 +1,31 @@
+# Worker Plane main node behind Caddy with Caddy's internal CA (container).
+#   WORKER_PLANE_SITE  address browsers and workers use, e.g. plane.internal:8443;
+#                      PUBLIC_BASE_URL must be https://<this>
+# The internal CA lives in /data: keep that volume, or every worker's CA file
+# stops matching. Copy /data/caddy/pki/authorities/local/root.crt to workers.
+{
+	skip_install_trust
+	pki {
+		ca local {
+			name "Worker Plane"
+		}
+	}
+}
+
+{$WORKER_PLANE_SITE} {
+	tls internal
+
+	@server path /enrollment/* /api/* /auth/* /ws/worker /health
+	handle @server {
+		reverse_proxy {$WORKER_PLANE_UPSTREAM:main:3000} {
+			flush_interval -1
+			stream_close_delay 5m
+		}
+	}
+
+	handle {
+		root * /srv/web
+		try_files {path} /index.html
+		file_server
+	}
+}

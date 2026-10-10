@@ -76,7 +76,9 @@ jobs:
         run: |
           need=$(objdump -T "$WORKER_BIN" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
           echo "highest glibc symbol version: $need"
-          [ "$need" = GLIBC_2.17 ] || { echo "expected at most GLIBC_2.17" >&2; exit 1; }
+          # An upper bound: x86_64 may top out below 2.17.
+          [ "$(printf '%s\n' "$need" GLIBC_2.17 | sort -V | tail -1)" = GLIBC_2.17 ] \
+            || { echo "expected at most GLIBC_2.17" >&2; exit 1; }
           for image in centos:7 debian:11 ubuntu:22.04 rockylinux:9; do
             docker run --rm -v "$PWD/$WORKER_BIN:/w:ro" -e WORKER_PLANE_HOME=/tmp/wp "$image" /w status --json > /dev/null
             echo "$image: ok"

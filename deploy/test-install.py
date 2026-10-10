@@ -40,8 +40,10 @@ elif name=='curl':
  url=next((a for a in args if a.startswith('https://')), '')
  if os.environ.get('TEST_NO_RELEASE')=='1': sys.exit(22)
  if url.endswith('/latest'): print('https://github.com/1BossX/Willcord/releases' if os.environ.get('TEST_NO_LATEST')=='1' else 'https://github.com/1BossX/Willcord/releases/tag/v1.2.3',end='');sys.exit()
- dest=p(args[args.index('-o')+1])
+ dest=p(args[args.index('-o')+1]) if '-o' in args else None
  if '/releases/tags/' in url: data=json.dumps({'draft':False,'prerelease':os.environ.get('TEST_PRERELEASE')=='1'}).encode()
+ elif url.endswith('/.well-known/willcord/ca.pem'): data=(root/'bootstrap.pem').read_bytes()
+ elif url.endswith('/health') and os.environ.get('TEST_TLS_FAIL')=='1':sys.exit(60)
  elif url.endswith('/health'): data=b'{"alive":true,"scheduling_ready":true}'
  else:
   asset=url.rsplit('/',1)[-1]
@@ -50,7 +52,8 @@ elif name=='curl':
   if not source.exists():sys.exit(22)
   data=source.read_bytes()
   if asset.endswith('.sha256') and os.environ.get('TEST_BAD_HASH')=='1':data=b'0'*64+b'  wrong\n'
- dest.write_bytes(data)
+ if dest is not None:dest.write_bytes(data)
+ else:sys.stdout.buffer.write(data)
 elif name=='docker':
  if args[:2]==['compose','pull'] and os.environ.get('TEST_START_FAIL')=='1':sys.exit(1)
  if args[:2]==['compose','cp']:p(args[-1]).write_text('public CA\n')
@@ -59,7 +62,7 @@ else:
  if args[0]=='install':
   target=p(os.environ['WORKER_PLANE_SYSTEM_ROOT'])/'bin/worker' if '--system' in args else p(os.environ['WORKER_PLANE_HOME'])/'bin/worker'
   target.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(sys.argv[0],target);target.chmod(0o700)
-  if '--system' not in args:
+  if '--system' not in args and 'SSL_CERT_FILE' in os.environ:
    (target.parent.parent/'ca.pem').write_bytes(p(os.environ['SSL_CERT_FILE']).read_bytes())
  elif args[0]=='join':
   assert 'SSL_CERT_FILE' not in os.environ, 'CLI must reuse the saved CA after install'
@@ -121,6 +124,35 @@ class InstallerTests(unittest.TestCase):
   self.assertIn('没有可访问的正式 Release',r.stderr)
   for bad in ['v1.2.3-','v1.2.3-rc 1','1.2.3-rc.1']:
    r=self.run_worker('--version',bad);self.assertNotEqual(r.returncode,0,bad)
+  self.clean_tmp()
+ def test_system_trust_has_no_insecure_or_ca_parameter(self):
+  r=subprocess.run([BASH,str(SCRIPT),'worker','--server','https://plane.example.com'],env=self.env,capture_output=True,text=True)
+  self.assertEqual(r.returncode,0,r.stderr)
+  health=[a for n,a in self.calls() if n=='curl' and any(x.endswith('/health') for x in a)]
+  self.assertTrue(health);self.assertTrue(all('--insecure' not in a and '--cacert' not in a for a in health))
+  self.assertFalse((Path(self.env['WORKER_PLANE_HOME'])/'ca.pem').exists())
+ def test_fingerprint_bootstrap_and_fail_closed(self):
+  import shutil
+  subprocess.run(['openssl','req','-x509','-newkey','rsa:2048','-nodes','-keyout',str(self.root/'key.pem'),'-out',str(self.root/'bootstrap.pem'),'-days','1','-subj','/CN=test-ca'],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+  der=subprocess.check_output(['openssl','x509','-in',str(self.root/'bootstrap.pem'),'-outform','DER'])
+  pin=hashlib.sha256(der).hexdigest()
+  args=[BASH,str(SCRIPT),'worker','--server','https://plane.internal:8443','--ca-fingerprint',pin]
+  for env in [{'TEST_TLS_FAIL':'1'},{'TEST_BAD_HASH':'1'}]:
+   r=subprocess.run(args,env={**self.env,**env},capture_output=True,text=True)
+   self.assertNotEqual(r.returncode,0,r.stderr)
+   self.assertFalse((Path(self.env['WORKER_PLANE_HOME'])/'bin/worker').exists())
+  r=subprocess.run(args[:-1]+['0'*64],env=self.env,capture_output=True,text=True)
+  self.assertNotEqual(r.returncode,0);self.assertIn('指纹不匹配',r.stderr)
+  r=subprocess.run(args,env=self.env,capture_output=True,text=True)
+  self.assertEqual(r.returncode,0,r.stderr)
+  self.assertEqual((Path(self.env['WORKER_PLANE_HOME'])/'ca.pem').read_bytes(),(self.root/'bootstrap.pem').read_bytes())
+  bootstrap_calls=[a for n,a in self.calls() if n=='curl' and any('/.well-known/willcord/ca.pem' in x for x in a)]
+  self.assertTrue(all('--insecure' in a and '--location' not in a for a in bootstrap_calls))
+  self.assertFalse(any('--insecure' in a for n,a in self.calls() if n=='curl' and not any('/.well-known/willcord/ca.pem' in x for x in a)))
+  shutil.rmtree(self.env['WORKER_PLANE_HOME'])
+  (self.root/'bootstrap.pem').write_bytes(b'x'*65537)
+  r=subprocess.run(args,env=self.env,capture_output=True,text=True)
+  self.assertNotEqual(r.returncode,0);self.assertFalse((Path(self.env['WORKER_PLANE_HOME'])/'bin/worker').exists())
   self.clean_tmp()
  def test_reinstall_preserves_identity_and_ledger(self):
   data=self.root/"user's data";data.mkdir()

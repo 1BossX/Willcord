@@ -37,6 +37,8 @@ curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- worker --se
 
 核对终端与控制台指纹后批准，等待“可执行”，选择默认 workspace 创建独立会话，输入“列出当前工作目录的文件，并报告工作目录路径”。确认任务成功，再添加已有项目目录或使用 Main Agent 跨机器委派。
 
+开发中：本分支支持 **CA 指纹自动接入**，执行机器无需提前复制 CA；公开 v0.2.0 尚未包含此功能。试用步骤见 [CA 指纹自动接入](docs/installation.md#ca-指纹自动接入开发中尚未发布)。
+
 完整的分步操作、成功标志与故障处理见 [安装与首次使用](docs/installation.md)。[手动 Docker 部署与升级](docs/docker.md) · [worker 详细说明](docs/worker-onboarding.md) · [systemd 与运维手册](docs/operations.md)。
 
 ## 安全与许可证

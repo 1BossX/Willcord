@@ -2458,7 +2458,7 @@ summary:focus-visible {
 .enrollment-dialog { width: min(640px, calc(100vw - 32px)); max-height: 85vh; overflow-y: auto; padding: 24px; }
 .enrollment-device { padding: 16px 0; border-bottom: 1px solid var(--line); }
 .enrollment-device p { overflow-wrap: anywhere; }
-.enrollment-device code { display: block; padding: 12px; background: #f4f6f8; border-radius: 8px; font-size: 12px; overflow-wrap: anywhere; user-select: all; }
+.enrollment-device code, .enrollment-install code { display: block; padding: 12px; background: #f4f6f8; border-radius: 8px; font-size: 12px; overflow-wrap: anywhere; user-select: all; }
 .enrollment-device button { margin: 4px 8px 4px 0; }
 
 .enrollment-device form { padding: 12px 0 0; }

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { request } from "./api";
+import { installCommand } from "./install-command";
 
 type Device = {
   worker_id: string; name: string; os: string; arch: string; state: string; created_at: number;
@@ -16,6 +17,18 @@ export function EnrollmentPanel() {
   const [editing, setEditing] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [revision, setRevision] = useState(0);
+  const [adding, setAdding] = useState(false);
+  const [system, setSystem] = useState(false);
+  const [ca, setCa] = useState("");
+  const [account, setAccount] = useState("");
+  const [copyStatus, setCopyStatus] = useState("");
+  let command = "", commandError = "";
+  try { command = installCommand(window.location.origin, ca, system, account); }
+  catch (e) { commandError = e instanceof Error ? e.message : String(e); }
+  async function copyCommand() {
+    try { await navigator.clipboard.writeText(command); setCopyStatus("已复制安装命令"); }
+    catch { setCopyStatus("复制失败，请选中下方命令手动复制"); }
+  }
   useEffect(() => {
     if (!open) return;
     const controller = new AbortController();
@@ -44,12 +57,26 @@ export function EnrollmentPanel() {
     <button className="enrollment-open" onClick={() => { dialog.current?.showModal(); setOpen(true); }}>机器授权</button>
     <dialog ref={dialog} className="session-dialog enrollment-dialog" aria-labelledby="enrollment-title" onCancel={close}>
       <div className="dialog-heading"><h2 id="enrollment-title">机器授权</h2><button className="secondary-button" onClick={close} aria-label="关闭机器授权">关闭</button></div>
+      <button className="secondary-button" aria-expanded={adding} onClick={() => { setAdding(v => !v); setCopyStatus(""); }}>添加机器</button>
+      {adding && <section className="enrollment-install" aria-label="添加机器">
+        <p>主节点：<strong>{window.location.origin}</strong></p>
+        <p>先将主节点导出的 ca.pem 安全复制到执行机器，再运行下面的命令。安装器下载最新正式版本并校验文件。</p>
+        <label>安装方式<select value={system ? "system" : "user"} onChange={e => { setSystem(e.target.value === "system"); setCopyStatus(""); }}>
+          <option value="user">个人电脑：用户级服务</option><option value="system">常驻服务器：系统级服务</option>
+        </select></label>
+        <p>{system ? "系统级安装需要 sudo，以指定账户执行；账户必须已存在。" : "macOS 登录后运行；Linux 退出登录后持续运行需要管理员配置 linger。"}</p>
+        <label>执行机器上的 CA 绝对路径<input value={ca} placeholder="/absolute/ca.pem" onChange={e => { setCa(e.target.value); setCopyStatus(""); }} /></label>
+        {system && <label>已有非 root 执行账户<input value={account} placeholder="ops" onChange={e => { setAccount(e.target.value); setCopyStatus(""); }} /></label>}
+        {command ? <><textarea aria-label="一行安装命令" readOnly value={command} rows={4} /><button className="primary-button" onClick={() => void copyCommand()}>复制安装命令</button></> : <p>{commandError}</p>}
+        <p role="status">{copyStatus}</p>
+        <p>安装后核对终端与下方的指纹并批准。等待“可执行”，创建独立会话，输入“列出当前工作目录的文件，并报告工作目录路径”。</p>
+      </section>}
       <p>批准前，请核对本机终端显示的节点指纹。</p>
       {error && <p role="alert">{error}</p>}
       {!devices.length && <p>尚无加入申请。安装 worker 后运行 join 即可申请。</p>}
       {devices.map(d => <article className="enrollment-device" key={d.worker_id}>
         <strong>{d.name}</strong><p>{d.os} / {d.arch} · {states[d.state]}</p>
-        <code>{d.worker_id}</code><p>{new Date(d.created_at).toLocaleString()}</p>
+        <p>节点 ID / 公钥 SHA-256 指纹</p><code>{d.worker_id}</code><p>{new Date(d.created_at).toLocaleString()}</p>
         {d.state === "approved" && <p>{d.blocked ? "需要核对" : !d.online ? "离线" : !d.reconciled ? "对账中" : d.active_job_id ? "正在执行" : "可执行"}</p>}
         {d.workspaces.map(w => <p key={w.workspace_id}>{w.workspace_id}{w.is_default ? "（默认）" : ""} · {w.path}</p>)}
         {d.state !== "approved" && <button className="primary-button" disabled={busy} onClick={() => void mutate(`/api/enrollments/${d.worker_id}/approve`, "POST", {})}>核对指纹后批准</button>}

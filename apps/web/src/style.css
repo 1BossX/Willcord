@@ -2463,3 +2463,8 @@ summary:focus-visible {
 
 .enrollment-device form { padding: 12px 0 0; }
 .enrollment-device input { width: 100%; padding: 10px; border: 1px solid var(--line); border-radius: 8px; }
+
+.enrollment-install { padding: 16px 0; border-bottom: 1px solid var(--line); }
+.enrollment-install label { display: block; margin: 12px 0; }
+.enrollment-install input, .enrollment-install select, .enrollment-install textarea { display: block; width: 100%; margin-top: 6px; padding: 10px; font: inherit; }
+.enrollment-install textarea { font-family: monospace; resize: vertical; }

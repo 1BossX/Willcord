@@ -202,6 +202,33 @@ fn public(key: &Ed25519KeyPair) -> Vec<u8> {
     der.extend_from_slice(key.public_key().as_ref());
     der
 }
+// Existing user installs may still point to an external CA file.
+fn user_ca(dir: &Path) -> Option<PathBuf> {
+    let copy = dir.join("ca.pem");
+    if copy.is_file() {
+        Some(copy)
+    } else {
+        fs::read_to_string(dir.join("service-ca"))
+            .ok()
+            .map(PathBuf::from)
+    }
+}
+fn copy_user_ca(dir: &Path, explicit: Option<PathBuf>) -> Result<(), Error> {
+    let source = explicit.or_else(|| user_ca(dir));
+    if let Some(source) = source {
+        let pem = fs::read(source)?;
+        if reqwest::Certificate::from_pem_bundle(&pem)?.is_empty() {
+            return Err("CA bundle contains no certificates".into());
+        }
+        let copy = dir.join("ca.pem");
+        save(&copy, &pem)?;
+        save(&dir.join("service-ca"), copy.to_string_lossy().as_bytes())?;
+    }
+    Ok(())
+}
+fn shell_quote(value: &Path) -> String {
+    format!("'{}'", value.to_string_lossy().replace('\'', "'\\''"))
+}
 async fn client() -> Result<reqwest::Client, Error> {
     let mut b = reqwest::Client::builder()
         .https_only(true)
@@ -404,9 +431,7 @@ fn service(dir: &Path, sys: Option<&System>, install: bool) -> Result<(), Error>
     };
     let ca = match sys {
         Some(s) => s.ca.clone(),
-        None => fs::read_to_string(dir.join("service-ca"))
-            .ok()
-            .map(PathBuf::from),
+        None => user_ca(dir),
     };
     let user = sys.map(|s| s.user.as_str());
     if cfg!(target_os = "macos") {
@@ -615,6 +640,11 @@ pub async fn dispatch() -> Result<Option<PathBuf>, Error> {
             dir
         }
     };
+    if sys.is_none() {
+        if let Some(ca) = user_ca(&dir) {
+            let _ = SYSTEM_CA.set(ca);
+        }
+    }
     let sys = sys.as_ref();
     match command {
         "install" => {
@@ -625,10 +655,7 @@ pub async fn dispatch() -> Result<Option<PathBuf>, Error> {
             let (target, mode) = match sys {
                 Some(s) => (s.root.join("bin/worker"), 0o755),
                 None => {
-                    if let Ok(ca) = std::env::var("SSL_CERT_FILE") {
-                        let ca = fs::canonicalize(ca)?;
-                        save(&dir.join("service-ca"), ca.to_string_lossy().as_bytes())?;
-                    }
+                    copy_user_ca(&dir, std::env::var_os("SSL_CERT_FILE").map(PathBuf::from))?;
                     private_dir(&dir.join("bin"))?;
                     (dir.join("bin/worker"), 0o700)
                 }
@@ -650,11 +677,11 @@ pub async fn dispatch() -> Result<Option<PathBuf>, Error> {
                 Some(s) => println!(
                     "Installed as a system service running as {}. Run: sudo {} join --system https://your-server",
                     s.user,
-                    target.display()
+                    shell_quote(&target)
                 ),
                 None => println!(
                     "Installed. Run: {} join https://your-server",
-                    target.display()
+                    shell_quote(&target)
                 ),
             }
         }
@@ -688,8 +715,11 @@ pub async fn dispatch() -> Result<Option<PathBuf>, Error> {
             setup(&dir, base)?;
             let state = proof(&dir, "apply").await?;
             println!(
-                "Node: {}\nAuthorization: {}",
-                state["worker_id"], state["state"]
+                "Node: {}\nFingerprint (SHA-256 of public key): {}\nAuthorization: {}\nConsole: {}\nNext: 核对控制台指纹后批准；等待机器显示可执行，再验证只读任务。",
+                state["worker_id"].as_str().unwrap_or("unknown"),
+                format!("{:x}", Sha256::digest(public(&identity(&dir)?))),
+                state["state"].as_str().unwrap_or("unknown"),
+                base
             );
         }
         "run" => {
@@ -845,6 +875,47 @@ mod tests {
     use super::*;
     fn dir() -> PathBuf {
         std::env::temp_dir().join(format!("worker-cli-{}", uuid::Uuid::new_v4()))
+    }
+    #[test]
+    fn legacy_ca_is_copied_and_commands_are_shell_quoted() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = dir();
+        private_dir(&d).unwrap();
+        let source = d.join("external CA.pem");
+        fs::write(&source, b"not a certificate").unwrap();
+        save(&d.join("service-ca"), source.to_str().unwrap().as_bytes()).unwrap();
+        assert!(copy_user_ca(&d, None).is_err());
+        assert!(!d.join("ca.pem").exists());
+        assert!(
+            std::process::Command::new("openssl")
+                .args(["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout"])
+                .arg(d.join("key.pem"))
+                .arg("-out")
+                .arg(&source)
+                .args(["-days", "1", "-subj", "/CN=installer-test"])
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+        save(&d.join("service-ca"), source.to_str().unwrap().as_bytes()).unwrap();
+        copy_user_ca(&d, None).unwrap();
+        assert_eq!(
+            fs::read(d.join("ca.pem")).unwrap(),
+            fs::read(&source).unwrap()
+        );
+        fs::remove_file(&source).unwrap();
+        assert_eq!(user_ca(&d), Some(d.join("ca.pem")));
+        copy_user_ca(&d, None).unwrap();
+        assert_eq!(
+            fs::metadata(d.join("ca.pem")).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            shell_quote(Path::new("/a b/o'ne/worker")),
+            "'/a b/o'\\''ne/worker'"
+        );
+        fs::remove_dir_all(d).unwrap();
     }
     #[test]
     fn device_identity_and_default_workspace_survive_repeated_setup() {

@@ -57,16 +57,26 @@ env_line() {
   printf '%s="%s"\n' "$1" "$value"
 }
 resolve_version() {
-  local resolved
+  local resolved stable=true
   if [[ -z "$version" ]]; then
-    resolved=$(curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 60 -o /dev/null -w '%{url_effective}' "https://github.com/1BossX/Willcord/releases/latest") || fail "没有可访问的正式 Release。请等待发布，或用 --version 指定已发布版本。"
+    # With no Release, GitHub redirects /releases/latest to /releases.
+    resolved=$(curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 60 -o /dev/null -w '%{url_effective}' "https://github.com/1BossX/Willcord/releases/latest") || resolved=''
+    [[ "$resolved" == */releases/tag/* ]] || fail "没有可访问的正式 Release。请等待发布，或用 --version 指定已发布版本。"
     version=${resolved##*/}
+    [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "最新 Release 不是正式版本 vX.Y.Z：${version}。"
   fi
-  [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "版本必须是正式版本 vX.Y.Z。"
+  # Pre-releases (vX.Y.Z-rc.N) are installed only when named with --version.
+  [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || fail "版本必须是 vX.Y.Z，或显式指定的预发布版本 vX.Y.Z-rc.N。"
+  [[ "$version" != *-* ]] || stable=false
   fetch "https://api.github.com/repos/1BossX/Willcord/releases/tags/$version" "$tmp/release.json"
-  grep -Eq '"draft":[[:space:]]*false' "$tmp/release.json" && grep -Eq '"prerelease":[[:space:]]*false' "$tmp/release.json" || fail "版本尚未正式发布。"
+  grep -Eq '"draft":[[:space:]]*false' "$tmp/release.json" || fail "版本尚未发布。"
+  if [[ "$stable" == true ]]; then
+    grep -Eq '"prerelease":[[:space:]]*false' "$tmp/release.json" || fail "${version} 标记为预发布，不是正式版本。"
+    printf '安装版本：%s\n' "$version"
+  else
+    printf '安装预发布版本：%s（仅用于验收）\n' "$version"
+  fi
   release="https://github.com/1BossX/Willcord/releases/download/$version"
-  printf '安装版本：%s\n' "$version"
 }
 worker_install() {
   [[ -n "$server" && -n "$ca" ]] || fail "worker 需要 --server HTTPS_ORIGIN --ca /absolute/ca.pem。"

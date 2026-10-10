@@ -21,8 +21,17 @@ export const waitFor = async (check: () => boolean, timeoutMs = 10000) => {
 export function createCertificates(dir: string) {
   const file = (name: string) => join(dir, name);
   const openssl = (args: string[]) => execFileSync("openssl", args, { stdio: "ignore" });
-  openssl(["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", file("ca-key.pem"), "-out", file("ca.pem"), "-days", "1", "-subj", "/CN=Worker Plane Test CA", "-addext", "basicConstraints=critical,CA:TRUE"]);
-  openssl(["req", "-new", "-newkey", "rsa:2048", "-nodes", "-keyout", file("key.pem"), "-out", file("cert.csr"), "-subj", "/CN=localhost"]);
+  const caConfig = file("test-ca.cnf");
+  writeFileSync(
+    caConfig,
+    "[req]\nprompt=no\ndistinguished_name=dn\nx509_extensions=v3_ca\n" +
+      "[dn]\nCN=Worker Plane Test CA\n" +
+      "[v3_ca]\nbasicConstraints=critical,CA:TRUE\nkeyUsage=critical,keyCertSign,cRLSign\n",
+  );
+  // Pin the test CA extensions instead of inheriting host OpenSSL defaults.
+  // The CA must be permitted to sign leaf certificates.
+  openssl(["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", file("ca-key.pem"), "-out", file("ca.pem"), "-days", "1", "-config", caConfig]);
+  openssl(["req", "-new", "-newkey", "rsa:2048", "-nodes", "-keyout", file("key.pem"), "-out", file("cert.csr"), "-config", caConfig, "-subj", "/CN=localhost"]);
   writeFileSync(file("cert.ext"), "basicConstraints=critical,CA:FALSE\nsubjectAltName=DNS:localhost\nextendedKeyUsage=serverAuth\nkeyUsage=digitalSignature,keyEncipherment\n");
   openssl(["x509", "-req", "-in", file("cert.csr"), "-CA", file("ca.pem"), "-CAkey", file("ca-key.pem"), "-CAcreateserial", "-out", file("cert.pem"), "-days", "1", "-extfile", file("cert.ext")]);
   return { ca: file("ca.pem"), key: file("key.pem"), cert: file("cert.pem") };

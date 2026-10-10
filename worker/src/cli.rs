@@ -23,6 +23,7 @@ pub struct System {
     user: String,
     uid: u32,
     gid: u32,
+    home: PathBuf,
     ca: Option<PathBuf>,
 }
 impl System {
@@ -52,7 +53,7 @@ fn valid_user(name: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
 }
-fn lookup(user: &str) -> Result<(u32, u32), Error> {
+fn lookup(user: &str) -> Result<(u32, u32, PathBuf), Error> {
     if !valid_user(user) {
         return Err("invalid account name".into());
     }
@@ -65,7 +66,13 @@ fn lookup(user: &str) -> Result<(u32, u32), Error> {
     if uid == 0 {
         return Err("the service account must not be root".into());
     }
-    Ok((uid, gid))
+    let home = unsafe { std::ffi::CStr::from_ptr((*pw).pw_dir) };
+    use std::os::unix::ffi::OsStrExt;
+    Ok((
+        uid,
+        gid,
+        PathBuf::from(std::ffi::OsStr::from_bytes(home.to_bytes())),
+    ))
 }
 fn read_system(root: &Path) -> Result<System, Error> {
     let path = root.join("system.json");
@@ -81,12 +88,13 @@ fn read_system(root: &Path) -> Result<System, Error> {
         .as_str()
         .ok_or("system.json: missing user")?
         .to_owned();
-    let (uid, gid) = lookup(&user)?;
+    let (uid, gid, home) = lookup(&user)?;
     Ok(System {
         root: root.to_owned(),
         user,
         uid,
         gid,
+        home,
         ca: v["ca"].as_str().map(PathBuf::from),
     })
 }
@@ -101,8 +109,11 @@ fn become_service_user(sys: &System) -> Result<(), Error> {
         return Err(format!("run with sudo or as {}", sys.user).into());
     }
     let gid = sys.gid as libc::gid_t;
+    let name = std::ffi::CString::new(sys.user.as_str())?;
     unsafe {
-        if libc::setgroups(1, &gid) != 0
+        // The account's supplementary groups too, as systemd User= and
+        // launchd UserName grant them to the service.
+        if libc::initgroups(name.as_ptr(), gid as _) != 0
             || libc::setgid(gid) != 0
             || libc::setuid(sys.uid as libc::uid_t) != 0
         {
@@ -340,19 +351,23 @@ fn launchd_plist(
     exe: &Path,
     dir: &Path,
     ca: Option<&Path>,
-    user: Option<&str>,
+    user: Option<(&str, &Path)>,
 ) -> String {
     // A LaunchDaemon also gets the stop grace of deploy/launchd: SIGTERM
     // cancels running commands before launchd kills the job.
     let daemon = user
-        .map(|u| format!("<key>UserName</key><string>{u}</string><key>ExitTimeOut</key><integer>60</integer><key>ThrottleInterval</key><integer>60</integer><key>Umask</key><integer>63</integer>"))
+        .map(|(u, _)| format!("<key>UserName</key><string>{u}</string><key>ExitTimeOut</key><integer>60</integer><key>ThrottleInterval</key><integer>60</integer><key>Umask</key><integer>63</integer>"))
         .unwrap_or_default();
     format!(
         "<?xml version=\"1.0\"?><!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\"><plist version=\"1.0\"><dict><key>Label</key><string>{name}</string>{daemon}<key>ProgramArguments</key><array><string>{}</string><string>run</string></array><key>EnvironmentVariables</key><dict><key>WORKER_PLANE_HOME</key><string>{}</string>{}</dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>StandardErrorPath</key><string>{}</string></dict></plist>",
         xml(exe),
         xml(dir),
-        ca.map(|p| format!("<key>SSL_CERT_FILE</key><string>{}</string>", xml(p)))
-            .unwrap_or_default(),
+        // launchd sets no HOME for daemons; commands need the account's.
+        user.map(|(_, h)| format!("<key>HOME</key><string>{}</string>", xml(h)))
+            .unwrap_or_default()
+            + &ca
+                .map(|p| format!("<key>SSL_CERT_FILE</key><string>{}</string>", xml(p)))
+                .unwrap_or_default(),
         xml(&dir.join("service.log"))
     )
 }
@@ -415,7 +430,13 @@ fn service(dir: &Path, sys: Option<&System>, install: bool) -> Result<(), Error>
         let domain = launchd_domain(sys);
         if install {
             fs::create_dir_all(&directory)?;
-            let plist = launchd_plist(&name, &exe, dir, ca.as_deref(), user);
+            let plist = launchd_plist(
+                &name,
+                &exe,
+                dir,
+                ca.as_deref(),
+                sys.map(|s| (s.user.as_str(), s.home.as_path())),
+            );
             if sys.is_some() {
                 save_public(&path, plist.as_bytes())?;
             } else {
@@ -501,7 +522,7 @@ fn install_system(root: &Path, user: Option<&str>) -> Result<System, Error> {
     }
     let user = user
         .ok_or("install --system requires --user ACCOUNT, the existing account commands run as")?;
-    let (uid, gid) = lookup(user)?;
+    let (uid, gid, home) = lookup(user)?;
     let old = root
         .join("system.json")
         .exists()
@@ -516,28 +537,29 @@ fn install_system(root: &Path, user: Option<&str>) -> Result<System, Error> {
             .into());
         }
     }
-    let ca = match std::env::var_os("SSL_CERT_FILE") {
-        Some(p) => Some(fs::canonicalize(p)?),
-        None => old.and_then(|o| o.ca),
-    };
-    if let Some(ca) = &ca {
-        use std::os::unix::fs::MetadataExt;
-        let m = fs::metadata(ca)?;
-        if m.mode() & 0o004 == 0 && m.uid() != uid {
-            return Err(format!("{} must be readable by {user}", ca.display()).into());
-        }
-    }
     use std::os::unix::fs::PermissionsExt;
     for d in [root.to_owned(), root.join("bin")] {
         fs::create_dir_all(&d)?;
         std::os::unix::fs::chown(&d, Some(0), Some(0))?;
         fs::set_permissions(&d, fs::Permissions::from_mode(0o755))?;
     }
+    // Root can read a CA the service account cannot (under /root or a 0700
+    // home), so keep a public copy inside the install root.
+    let ca = match std::env::var_os("SSL_CERT_FILE") {
+        Some(p) => {
+            let pem = fs::read(p)?;
+            let copy = root.join("ca.pem");
+            save_public(&copy, &pem)?;
+            Some(copy)
+        }
+        None => old.and_then(|o| o.ca),
+    };
     let sys = System {
         root: root.to_owned(),
         user: user.to_owned(),
         uid,
         gid,
+        home,
         ca,
     };
     private_dir(&sys.data())?;
@@ -893,8 +915,15 @@ mod tests {
         assert!(!unit.contains("default.target"));
         let agent = launchd_plist("n", exe, dir, None, None);
         assert!(!agent.contains("UserName") && !agent.contains("SSL_CERT_FILE"));
-        let daemon = launchd_plist("n", exe, dir, Some(ca), Some("ops"));
+        let daemon = launchd_plist(
+            "n",
+            exe,
+            dir,
+            Some(ca),
+            Some(("ops", Path::new("/Users/ops"))),
+        );
         assert!(daemon.contains("<key>UserName</key><string>ops</string>"));
+        assert!(daemon.contains("<key>HOME</key><string>/Users/ops</string>"));
         assert!(daemon.contains("<key>ExitTimeOut</key><integer>60</integer>"));
         assert!(daemon.contains("<key>SSL_CERT_FILE</key><string>/c/ca.pem</string>"));
     }

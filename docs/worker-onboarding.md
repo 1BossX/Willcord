@@ -39,7 +39,7 @@ sudo <安装输出的路径> status --system --json
 | 二进制与 `system.json` | `/var/lib/worker-plane-system/`，root 所有 | `/Library/Application Support/WorkerPlane/`，root 所有 |
 | 身份、账本、token、默认目录 | 上述目录下的 `data/`，服务账户所有，0700 | 同左 |
 
-二进制和 `system.json` 归 root 所有，服务账户不能替换自己运行的程序。`join`、`status`、`workspace` 加 `--system` 后先切换到服务账户再读写数据，不会生成 root 所有的文件，可以用 sudo 运行，也可以直接以服务账户运行。私有 CA 在 install 时用 `sudo SSL_CERT_FILE=/absolute/ca.pem ... install --system --user <账户>` 传入，保存在 `system.json`，之后的命令和服务自动使用；CA 文件必须对服务账户可读。
+二进制和 `system.json` 归 root 所有，服务账户不能替换自己运行的程序。`join`、`status`、`workspace` 加 `--system` 后先切换到服务账户再读写数据，不会生成 root 所有的文件，可以用 sudo 运行，也可以直接以服务账户运行。私有 CA 在 install 时用 `sudo SSL_CERT_FILE=/absolute/ca.pem ... install --system --user <账户>` 传入，安装器把它复制为安装根目录下的 `ca.pem`（0644，root 所有），之后的命令和服务自动使用这份副本，原文件放在 `/root` 等服务账户读不到的位置也可以。更换 CA 时带上新的 `SSL_CERT_FILE` 重新 install。macOS 的 LaunchDaemon 写入服务账户的 `HOME`；systemd 的 `User=` 会自动设置。
 
 同一台机器上的用户级安装和系统级安装是两个独立节点，各有身份和服务名。升级时用新二进制重新运行同样的 `install --system --user <账户>`；更换账户需要先卸载。`WORKER_PLANE_SYSTEM_ROOT` 可指定其他安装根目录。
 

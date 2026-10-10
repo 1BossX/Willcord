@@ -12,10 +12,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: self-hosted
-            runs-on: '["self-hosted", "macOS"]'
-          - name: self-hosted-linux
-            runs-on: '["self-hosted", "Linux"]'
+          - name: macos
+            runs-on: '["macos-15"]'
+          - name: linux
+            runs-on: '["ubuntu-24.04"]'
     runs-on: ${{ fromJSON(matrix.runs-on) }}
     steps:
       - uses: actions/checkout@v4

@@ -293,7 +293,7 @@ UI 的 bash 卡片读取 `output`，显示真实退出码或"已取消/已超时
 
 ### 总验收
 
-验收环境：macOS arm64，Node 22.22.3，Rust 1.93.1，本机临时 CA，worker 与主节点均在本机。未在 venus-local 远端复验。命令：先执行 `cargo build --locked --manifest-path worker/Cargo.toml`，再执行 `PATH=/opt/homebrew/bin:$PATH pnpm test`，结果是 server 62 项、protocol 3 项全部通过。`cargo test --locked`（含 `--features fault-injection`）23 项通过。job ID 为下面这次运行的记录。
+验收环境：macOS arm64，Node 22.22.3，Rust 1.93.1，本机临时 CA，worker 与主节点均在本机。未在 linux-test-worker 远端复验。命令：先执行 `cargo build --locked --manifest-path worker/Cargo.toml`，再执行 `PATH=/opt/homebrew/bin:$PATH pnpm test`，结果是 server 62 项、protocol 3 项全部通过。`cargo test --locked`（含 `--features fault-injection`）23 项通过。job ID 为下面这次运行的记录。
 
 **故障程序**（`p4-faults.test.ts`）
 

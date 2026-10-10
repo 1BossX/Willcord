@@ -125,4 +125,4 @@ jobs:
       - name: Draft release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: deploy/release-publish.sh
+        run: bash deploy/release-publish.sh

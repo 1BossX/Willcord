@@ -33,7 +33,7 @@ curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- worker --se
 
 替换主节点地址和**执行机器上的** CA 绝对路径。常驻服务器加 `--system --user 'ops'`，指定已有非 root 账户；macOS 用户级服务在登录后启动，Linux 用户级服务需 systemd 用户会话。控制台“机器授权 → 添加机器”可以生成对应命令。
 
-安装器选择最新已发布正式 Release，显示版本并校验 SHA-256；固定版本加 `--version vX.Y.Z`。没有正式 Release 时明确退出。**一行安装须在首个包含新安装器和 CLI 的正式版本发布后使用。** 安装文件、CLI 和服务继续使用 WorkerPlane 工程名称。
+安装器选择最新已发布正式 Release，显示版本并校验 SHA-256；固定版本加 `--version vX.Y.Z`；验收预发布版本时显式指定 `--version vX.Y.Z-rc.N`。没有正式 Release 时明确退出。**一行安装须在首个包含新安装器和 CLI 的正式版本发布后使用。** 安装文件、CLI 和服务继续使用 WorkerPlane 工程名称。
 
 核对终端与控制台指纹后批准，等待“可执行”，选择默认 workspace 创建独立会话，输入“列出当前工作目录的文件，并报告工作目录路径”。确认任务成功，再添加已有项目目录或使用 Main Agent 跨机器委派。
 

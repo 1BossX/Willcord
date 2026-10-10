@@ -39,7 +39,7 @@ elif name=='sudo':
 elif name=='curl':
  url=next((a for a in args if a.startswith('https://')), '')
  if os.environ.get('TEST_NO_RELEASE')=='1': sys.exit(22)
- if url.endswith('/latest'): print('https://github.com/1BossX/Willcord/releases/tag/v1.2.3',end='');sys.exit()
+ if url.endswith('/latest'): print('https://github.com/1BossX/Willcord/releases' if os.environ.get('TEST_NO_LATEST')=='1' else 'https://github.com/1BossX/Willcord/releases/tag/v1.2.3',end='');sys.exit()
  dest=p(args[args.index('-o')+1])
  if '/releases/tags/' in url: data=json.dumps({'draft':False,'prerelease':os.environ.get('TEST_PRERELEASE')=='1'}).encode()
  elif url.endswith('/health'): data=b'{"alive":true,"scheduling_ready":true}'
@@ -77,6 +77,7 @@ class InstallerTests(unittest.TestCase):
    path=self.bin/name;path.write_text(stub);path.chmod(0o700)
   for os_name,arch in [('linux','x86_64'),('linux','aarch64'),('darwin','x86_64'),('darwin','arm64')]:
    self.asset(f'worker-plane-worker-v1.2.3-{os_name}-{arch}',stub.encode())
+  self.asset('worker-plane-worker-v1.2.3-rc.1-linux-x86_64',stub.encode())
   self.asset('compose.yaml',COMPOSE.read_bytes())
   self.ca=self.root/"CA directory/o'ne.pem";self.ca.parent.mkdir();self.ca.write_text('CA')
   self.env={**os.environ,'LANG':'en_US.UTF-8','LC_ALL':'en_US.UTF-8','PATH':f'{self.bin}:{os.environ["PATH"]}','TEST_ROOT':str(self.root),'WORKER_PLANE_HOME':str(self.root/"user's data"),'WORKER_PLANE_SYSTEM_ROOT':str(self.root/'system data'),'TMPDIR':str(self.root)}
@@ -109,6 +110,18 @@ class InstallerTests(unittest.TestCase):
     self.assertFalse((Path(self.env['WORKER_PLANE_HOME'])/'bin/worker').exists())
     self.assertFalse((Path(self.env['WORKER_PLANE_SYSTEM_ROOT'])/'bin/worker').exists())
     self.clean_tmp()
+ def test_prerelease_only_when_named(self):
+  r=self.run_worker('--version','v1.2.3-rc.1',env={'TEST_PRERELEASE':'1'});self.assertEqual(r.returncode,0,r.stderr)
+  self.assertIn('安装预发布版本：v1.2.3-rc.1',r.stdout)
+  self.assertTrue(any('worker-plane-worker-v1.2.3-rc.1-linux-x86_64' in str(a) for n,a in self.calls() if n=='curl'))
+  self.clean_tmp()
+  r=self.run_worker('--version','v1.2.3',env={'TEST_PRERELEASE':'1'});self.assertNotEqual(r.returncode,0)
+  self.assertIn('预发布',r.stderr)
+  r=self.run_worker(env={'TEST_NO_LATEST':'1'});self.assertNotEqual(r.returncode,0)
+  self.assertIn('没有可访问的正式 Release',r.stderr)
+  for bad in ['v1.2.3-','v1.2.3-rc 1','1.2.3-rc.1']:
+   r=self.run_worker('--version',bad);self.assertNotEqual(r.returncode,0,bad)
+  self.clean_tmp()
  def test_reinstall_preserves_identity_and_ledger(self):
   data=self.root/"user's data";data.mkdir()
   for name in ['identity.pk8','ledger.sqlite']:(data/name).write_text('keep')

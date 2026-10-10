@@ -63,7 +63,7 @@ Linux 需要 systemd 用户会话；管理员可以通过 `loginctl enable-linge
 curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- worker --server 'https://plane.internal:8443' --ca '/absolute/ca.pem' --system --user 'ops'
 ```
 
-支持 Linux/macOS x86_64/arm64。安装器自动选择文件并校验 SHA-256，再安装服务并提交加入申请。CA 被复制到安装目录，后台服务及后续 CLI 自动使用。原始证书文件可在安装成功后移走；保留安装目录内的副本。安装不修改 PATH，命令输出会给出带引号的绝对路径。
+支持 Linux/macOS x86_64/arm64；Linux 二进制需要 glibc 2.17 或更新。安装器自动选择文件并校验 SHA-256，再安装服务并提交加入申请。CA 被复制到安装目录，后台服务及后续 CLI 自动使用。原始证书文件可在安装成功后移走；保留安装目录内的副本。安装不修改 PATH，命令输出会给出带引号的绝对路径。
 
 **成功标志**：终端显示节点 ID、公钥 SHA-256 指纹及授权状态。申请成功并不意味着已经可执行。
 

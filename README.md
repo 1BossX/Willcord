@@ -25,7 +25,7 @@ curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- main
 
 向导收集访问地址、模型配置和首次管理员密码，生成配置、启动服务并导出 `ca.pem`。先让浏览器信任这个根证书，再安全复制到执行机器。
 
-worker（Linux/macOS x86_64/arm64，以普通账户运行）：
+worker（Linux/macOS x86_64/arm64，以普通账户运行；Linux 需要 glibc 2.17 或更新）：
 
 ```sh
 curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- worker --server 'https://plane.internal:8443' --ca '/absolute/ca.pem'

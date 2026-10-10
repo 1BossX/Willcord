@@ -213,10 +213,8 @@ fn user_ca(dir: &Path) -> Option<PathBuf> {
             .map(PathBuf::from)
     }
 }
-fn copy_user_ca(dir: &Path) -> Result<(), Error> {
-    let source = std::env::var_os("SSL_CERT_FILE")
-        .map(PathBuf::from)
-        .or_else(|| user_ca(dir));
+fn copy_user_ca(dir: &Path, explicit: Option<PathBuf>) -> Result<(), Error> {
+    let source = explicit.or_else(|| user_ca(dir));
     if let Some(source) = source {
         let pem = fs::read(source)?;
         if reqwest::Certificate::from_pem_bundle(&pem)?.is_empty() {
@@ -657,7 +655,7 @@ pub async fn dispatch() -> Result<Option<PathBuf>, Error> {
             let (target, mode) = match sys {
                 Some(s) => (s.root.join("bin/worker"), 0o755),
                 None => {
-                    copy_user_ca(&dir)?;
+                    copy_user_ca(&dir, std::env::var_os("SSL_CERT_FILE").map(PathBuf::from))?;
                     private_dir(&dir.join("bin"))?;
                     (dir.join("bin/worker"), 0o700)
                 }
@@ -886,7 +884,7 @@ mod tests {
         let source = d.join("external CA.pem");
         fs::write(&source, b"not a certificate").unwrap();
         save(&d.join("service-ca"), source.to_str().unwrap().as_bytes()).unwrap();
-        assert!(copy_user_ca(&d).is_err());
+        assert!(copy_user_ca(&d, None).is_err());
         assert!(!d.join("ca.pem").exists());
         assert!(
             std::process::Command::new("openssl")
@@ -901,14 +899,14 @@ mod tests {
                 .success()
         );
         save(&d.join("service-ca"), source.to_str().unwrap().as_bytes()).unwrap();
-        copy_user_ca(&d).unwrap();
+        copy_user_ca(&d, None).unwrap();
         assert_eq!(
             fs::read(d.join("ca.pem")).unwrap(),
             fs::read(&source).unwrap()
         );
         fs::remove_file(&source).unwrap();
         assert_eq!(user_ca(&d), Some(d.join("ca.pem")));
-        copy_user_ca(&d).unwrap();
+        copy_user_ca(&d, None).unwrap();
         assert_eq!(
             fs::metadata(d.join("ca.pem")).unwrap().permissions().mode() & 0o777,
             0o600

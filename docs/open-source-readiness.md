@@ -8,6 +8,7 @@
 - `SECURITY.md` 和 README 明确单管理员、实际账号权限、工作目录不是 shell 沙箱、模型数据外发和不承诺任意命令 exactly-once 的边界。
 - PR、Pi spike 和 Release 工作流改为 GitHub-hosted runners，移除自托管 runner；没有更改组织 runner 配置。
 - macOS 验证和 arm64 发布使用 macos-15；官方 macos-14 runner 在 2026-11-02 停用，避免新工作流很快过期。
+- macOS P1 工作流先安装 GNU Bash，再设置 Node 24，防止 PATH 中的 Homebrew Node 22 覆盖项目要求。
 - 远端 runner 策略已核验：该仓库当前无自托管 runner，组织 Default runner group 的 `allows_public_repositories=false`；未扩大其访问范围。
 - 新增 Secret scan 工作流，使用固定版本 Gitleaks 扫描可见历史，日志脱敏。
 - 当前文档的真实机器别名与内网地址已替换；3 份状态 JSON 隐去设备身份、服务名、路径和任务标识，保留验收结论并标明脱敏。

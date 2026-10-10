@@ -18,7 +18,7 @@ verified() {
   [[ "$expected" =~ ^[a-fA-F0-9]{64}$ ]] || fail "校验文件无效：$name"
   actual=$(sha256 "$tmp/$name"); actual=${actual%% *}
   expected=$(printf '%s' "$expected" | tr 'A-F' 'a-f')
-  [[ "$expected" == "$actual" ]] || fail "SHA-256 不匹配：$name，未执行安装。"
+  [[ "$expected" == "$actual" ]] || fail "SHA-256 不匹配：${name}，未执行安装。"
 }
 # Single-quote shell arguments in the commands shown after installation.
 quote() { local value="$1"; value=${value//\'/\'\\\'\'}; printf "'%s'" "$value"; }
@@ -123,7 +123,7 @@ main_install() {
   [[ -d "$directory" ]] || mkdir -p "$directory"
   directory=$(cd "$directory" && pwd)
   for existing in compose.yaml .env main.env ca.pem; do
-    [[ ! -e "$directory/$existing" && ! -L "$directory/$existing" ]] || fail "目录已有 $existing，拒绝覆盖，请使用新的 --dir。"
+    [[ ! -e "$directory/$existing" && ! -L "$directory/$existing" ]] || fail "目录已有 ${existing}，拒绝覆盖，请使用新的 --dir。"
   done
   if [[ -z "$server" ]]; then prompt server '浏览器和 worker 可访问的 HTTPS 地址' 'https://plane.internal:8443'; fi
   origin "$server"

@@ -15,6 +15,7 @@ import unittest
 
 SCRIPT = Path(__file__).with_name('install.sh').resolve()
 COMPOSE = SCRIPT.parent / 'docker/compose.yaml'
+BASH = '/bin/bash'  # Exercise macOS's stock Bash 3.2 even when Homebrew Bash is on PATH.
 STUB = r'''
 import hashlib, json, os, pathlib, shutil, sys
 p=pathlib.Path
@@ -78,7 +79,7 @@ class InstallerTests(unittest.TestCase):
    self.asset(f'worker-plane-worker-v1.2.3-{os_name}-{arch}',stub.encode())
   self.asset('compose.yaml',COMPOSE.read_bytes())
   self.ca=self.root/"CA directory/o'ne.pem";self.ca.parent.mkdir();self.ca.write_text('CA')
-  self.env={**os.environ,'PATH':f'{self.bin}:{os.environ["PATH"]}','TEST_ROOT':str(self.root),'WORKER_PLANE_HOME':str(self.root/"user's data"),'WORKER_PLANE_SYSTEM_ROOT':str(self.root/'system data'),'TMPDIR':str(self.root)}
+  self.env={**os.environ,'LANG':'en_US.UTF-8','LC_ALL':'en_US.UTF-8','PATH':f'{self.bin}:{os.environ["PATH"]}','TEST_ROOT':str(self.root),'WORKER_PLANE_HOME':str(self.root/"user's data"),'WORKER_PLANE_SYSTEM_ROOT':str(self.root/'system data'),'TMPDIR':str(self.root)}
   self.env.pop('SSL_CERT_FILE',None)
  def tearDown(self):self.temp.cleanup()
  def asset(self,name,data):
@@ -86,7 +87,7 @@ class InstallerTests(unittest.TestCase):
   (self.assets/(name+'.sha256')).write_text(hashlib.sha256(data).hexdigest()+'  '+name+'\n')
  def calls(self):return [json.loads(x) for x in (self.root/'calls').read_text().splitlines()]
  def run_worker(self,*extra,env=None):
-  return subprocess.run(['bash',str(SCRIPT),'worker','--server','https://plane.internal:8443','--ca',str(self.ca),*extra],env={**self.env,**(env or {})},capture_output=True,text=True)
+  return subprocess.run([BASH,str(SCRIPT),'worker','--server','https://plane.internal:8443','--ca',str(self.ca),*extra],env={**self.env,**(env or {})},capture_output=True,text=True)
  def clean_tmp(self):self.assertFalse(list(self.root.glob('worker-plane-install.*')))
  def test_four_platforms_and_literal_paths(self):
   for os_name,arch,asset_os,asset_arch in [('Linux','x86_64','linux','x86_64'),('Linux','arm64','linux','aarch64'),('Darwin','x86_64','darwin','x86_64'),('Darwin','arm64','darwin','arm64')]:
@@ -117,7 +118,7 @@ class InstallerTests(unittest.TestCase):
  def main_tty(self,extra=(),env=None):
   pid,fd=pty.fork()
   if pid==0:
-   os.execvpe('bash',['bash',str(SCRIPT),'main','--server','https://plane.internal:08443','--dir',str(self.root/'deployment'),*extra],{**self.env,**(env or {})})
+   os.execve(BASH,[BASH,str(SCRIPT),'main','--server','https://plane.internal:08443','--dir',str(self.root/'deployment'),*extra],{**self.env,**(env or {})})
   output=b'';prompts=[(b'provider',b'\n'),('模型名称'.encode(),b'\n'),(b'API key',b'key$with#special\n'),('管理员密码'.encode(),b"long'password$with#literal\n")];sent=0;deadline=time.monotonic()+15
   try:
    while time.monotonic()<deadline:

@@ -22,6 +22,9 @@ toml = "=0.9.8"
 jsonschema = { version = "=0.33.0", default-features = false }
 rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
 
+ring = "=0.17.14"
+reqwest = { version = "=0.12.28", default-features = false, features = ["rustls-tls-native-roots", "json"] }
+
 # Release binaries are built natively on each platform's runner and published as-is.
 [profile.release]
 lto = true

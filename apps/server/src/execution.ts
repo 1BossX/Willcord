@@ -1147,11 +1147,11 @@ export class ExecutionCoordinator {
   }
 
   private workerList() {
-    const workers = this.db.prepare(`SELECT w.worker_id,w.online,w.reconciled,w.blocked,s.active_job_id,
+    const workers = this.db.prepare(`SELECT w.worker_id,e.name AS display_name,w.online,w.reconciled,w.blocked,s.active_job_id,
       (SELECT COUNT(*) FROM jobs q WHERE q.worker_id=w.worker_id AND q.state IN ('queued','waiting_worker') AND q.queue_seq IS NOT NULL) queued_jobs
-      FROM workers w LEFT JOIN worker_slots s USING(worker_id) ORDER BY w.worker_id`).all() as any[];
+      FROM workers w LEFT JOIN worker_slots s USING(worker_id) LEFT JOIN enrollments e USING(worker_id) ORDER BY w.worker_id`).all() as any[];
     return workers.map((w) => ({
-      worker_id: w.worker_id, online: Boolean(w.online), ready: Boolean(w.online && w.reconciled && !w.blocked), blocked: Boolean(w.blocked),
+      worker_id: w.worker_id, ...(w.display_name ? {display_name:w.display_name} : {}), online: Boolean(w.online), ready: Boolean(w.online && w.reconciled && !w.blocked), blocked: Boolean(w.blocked),
       busy: w.active_job_id !== null, queued_jobs: w.queued_jobs,
       workspaces: (this.db.prepare("SELECT workspace_id,repo_id,path,is_default FROM workspaces WHERE worker_id=? ORDER BY workspace_id").all(w.worker_id) as any[]).map((x) => ({ ...x, is_default: Boolean(x.is_default) })),
     }));

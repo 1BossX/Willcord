@@ -54,9 +54,9 @@ export function sessionJobs(db: Database.Database, sessionId: string) {
   return (db.prepare(`${JOB_VIEW} WHERE j.session_id=? ORDER BY j.created_at,j.rowid`).all(sessionId) as any[]).map(jobRow);
 }
 
-const WORKER_VIEW = `SELECT w.*,s.active_job_id,
+const WORKER_VIEW = `SELECT w.*,s.active_job_id,e.name AS display_name,e.state AS authorization_state,
   (SELECT COUNT(*) FROM jobs q WHERE q.worker_id=w.worker_id AND q.state IN ('queued','waiting_worker') AND q.queue_seq IS NOT NULL) queued_jobs
-  FROM workers w LEFT JOIN worker_slots s USING(worker_id)`;
+  FROM workers w LEFT JOIN worker_slots s USING(worker_id) LEFT JOIN enrollments e USING(worker_id)`;
 
 /** Connection and execution are separate: online alone never means it can run work. */
 function workerRow(w: any) {

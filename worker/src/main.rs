@@ -1,3 +1,4 @@
+mod cli;
 mod generated;
 mod ledger;
 mod logs;
@@ -51,7 +52,7 @@ const DEFAULT_COMMAND_PATH: &str = "/usr/local/bin:/usr/bin:/bin";
 /// Chunks answered per log_fetch; the main node asks again for more.
 const LOG_FETCH_BATCH: u64 = 64;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Config {
     worker_id: String,
@@ -197,10 +198,10 @@ async fn main() -> Result<(), Error> {
     rustls::crypto::ring::default_provider()
         .install_default()
         .map_err(|_| "TLS crypto provider unavailable")?;
-    let file = std::env::args()
-        .nth(1)
-        .ok_or("usage: worker-plane-worker config.toml")?;
-    let config: Config = toml::from_str(&fs::read_to_string(file)?)?;
+    let Some(file) = cli::dispatch().await? else {
+        return Ok(());
+    };
+    let config: Config = toml::from_str(&fs::read_to_string(&file)?)?;
     if !config.url.starts_with("wss://") {
         return Err("WSS required".into());
     }
@@ -284,7 +285,7 @@ async fn main() -> Result<(), Error> {
     });
     let token = TokenSource::new(config.token_file, std::env::var("WORKER_TOKEN").ok())?;
     token.read()?;
-    let worker = Worker {
+    let mut worker = Worker {
         worker_id: config.worker_id,
         url: config.url,
         token,
@@ -309,8 +310,20 @@ async fn main() -> Result<(), Error> {
         live_logs,
         shutdown,
     };
+    let socket_path = worker.data_dir.join("control.sock");
+    if socket_path.exists() {
+        fs::remove_file(&socket_path)?;
+    }
+    let control = tokio::net::UnixListener::bind(&socket_path)?;
     let mut backoff = Duration::from_secs(1);
     loop {
+        if worker.data_dir.join("enrollment.json").exists() {
+            if let Ok(credential) = cli::proof(&worker.data_dir, "credentials").await {
+                if let Some(token) = credential["token"].as_str() {
+                    cli::save(&worker.data_dir.join("token"), token.as_bytes())?;
+                }
+            }
+        }
         let mut registered = false;
         // Shutdown cancels the session wherever it is waiting: inside a frame
         // handler, a chunked transfer or the handshake. Ledger writes are
@@ -318,6 +331,32 @@ async fn main() -> Result<(), Error> {
         let outcome = tokio::select! {
             outcome = session(&worker, &mut completed_rx, &mut live_logs_rx, &mut registered) => outcome,
             _ = worker.shutdown.notified() => return stop_running(&worker).await,
+            incoming = control.accept() => {
+                if let Ok((socket, _)) = incoming {
+                    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+                    let mut socket = BufReader::new(socket);
+                    let mut line = String::new();
+                    let result: Result<(), Error> = async {
+                        tokio::time::timeout(Duration::from_secs(5), socket.read_line(&mut line)).await??;
+                        if line.len() > 4096 { return Err("oversized control request".into()); }
+                        let request: Value = serde_json::from_str(&line)?;
+                        let id = request["workspace_id"].as_str().ok_or("workspace ID required")?;
+                        let path = request["path"].as_str().ok_or("workspace path required")?;
+                        let mut config: Config = toml::from_str(&fs::read_to_string(&file)?)?;
+                        if id.is_empty() || id.len()>128 || !PathBuf::from(path).is_absolute() || !PathBuf::from(path).is_dir() || config.workspaces.iter().any(|w|w.workspace_id==id) { return Err("invalid or duplicate workspace".into()); }
+                        cli::proof(&worker.data_dir, "workspace").await?;
+                        let version = config.workspaces.iter().map(|w|w.config_version).max().unwrap_or(0).checked_add(1).ok_or("workspace version exhausted")?;
+                        for w in &mut config.workspaces { w.config_version = version; }
+                        config.workspaces.push(Workspace { workspace_id:id.into(), path:path.into(), repo_id:format!("local/{id}"), config_version:version, is_default:false });
+                        cli::save(&file, toml::to_string_pretty(&config)?.as_bytes())?;
+                        worker.workspaces = Arc::new(config.workspaces);
+                        Ok(())
+                    }.await;
+                    let response = match result { Ok(()) => "ok\n".into(), Err(e) => format!("{e}\n") };
+                    let _ = socket.get_mut().write_all(response.as_bytes()).await;
+                }
+                continue;
+            },
         };
         match outcome {
             Ok(()) => return Ok(()),
@@ -325,9 +364,13 @@ async fn main() -> Result<(), Error> {
                 if registered {
                     backoff = Duration::from_secs(1);
                 }
+                cli::record_status(&worker.data_dir, Some(error.to_string()));
                 eprintln!("connection lost: {error}; reconnecting in {backoff:?}");
             }
-            Err(error) => return Err(error),
+            Err(error) => {
+                cli::record_status(&worker.data_dir, Some(error.to_string()));
+                return Err(error);
+            }
         }
         tokio::select! {
             _ = tokio::time::sleep(backoff) => {}
@@ -366,6 +409,14 @@ async fn connect(worker: &Worker) -> Result<Socket, Error> {
         // HTTP 4xx: both need an operator, not another attempt.
         Err(tungstenite::Error::Io(e)) if e.kind() != std::io::ErrorKind::InvalidData => {
             Err(retry(e))
+        }
+        Err(tungstenite::Error::Http(response))
+            if worker.data_dir.join("enrollment.json").exists()
+                && matches!(response.status().as_u16(), 401 | 403) =>
+        {
+            Err(retry(
+                "device authorization unavailable; awaiting administrator",
+            ))
         }
         Err(tungstenite::Error::Http(response)) if response.status().is_server_error() => {
             Err(retry(format!("HTTP {}", response.status())))
@@ -562,6 +613,7 @@ async fn session(
                         }
                         if ack.ack_type == "reconcile" && !reconciled {
                             reconciled = true;
+                            cli::record_status(&worker.data_dir, None);
                             send(&mut socket, &generated::WorkerReady {
                                 protocol_version: 1,
                                 kind: "worker_ready".into(),

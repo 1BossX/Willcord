@@ -1,3 +1,4 @@
+import { request as httpRequest } from "node:http";
 // Real Rust worker processes behind a verified TLS endpoint, for ledger and
 // fault tests. The certificate chain mirrors the Caddy deployment.
 import { createServer, type Server } from "node:https";
@@ -112,6 +113,13 @@ export async function startTlsProxy(certs: ReturnType<typeof createCertificates>
     if (options.duplicate?.(direction, frame)) { frames.push({ direction, type: frame.type, call_id: frame.call_id, dropped: false }); to.send(data); }
   };
   const server: Server = createServer({ key: readFileSync(certs.key), cert: readFileSync(certs.cert) });
+  server.on("request", (req, res) => {
+    const upstream = httpRequest({ hostname: "127.0.0.1", port: target(), path: req.url, method: req.method, headers: req.headers }, response => {
+      res.writeHead(response.statusCode ?? 502, response.headers); response.pipe(res);
+    });
+    upstream.on("error", () => { res.writeHead(502); res.end(); });
+    req.pipe(upstream);
+  });
   const gateway = new WebSocketServer({ noServer: true, maxPayload: 65536 });
   const pairs = new Set<{ client: WebSocket; upstream: WebSocket }>();
   server.on("upgrade", (req, socket, head) => {

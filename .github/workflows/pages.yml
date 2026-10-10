@@ -5,8 +5,11 @@ on:
     branches: [main]
     paths:
       - 'site/**'
-      - 'deploy/install.sh'
       - '.github/workflows/pages.yml'
+  # The public installer is taken from the latest formal Release, so publishing
+  # a Release (not a change on main) is what updates it.
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -36,8 +39,19 @@ jobs:
           test -f site/style.css
           test -f site/assets/logo.svg
           test -f site/assets/favicon.svg
-      - name: Include canonical installer
-        run: cp deploy/install.sh site/install.sh
+      # Serve the installer attached to the latest formal Release, never the
+      # copy on main: it must match the images and binaries it downloads.
+      # gh skips drafts and pre-releases when no tag is given.
+      - name: Include the latest Release's installer
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          dir="$RUNNER_TEMP/installer"
+          gh release download --repo "$GITHUB_REPOSITORY" --pattern 'install.sh' --pattern 'install.sh.sha256' --dir "$dir"
+          (cd "$dir" && shasum -a 256 -c install.sh.sha256)
+          bash -n "$dir/install.sh"
+          cp "$dir/install.sh" site/install.sh
+          echo "Installer from $(gh release view --repo "$GITHUB_REPOSITORY" --json tagName -q .tagName)" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

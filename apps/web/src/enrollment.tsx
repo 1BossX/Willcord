@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { request } from "./api";
+import { Icon } from "./icon";
 import { getPendingCount, refreshPending, setPendingLoader, subscribePending } from "./pending-store";
 import { installCommand, loadCaFingerprint } from "./install-command";
 
@@ -82,7 +83,7 @@ export function EnrollmentPanel() {
     finally { setBusy(false); }
   }
   return <>
-    <button className="enrollment-open" onClick={() => { dialog.current?.showModal(); setOpen(true); }}>机器授权{pending > 0 && <span className="pending-badge">{pending} 台待批准</span>}</button>
+    <button className="nav-button sidebar-link" onClick={() => { dialog.current?.showModal(); setOpen(true); }}><Icon name="shield" />机器授权{pending > 0 && <span className="pending-badge">{pending} 台待批准</span>}</button>
     <dialog ref={dialog} className="session-dialog enrollment-dialog" aria-labelledby="enrollment-title" onCancel={close}>
       <div className="dialog-heading"><h2 id="enrollment-title">机器授权</h2><button className="secondary-button" onClick={close} aria-label="关闭机器授权">关闭</button></div>
       <button className="secondary-button" aria-expanded={adding} onClick={() => { setAdding(v => !v); setCopyStatus(""); }}>添加机器</button>

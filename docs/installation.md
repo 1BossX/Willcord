@@ -35,7 +35,7 @@ CA 指纹接入从 v0.3.0 起提供，主节点与 worker 须同为 v0.3.0 或�
 curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- main
 ```
 
-向导通过终端收集 HTTPS 地址（默认 `https://plane.internal:8443`）、模型 provider/name、API key 和至少 16 字符的管理员密码。密钥输入不回显。也可以预先指定地址和目录：
+向导通过终端收集 HTTPS 地址（默认 `https://plane.internal:8443`）、模型 provider/name、API key 和至少 16 字符的管理员密码。密钥输入不回显。provider 不区分大小写，拼错会立即提示并列出可选值；只有 openrouter 有默认模型，其他 provider 需要自己填写模型名称。向导结束时会给出信任根证书的命令（macOS 与 Debian/Ubuntu）。也可以预先指定地址和目录：
 
 ```sh
 curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- main --server 'https://plane.internal:8443' --dir '/opt/my-plane'
@@ -43,7 +43,7 @@ curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- main --serv
 
 目录默认 `./worker-plane`，当前账户必须可写。安装器生成 `compose.yaml`、`.env` 和 `main.env`，固定镜像版本；环境文件权限 0600，不要提交到 Git。不同目录使用独立的 Compose 项目及数据卷。已有部署文件时拒绝覆盖。
 
-向导在写入任何文件之前，会向模型服务商确认 API key（支持 openrouter、openai、anthropic）：只有被明确拒绝（HTTP 401）才会停止，请核对后用同一目录重新运行；无法确认（网络受限、其他 provider、权限受限的 key）时只给出提示并继续。
+向导在写入任何文件之前，会向模型服务商确认 API key（支持 openrouter、openai、anthropic）：只有被明确拒绝（HTTP 401）才会要求重新输入（最多 3 次，第 3 次仍被拒绝才退出，此时未写入任何配置）；无法确认（网络受限、其他 provider、权限受限的 key）时只给出提示并继续。
 
 **成功标志**：安装器显示“主节点已就绪”、控制台地址及 `ca.pem` 路径，HTTPS `/health` 的 `scheduling_ready` 为 true。成功后环境文件不再保留首次管理员密码；登录使用刚才输入的密码。
 

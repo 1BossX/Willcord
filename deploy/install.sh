@@ -136,7 +136,7 @@ worker_install() {
   local tls_args=()
   [[ -z "$ca" ]] || tls_args=(--cacert "$ca")
   curl --disable --fail --silent --show-error ${tls_args[@]+"${tls_args[@]}"} --connect-timeout 5 --max-time 15 "$server/health" -o "$tmp/worker-health.json" || fail "无法通过 CA 验证主节点 HTTPS，请检查证书、地址与网络。"
-  local name="worker-plane-worker-$version-$os-$arch" installed
+  local name="worker-plane-worker-$version-$os-$arch" installed joined
   verified "$name"
   chmod 700 "$tmp/$name"
   if [[ "$system" == true ]]; then
@@ -147,29 +147,40 @@ worker_install() {
     installed="$system_root/bin/worker"
     if [[ $(id -u) == 0 ]]; then
       if [[ -n "$ca" ]]; then SSL_CERT_FILE="$ca" "$tmp/$name" install --system --user "$account"; else "$tmp/$name" install --system --user "$account"; fi
-      "$installed" join --system "$server"
+      joined=$("$installed" join --system "$server")
     else
       local install_env=("WORKER_PLANE_SYSTEM_ROOT=$system_root")
       [[ -z "$ca" ]] || install_env+=("SSL_CERT_FILE=$ca")
       sudo env "${install_env[@]}" "$tmp/$name" install --system --user "$account"
-      sudo env "WORKER_PLANE_SYSTEM_ROOT=$system_root" "$installed" join --system "$server"
+      joined=$(sudo env "WORKER_PLANE_SYSTEM_ROOT=$system_root" "$installed" join --system "$server")
     fi
   else
     if [[ -n "${WORKER_PLANE_HOME:-}" ]]; then installed="$WORKER_PLANE_HOME/bin/worker"
     elif [[ "$os" == darwin ]]; then installed="$HOME/Library/Application Support/WorkerPlane/bin/worker"
     else installed="$HOME/.local/share/worker-plane/bin/worker"; fi
     if [[ -n "$ca" ]]; then SSL_CERT_FILE="$ca" "$tmp/$name" install; else "$tmp/$name" install; fi
-    "$installed" join "$server"
+    joined=$("$installed" join "$server")
   fi
-  printf '\n申请已提交。登录 %s，在“机器授权”核对终端指纹并批准。\n' "$server"
-  printf '批准后等待“可执行”，再创建独立会话验证只读任务。\n状态命令：'
+  printf '%s\n' "$joined"
+  # The text follows the state join reported: approved needs nothing, denied needs a re-approval.
+  case "$joined" in
+    *'Authorization: approved'*) printf '\n本机此前已获授权，无需再次批准。等待控制台显示“可执行”，再创建独立会话验证只读任务。\n状态命令：';;
+    *'Authorization: rejected'*|*'Authorization: revoked'*) printf '\n本机的授权已被拒绝或撤销，不会自动重新申请。登录 %s，在“机器授权”核对终端指纹后重新批准。\n状态命令：' "$server";;
+    *) printf '\n申请已提交。登录 %s，在“机器授权”核对终端指纹并批准。\n' "$server"
+       printf '批准后等待“可执行”，再创建独立会话验证只读任务。\n状态命令：';;
+  esac
   [[ "$system" == false || $(id -u) == 0 ]] || printf 'sudo '
   quote "$installed"; printf ' status'; [[ "$system" == false ]] || printf ' --system'; printf ' --json\n'
 }
+# Providers the main node's model library knows. apps/server/test/installer-providers.test.ts
+# fails when this list and the library drift apart.
+PROVIDERS="amazon-bedrock ant-ling anthropic azure baseten cerebras cloudflare-ai-gateway cloudflare-workers-ai deepseek fireworks github-copilot google google-vertex groq huggingface kimi-coding meta minimax minimax-cn mistral moonshotai moonshotai-cn nvidia openai openai-codex opencode opencode-go openrouter qwen-token-plan qwen-token-plan-cn qwen-token-plan-individual radius together typesafe vercel-ai-gateway xai xiaomi xiaomi-token-plan-ams xiaomi-token-plan-cn xiaomi-token-plan-sgp zai zai-coding-cn"
+known_provider() { case " $PROVIDERS " in *" $1 "*) return 0;; *) return 1;; esac; }
 # Ask the model provider whether it accepts the key. Only a definite rejection
-# (HTTP 401) stops the install: restricted keys may get 403 on the listing
-# endpoint, and an unreachable provider or an unknown one proves nothing. The
-# key goes to curl through stdin so it never appears in the process list.
+# (HTTP 401) is reported as one (return 1): restricted keys may get 403 on the
+# listing endpoint, and an unreachable provider or an unknown one proves
+# nothing. The key goes to curl through stdin so it never appears in the
+# process list.
 check_model_key() {
   local provider="$1" key="$2" url status
   local -a extra=()
@@ -185,9 +196,22 @@ check_model_key() {
   status=$(printf '%s\n' "${extra[@]}" | curl --disable --silent --output /dev/null --write-out '%{http_code}' --connect-timeout 5 --max-time 15 --config - "$url" 2>/dev/null) || status=000
   case "$status" in
     200) printf '模型 API key 检查通过。\n';;
-    401) fail "$provider 拒绝了这个 API key（HTTP 401）。请核对 provider 与 key 后重新运行；未写入任何配置。";;
+    401) return 1;;
     *) printf '无法确认模型 API key（HTTP %s），继续安装；之后可在控制台侧栏“模型连接”中修改并测试。\n' "$status" >&2;;
   esac
+}
+# Show how the root certificate is trusted on this machine; main's own browser
+# and every worker need it unless the certificate is publicly trusted.
+trust_hint() {
+  local ca="$1"
+  if [[ "$os" == darwin ]]; then
+    printf '信任根证书（macOS，需要管理员密码）：\n  sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain %s\n' "$(quote "$ca")"
+    printf '然后重启浏览器。也可以双击 ca.pem，在“钥匙串访问”里把它设为“始终信任”。\n'
+  else
+    printf '信任根证书（Debian/Ubuntu）：\n  sudo cp %s /usr/local/share/ca-certificates/willcord-ca.crt && sudo update-ca-certificates\n' "$(quote "$ca")"
+    printf '其他发行版请把它加入系统信任库；Firefox 需要在“设置 → 证书 → 查看证书 → 证书颁发机构”里单独导入。\n'
+  fi
+  printf '执行机器用“添加机器”里的命令安装时会自动获取并核对 CA，无需单独信任。\n'
 }
 main_install() {
   [[ "$system" == false && -z "$account" && -z "$ca" && -z "$fingerprint" ]] || fail "main 不接受 --system、--user 或 CA 参数。"
@@ -201,12 +225,29 @@ main_install() {
   done
   if [[ -z "$server" ]]; then prompt server '浏览器和 worker 可访问的 HTTPS 地址' 'https://plane.internal:8443'; fi
   origin "$server"
-  local provider model api_key password
-  prompt provider '模型 provider' openrouter
-  prompt model '模型名称' deepseek/deepseek-v4.1-flash
-  prompt api_key '模型 API key' '' secret
-  [[ -n "$api_key" ]] || fail "模型 API key 不能为空。"
-  check_model_key "$provider" "$api_key"
+  local provider model api_key password attempt
+  for attempt in 1 2 3; do
+    prompt provider '模型 provider' openrouter
+    provider=$(printf '%s' "$provider" | tr 'A-Z' 'a-z' | tr -d '[:space:]')
+    known_provider "$provider" && break
+    [[ "$attempt" -lt 3 ]] || fail "不支持的 provider：${provider}。"
+    printf '不支持的 provider：%s。可选值：%s\n' "$provider" "$PROVIDERS" >&2
+  done
+  # The default model is an OpenRouter id; another provider has its own names.
+  for attempt in 1 2 3; do
+    prompt model '模型名称' "$([[ "$provider" != openrouter ]] || printf 'deepseek/deepseek-v4.1-flash')"
+    [[ -z "$model" ]] || break
+    [[ "$attempt" -lt 3 ]] || fail "模型名称不能为空。"
+    printf '%s 没有默认模型，请输入要使用的模型。\n' "$provider" >&2
+  done
+  # A rejected key can be corrected here instead of rerunning the whole wizard.
+  for attempt in 1 2 3; do
+    prompt api_key '模型 API key' '' secret
+    [[ -n "$api_key" ]] || fail "模型 API key 不能为空。"
+    check_model_key "$provider" "$api_key" && break
+    [[ "$attempt" -lt 3 ]] || fail "$provider 连续拒绝了 3 次输入的 API key（HTTP 401）。请到 provider 控制台确认 key 后重新运行；未写入任何配置。"
+    printf '%s 拒绝了这个 API key（HTTP 401）。请核对 provider 与 key 后重新输入（还可再试 %d 次）。\n' "$provider" $((3 - attempt)) >&2
+  done
   prompt password '首次管理员密码（至少 16 字符）' '' secret
   [[ ${#password} -ge 16 ]] || fail "管理员密码至少需要 16 字符。"
   verified compose.yaml
@@ -254,7 +295,9 @@ main_install() {
   [[ "$ready" == true ]] || { printf '移除首次密码后的主节点未就绪，请查看 docker compose logs main。\n' >&2; return 1; }
   trap - ERR
   printf '\n主节点已就绪：%s\n根证书：%s/ca.pem\n' "$server" "$directory"
-  printf '请先让浏览器信任此根证书。登录控制台，在“机器授权 → 添加机器”复制安装命令。\n'
+  printf '\n下一步：\n1. 让浏览器信任根证书，否则控制台会提示证书不安全。\n'
+  trust_hint "$directory/ca.pem"
+  printf '2. 打开 %s 登录，在“机器授权 → 添加机器”复制安装命令，到执行机器上运行。\n' "$server"
   [[ "$os" != darwin ]] || printf '提示：macOS 上的主节点依赖 Docker Desktop，适合本机试用；Docker Desktop 退出后服务随之停止，生产环境请使用 Linux。\n'
 }
 sha256_stdin() { if command -v shasum >/dev/null 2>&1; then shasum -a 256; else sha256sum; fi; }

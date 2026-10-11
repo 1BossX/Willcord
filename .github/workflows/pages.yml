@@ -6,10 +6,9 @@ on:
     paths:
       - 'site/**'
       - '.github/workflows/pages.yml'
-  # The public installer is taken from the latest formal Release, so publishing
-  # a Release (not a change on main) is what updates it.
-  release:
-    types: [published]
+  # The public installer is taken from the latest formal Release. A release event
+  # runs on the tag, which the github-pages environment does not allow, so
+  # pages-after-release.yml dispatches this workflow on main instead.
   workflow_dispatch:
 
 permissions:

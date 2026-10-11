@@ -43,7 +43,10 @@ elif name=='curl':
  dest=p(args[args.index('-o')+1]) if '-o' in args else None
  if '/releases/tags/' in url and os.environ.get('TEST_API_LIMIT')=='1': sys.exit(22)
  if url.startswith('https://openrouter.ai/'):
-  code=os.environ.get('TEST_KEY_STATUS','200');sys.stdout.write(code if '--write-out' in args else '');sys.exit(0)
+  code=os.environ.get('TEST_KEY_STATUS','200');seq=os.environ.get('TEST_KEY_SEQ')
+  if seq:
+   counter=root/'key-seq';n=int(counter.read_text()) if counter.exists() else 0;counter.write_text(str(n+1));codes=seq.split(',');code=codes[min(n,len(codes)-1)]
+  sys.stdout.write(code if '--write-out' in args else '');sys.exit(0)
  if '/releases/tags/' in url: data=json.dumps({'draft':False,'prerelease':os.environ.get('TEST_PRERELEASE')=='1'}).encode()
  elif url.endswith('/.well-known/willcord/ca.pem'): data=(root/'bootstrap.pem').read_bytes()
  elif url.endswith('/health') and os.environ.get('TEST_TLS_FAIL')=='1':sys.exit(60)
@@ -69,7 +72,7 @@ else:
    (target.parent.parent/'ca.pem').write_bytes(p(os.environ['SSL_CERT_FILE']).read_bytes())
  elif args[0]=='join':
   assert 'SSL_CERT_FILE' not in os.environ, 'CLI must reuse the saved CA after install'
-  print('Node: fixture\nFingerprint: fixture\nAuthorization: pending')
+  print('Node: fixture\nFingerprint: fixture\nAuthorization: '+os.environ.get('TEST_AUTH','pending'))
 '''
 
 class InstallerTests(unittest.TestCase):
@@ -175,11 +178,14 @@ class InstallerTests(unittest.TestCase):
   for _ in range(2):
    r=self.run_worker();self.assertEqual(r.returncode,0,r.stderr)
   for name in ['identity.pk8','ledger.sqlite']:self.assertEqual((data/name).read_text(),'keep')
- def main_tty(self,extra=(),env=None):
+ def main_tty(self,extra=(),env=None,answers=None):
+  # answers: (marker, reply) pairs; each marker is looked for after the previous one,
+  # so a prompt asked twice gets two replies instead of both firing at once.
+  answers=answers or self.answers()
   pid,fd=pty.fork()
   if pid==0:
    os.execve(BASH,[BASH,str(SCRIPT),'main','--server','https://plane.internal:08443','--dir',str(self.root/'deployment'),*extra],{**self.env,**(env or {})})
-  output=b'';prompts=[(b'provider',b'\n'),('模型名称'.encode(),b'\n'),(b'API key',b'key$with#special\n'),('管理员密码'.encode(),b"long'password$with#literal\n")];sent=0;deadline=time.monotonic()+15
+  output=b'';sent=0;cursor=0;deadline=time.monotonic()+15
   try:
    while time.monotonic()<deadline:
     readable,_,_=select.select([fd],[],[],0.1)
@@ -188,14 +194,18 @@ class InstallerTests(unittest.TestCase):
      except OSError:break
      if not data:break
      output+=data
-     if sent<len(prompts) and prompts[sent][0] in output:
-      os.write(fd,prompts[sent][1]);sent+=1
+     if sent<len(answers):
+      marker,reply=answers[sent];found=output.find(marker,cursor)
+      if found>=0:os.write(fd,reply);sent+=1;cursor=found+len(marker)
     done,status=os.waitpid(pid,os.WNOHANG)
     if done:return os.waitstatus_to_exitcode(status),output.decode()
    done,status=os.waitpid(pid,os.WNOHANG)
    if done:return os.waitstatus_to_exitcode(status),output.decode()
    os.kill(pid,9);os.waitpid(pid,0);self.fail('installer did not finish: '+output.decode())
   finally:os.close(fd)
+ @staticmethod
+ def answers(provider=b'\n',model=b'\n',keys=(b'key$with#special\n',)):
+  return [('模型 provider'.encode(),provider),('模型名称'.encode(),model),*[('模型 API key:'.encode(),k) for k in keys],('管理员密码'.encode(),b"long'password$with#literal\n")]
  def test_main_generates_private_config_and_removes_password(self):
   code,out=self.main_tty();self.assertEqual(code,0,out)
   deploy=self.root/'deployment'
@@ -217,8 +227,9 @@ class InstallerTests(unittest.TestCase):
   self.assertIn('Docker Desktop',out)
   self.assertTrue((self.root/'deployment/main.env').exists())
  def test_model_key_is_checked_before_anything_is_written(self):
-  code,out=self.main_tty(env={'TEST_KEY_STATUS':'401'});self.assertNotEqual(code,0,out)
-  self.assertIn('拒绝了这个 API key',out)
+  keys=(b'key$with#special\n',)*3
+  code,out=self.main_tty(env={'TEST_KEY_STATUS':'401'},answers=self.answers(keys=keys));self.assertNotEqual(code,0,out)
+  self.assertIn('拒绝了这个 API key',out);self.assertIn('还可再试 2 次',out);self.assertIn('连续拒绝了 3 次',out)
   self.assertEqual(list((self.root/'deployment').iterdir()),[],'a rejected key leaves no config behind')
   self.assertFalse(any(n=='docker' and a[:2]==['compose','up'] for n,a in self.calls()))
   # The key travels over stdin, never through argv.
@@ -226,6 +237,42 @@ class InstallerTests(unittest.TestCase):
   self.clean_tmp()
   # A fixed key can reuse the same directory.
   code,out=self.main_tty();self.assertEqual(code,0,out);self.assertIn('API key 检查通过',out)
+ def test_a_rejected_key_is_asked_again_without_restarting(self):
+  code,out=self.main_tty(env={'TEST_KEY_SEQ':'401,200'},answers=self.answers(keys=(b'first-wrong-key\n',b'second-right-key\n')));self.assertEqual(code,0,out)
+  self.assertIn('还可再试 2 次',out);self.assertIn('API key 检查通过',out)
+  self.assertIn('MODEL_API_KEY="second-right-key"',(self.root/'deployment/main.env').read_text())
+ def test_provider_is_validated_and_case_insensitive(self):
+  code,out=self.main_tty(answers=self.answers(provider=b'OpenRouter \n'));self.assertEqual(code,0,out)
+  self.assertIn('MODEL_PROVIDER="openrouter"',(self.root/'deployment/main.env').read_text())
+  shutil.rmtree(self.root/'deployment')
+  answers=self.answers();answers[0:1]=[('模型 provider'.encode(),b'openrouterr\n')]*2
+  answers=[answers[0],('模型 provider'.encode(),b'openrouter\n'),*self.answers()[1:]]
+  code,out=self.main_tty(answers=answers);self.assertEqual(code,0,out)
+  self.assertIn('不支持的 provider：openrouterr',out);self.assertIn('openrouter',out)
+  shutil.rmtree(self.root/'deployment')
+  bad=[('模型 provider'.encode(),b'nope\n')]*3
+  code,out=self.main_tty(answers=bad);self.assertNotEqual(code,0,out)
+  self.assertEqual(list((self.root/'deployment').iterdir()),[],'an unknown provider leaves no config behind')
+ def test_only_openrouter_has_a_default_model(self):
+  answers=[('模型 provider'.encode(),b'groq\n'),('模型名称'.encode(),b'\n'),('模型名称'.encode(),b'llama-3.1-8b-instant\n'),('模型 API key:'.encode(),b'k\n'),('管理员密码'.encode(),b"long'password$with#literal\n")]
+  code,out=self.main_tty(answers=answers);self.assertEqual(code,0,out)
+  self.assertIn('groq 没有默认模型',out)
+  text=(self.root/'deployment/main.env').read_text()
+  self.assertIn('MODEL_PROVIDER="groq"',text);self.assertIn('MODEL_NAME="llama-3.1-8b-instant"',text)
+ def test_main_finishes_with_a_command_to_trust_the_root_certificate(self):
+  for os_env,needle in [({'TEST_OS':'Darwin','TEST_ARCH':'arm64'},'security add-trusted-cert'),({},'update-ca-certificates')]:
+   with self.subTest(os=os_env):
+    shutil.rmtree(self.root/'deployment',ignore_errors=True)
+    code,out=self.main_tty(env=os_env);self.assertEqual(code,0,out)
+    self.assertIn(needle,out);self.assertIn('deployment/ca.pem',out)
+ def test_worker_on_an_approved_machine_does_not_ask_for_approval_again(self):
+  r=self.run_worker();self.assertEqual(r.returncode,0,r.stderr)
+  self.assertIn('Authorization: pending',r.stdout);self.assertIn('申请已提交',r.stdout)
+  r=self.run_worker(env={'TEST_AUTH':'approved'});self.assertEqual(r.returncode,0,r.stderr)
+  self.assertIn('Authorization: approved',r.stdout);self.assertIn('无需再次批准',r.stdout);self.assertNotIn('申请已提交',r.stdout)
+  for state in ['rejected','revoked']:
+   r=self.run_worker(env={'TEST_AUTH':state});self.assertEqual(r.returncode,0,r.stderr)
+   self.assertIn('重新批准',r.stdout);self.assertNotIn('申请已提交',r.stdout);self.assertNotIn('无需再次批准',r.stdout)
  def test_unconfirmed_model_key_only_warns(self):
   for status in ['403','500','000']:
    with self.subTest(status=status):

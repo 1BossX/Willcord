@@ -132,9 +132,7 @@ pub fn root() -> Result<PathBuf, Error> {
             || path == Path::new("/")
             || std::env::var_os("HOME").is_some_and(|h| path == PathBuf::from(h))
         {
-            return Err(
-                "WILLCORD_HOME must be an absolute private application directory".into(),
-            );
+            return Err("WILLCORD_HOME must be an absolute private application directory".into());
         }
         return Ok(path);
     }

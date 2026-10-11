@@ -474,7 +474,8 @@ fn choose_server(tty: &mut Tty) -> Result<String, Error> {
     }
     println!("检测到本机地址（浏览器和 worker 须能访问）：");
     for (n, (url, c)) in offered.iter().zip(&found).enumerate() {
-        println!("  {}) {url}   {}", n + 1, c.interface);
+        let overlay = c.overlay.map(|k| format!("（{k}）")).unwrap_or_default();
+        println!("  {}) {url}   {}{overlay}", n + 1, c.interface);
     }
     println!("动态分配（DHCP）的 IP 换网络后会变，长期使用建议改用固定 IP 或域名。");
     let answer = tty.prompt(

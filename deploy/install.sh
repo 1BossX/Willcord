@@ -177,7 +177,7 @@ check_model_key() {
     openrouter) url=https://openrouter.ai/api/v1/auth/key;;
     openai) url=https://api.openai.com/v1/models;;
     anthropic) url=https://api.anthropic.com/v1/models; extra=('header = "anthropic-version: 2023-06-01"');;
-    *) printf '未内置 %s 的 API key 检查，已跳过；可在控制台“设置 → 模型连接”中核对。\n' "$provider"; return 0;;
+    *) printf '未内置 %s 的 API key 检查，已跳过；可在控制台侧栏“模型连接”中核对。\n' "$provider"; return 0;;
   esac
   key=${key//\\/\\\\}; key=${key//\"/\\\"}
   if [[ "$provider" == anthropic ]]; then extra+=("header = \"x-api-key: $key\"")
@@ -186,7 +186,7 @@ check_model_key() {
   case "$status" in
     200) printf '模型 API key 检查通过。\n';;
     401) fail "$provider 拒绝了这个 API key（HTTP 401）。请核对 provider 与 key 后重新运行；未写入任何配置。";;
-    *) printf '无法确认模型 API key（HTTP %s），继续安装；之后可在控制台“设置 → 模型连接”中修改并测试。\n' "$status" >&2;;
+    *) printf '无法确认模型 API key（HTTP %s），继续安装；之后可在控制台侧栏“模型连接”中修改并测试。\n' "$status" >&2;;
   esac
 }
 main_install() {

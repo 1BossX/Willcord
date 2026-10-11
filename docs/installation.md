@@ -14,13 +14,13 @@
 每台机器（主节点和执行机器）先装同一个 `willcord` 命令：
 
 ```sh
-curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash
+curl -fsSL https://bossoptional.github.io/Willcord/install.sh | bash
 ```
 
 这一步只下载、校验 SHA-256，并把 `willcord` 放到 `~/.local/bin`；**不启动任何服务，不改 shell 配置**。目录不在 `PATH` 里时会打印一行 `export PATH="$HOME/.local/bin:$PATH"`，加进去即可。需要装给所有用户时加 `--system`（放到 `/usr/local/bin`，通过 sudo 完成）：
 
 ```sh
-curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- --system
+curl -fsSL https://bossoptional.github.io/Willcord/install.sh | bash -s -- --system
 ```
 
 装好后按机器角色启动：
@@ -39,7 +39,7 @@ curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- --system
 在执行机器运行控制台复制的命令（一步完成：安装命令并加入）；命令形如：
 
 ```sh
-curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- worker --server 'https://plane.internal:8443' --ca-fingerprint '<控制台提供的64位十六进制指纹>'
+curl -fsSL https://bossoptional.github.io/Willcord/install.sh | bash -s -- worker --server 'https://plane.internal:8443' --ca-fingerprint '<控制台提供的64位十六进制指纹>'
 ```
 
 CA 指纹接入从 v0.3.0 起提供，主节点与 worker 须同为 v0.3.0 或更新版本。更早的版本使用[手动 CA 兼容流程](#手动-ca-兼容流程)。
@@ -66,7 +66,7 @@ willcord main init
 willcord main init --server 'https://plane.internal:8443' --dir '/opt/my-plane'
 ```
 
-没有先装命令时，也可以一步完成：`curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- main`（参数与上面相同）。
+没有先装命令时，也可以一步完成：`curl -fsSL https://bossoptional.github.io/Willcord/install.sh | bash -s -- main`（参数与上面相同）。
 
 目录默认 `./willcord`，当前账户必须可写。向导生成 `compose.yaml`、`.env` 和 `main.env`，固定镜像版本；环境文件权限 0600，不要提交到 Git。不同目录使用独立的 Compose 项目及数据卷。已有部署文件时拒绝覆盖。
 
@@ -134,7 +134,7 @@ sudo willcord worker join 'https://plane.internal:8443' --ca-fingerprint '<控�
 以普通账户运行，不加 sudo：
 
 ```sh
-curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- worker --server 'https://plane.internal:8443' --ca-fingerprint '<控制台提供的64位指纹>'
+curl -fsSL https://bossoptional.github.io/Willcord/install.sh | bash -s -- worker --server 'https://plane.internal:8443' --ca-fingerprint '<控制台提供的64位指纹>'
 ```
 
 Linux 需要 systemd 用户会话；管理员可以通过 `loginctl enable-linger <账户>` 让服务退出登录后及重启时继续运行。macOS LaunchAgent 在用户登录后启动。
@@ -144,7 +144,7 @@ Linux 需要 systemd 用户会话；管理员可以通过 `loginctl enable-linge
 先准备已有的非 root 账户，它的实际权限决定任务能访问的文件和执行的命令。安装器不创建账户、不调整已有项目权限；需要时只通过 sudo 执行系统级安装与 join：
 
 ```sh
-curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- worker --server 'https://plane.internal:8443' --ca-fingerprint '<控制台提供的64位指纹>' --system --user 'ops'
+curl -fsSL https://bossoptional.github.io/Willcord/install.sh | bash -s -- worker --server 'https://plane.internal:8443' --ca-fingerprint '<控制台提供的64位指纹>' --system --user 'ops'
 ```
 
 支持 Linux/macOS x86_64/arm64；Linux 二进制需要 glibc 2.17 或更新。安装器自动选择文件并校验 SHA-256，然后交给 `willcord worker join` 一步完成：核对 CA 指纹、安装服务、提交加入申请。CA 被保存到安装目录，后台服务及后续 CLI 自动使用。`willcord` 命令同时装到 PATH（见[下文](#willcord-命令放在哪里)），之后的命令都直接写 `willcord worker …`。

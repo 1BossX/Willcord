@@ -114,7 +114,7 @@ test("P7-C release acceptance from the built artifacts", { timeout: 15 * 60_000 
   };
   const tokenFile = join(dir, "worker-token");
   const workerConfig = join(dir, "worker.toml");
-  writeFileSync(workerConfig, `worker_id = "release-w"\ndata_dir = "${join(dir, "worker-data")}"\nurl = "${wss}"\ntoken_file = "${tokenFile}"\nkill_grace_secs = 2\n[[workspaces]]\nworkspace_id = "repo"\nconfig_version = 1\npath = "${workspace}"\nrepo_id = "github.com/1BossX/Willcord"\nis_default = true\n`);
+  writeFileSync(workerConfig, `worker_id = "release-w"\ndata_dir = "${join(dir, "worker-data")}"\nurl = "${wss}"\ntoken_file = "${tokenFile}"\nkill_grace_secs = 2\n[[workspaces]]\nworkspace_id = "repo"\nconfig_version = 1\npath = "${workspace}"\nrepo_id = "github.com/BossOptional/Willcord"\nis_default = true\n`);
   // As the systemd unit runs it: no token in the environment, only the deployment CA trusted.
   const startWorker = () => { worker = run(workerBin, [workerConfig], { env: { PATH: "/usr/bin:/bin", HOME: dir, SSL_CERT_FILE: ca } }); };
   const workerRow = async () => ((await api("GET", "/api/workers")).json as any[]).find((w) => w.worker_id === "release-w");

@@ -11,7 +11,7 @@ Willcord 是面向内网与生产环境的 AI 运维控制面。模型调用、�
 
 产品名、仓库、包名、CLI、服务名与配置路径统一为 Willcord。
 
-[产品介绍页](https://1bossx.github.io/Willcord/) · [Releases](https://github.com/1BossX/Willcord/releases) · [安装与首次使用](docs/installation.md) · [架构](docs/architecture.md)
+[产品介绍页](https://bossoptional.github.io/Willcord/) · [Releases](https://github.com/BossOptional/Willcord/releases) · [安装与首次使用](docs/installation.md) · [架构](docs/architecture.md)
 
 ## 安装与开始使用
 
@@ -20,7 +20,7 @@ Willcord 是面向内网与生产环境的 AI 运维控制面。模型调用、�
 **第 1 步：安装命令**（每台机器都做一次，不启动任何服务）：
 
 ```sh
-curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash
+curl -fsSL https://bossoptional.github.io/Willcord/install.sh | bash
 ```
 
 它只下载、校验并把 `willcord` 放到 `~/.local/bin`（目录不在 `PATH` 里时会打印一行 `export PATH=…`，不会改你的 shell 配置）；装给所有用户用 `bash -s -- --system`。再按机器角色启动：
@@ -42,7 +42,7 @@ willcord worker join 'https://plane.internal:8443' --ca-fingerprint '<控制台�
 控制台复制出来的是一步完成的写法（安装命令并加入），等价于上面两步，也可以直接用：
 
 ```sh
-curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- worker --server 'https://plane.internal:8443' --ca-fingerprint '<控制台提供的64位指纹>'
+curl -fsSL https://bossoptional.github.io/Willcord/install.sh | bash -s -- worker --server 'https://plane.internal:8443' --ca-fingerprint '<控制台提供的64位指纹>'
 ```
 
 - 指纹只从已信任的控制台复制，不要手写。安装器核对根证书的 SHA-256 指纹后，才建立 HTTPS/WSS 连接；执行机器不必提前复制证书。

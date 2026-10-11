@@ -46,7 +46,7 @@ Worker 不必由用户提前下载 CA 文件；它必须有可信的服务器身
 示意接口（目前不可执行）：
 
 ```sh
-curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- worker \
+curl -fsSL https://bossoptional.github.io/Willcord/install.sh | bash -s -- worker \
   --server 'https://plane.internal:8443' --ca-fingerprint '<64位DER-SHA256>'
 ```
 

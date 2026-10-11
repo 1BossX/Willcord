@@ -1,5 +1,5 @@
 name: Docker
-# Main node images on GHCR: ghcr.io/1bossx/willcord-main and -caddy.
+# Main node images on GHCR: ghcr.io/bossoptional/willcord-main and -caddy.
 # Each architecture builds natively on its own runner (native modules compile
 # in the image) and passes deploy/docker/smoke.sh before anything is pushed.
 # A v* tag pushes by digest per architecture, then one job joins them into
@@ -20,7 +20,7 @@ on:
 permissions:
   contents: read
 env:
-  REGISTRY: ghcr.io/1bossx
+  REGISTRY: ghcr.io/bossoptional
 concurrency:
   group: docker-${{ github.ref }}
   cancel-in-progress: true

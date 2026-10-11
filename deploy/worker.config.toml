@@ -19,5 +19,5 @@ token_file = "/etc/willcord/token"
 workspace_id = "project"
 config_version = 1
 path = "/srv/project"
-repo_id = "github.com/1BossX/Willcord"
+repo_id = "github.com/BossOptional/Willcord"
 is_default = true

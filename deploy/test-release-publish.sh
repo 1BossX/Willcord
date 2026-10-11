@@ -30,7 +30,7 @@ gh() {
 
 run() {
   : > "$mock_log"
-  GITHUB_REF_NAME="$1" GITHUB_REPOSITORY='1BossX/Willcord' RELEASE_DIR="$release_dir" main
+  GITHUB_REF_NAME="$1" GITHUB_REPOSITORY='BossOptional/Willcord' RELEASE_DIR="$release_dir" main
 }
 
 mock_state=absent

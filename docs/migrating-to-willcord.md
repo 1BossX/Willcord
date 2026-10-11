@@ -12,7 +12,7 @@ v0.5.0 把所有仍叫 `worker-plane` / `WorkerPlane` 的名称统一为 `willco
 | worker 系统级数据目录 | `/var/lib/worker-plane-system`、`/Library/Application Support/WorkerPlane` | `/var/lib/willcord-system`、`/Library/Application Support/Willcord` |
 | 服务名 | systemd `worker-plane-<12位>`；launchd `org.workerplane.worker.<12位>` | systemd `willcord-worker-<12位>`；launchd `org.willcord.worker.<12位>` |
 | 发布资产 | `worker-plane-worker-<版本>-<os>-<arch>`、`worker-plane-main-<版本>-…tar.gz` | `willcord-<版本>-<os>-<arch>`、`willcord-main-<版本>-…tar.gz` |
-| 镜像 | `ghcr.io/1bossx/worker-plane-{main,caddy}` | `ghcr.io/1bossx/willcord-{main,caddy}` |
+| 镜像 | `ghcr.io/1bossx/worker-plane-{main,caddy}` | `ghcr.io/bossoptional/willcord-{main,caddy}` |
 | Docker 数据卷前缀 | `worker-plane-<hash>_` | `willcord-<hash>_` |
 | 手工部署路径和账户 | `/etc/worker-plane`、`/var/lib/worker-plane`、`/opt/worker-plane`，账户 `worker-plane` | 同名换成 `willcord` |
 | 管理工具 | `worker-plane-admin` | `willcord-admin` |
@@ -21,6 +21,20 @@ v0.5.0 把所有仍叫 `worker-plane` / `WorkerPlane` 的名称统一为 `willco
 | 机器注册签名串 | `workerplane-enrollment-v1` | `willcord-enrollment-v1` |
 
 最后一项意味着：新旧版本的 worker 和主节点之间**不能**互相完成机器注册。请两端一起升级。
+
+## GitHub 组织改名（1BossX → BossOptional）
+
+仓库所在的 GitHub 组织已从 `1BossX` 改名为 `BossOptional`。github.com 上的仓库、Release 下载和 API 地址会自动重定向，但下面两类地址**不会**：
+
+| 项目 | 旧 | 新 |
+|---|---|---|
+| 安装脚本与产品页 | `https://1bossx.github.io/Willcord/` | `https://bossoptional.github.io/Willcord/` |
+| 镜像 | `ghcr.io/1bossx/willcord-{main,caddy}` | `ghcr.io/bossoptional/willcord-{main,caddy}` |
+
+v0.5.0 和 v0.6.0 的镜像已经在新路径下可拉取，旧路径 `ghcr.io/1bossx/*` 不再可用。这两个版本的 `willcord` 二进制内置的 `compose.yaml` 默认仍指向旧路径。
+
+- **已部署的主节点**：升级**之前**先在部署目录的 `.env` 里加一行 `WILLCORD_REGISTRY=ghcr.io/bossoptional`，否则升级会因为拉不到镜像而失败。包含本次改名的下一个版本起，默认值已是新路径。
+- **已安装的 worker**：不受影响，它们经 GitHub 的 301 重定向继续下载，无需操作。
 
 ## 主节点（Docker）
 
@@ -34,7 +48,7 @@ v0.5.0 把所有仍叫 `worker-plane` / `WorkerPlane` 的名称统一为 `willco
 2. 记下旧主节点的 HTTPS 地址和端口。新旧部署不能同时监听同一个端口，所以先 `docker compose down` 停掉旧的（数据卷保留）。
 3. 用新安装器部署到**新**目录，向导走完后主节点已就绪：
    ```bash
-   curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- main --dir ./willcord
+   curl -fsSL https://bossoptional.github.io/Willcord/install.sh | bash -s -- main --dir ./willcord
    ```
 4. 把备份恢复进新部署，步骤见 [Docker 部署 §备份与恢复](docker.md)，其中的路径已经是 `/var/lib/willcord/…`。恢复后调度处于暂停状态，按[运维手册 §8](operations.md#8-从备份恢复)核对后再恢复。
 5. 新部署的 Caddy 会生成**新的**根证书。浏览器要重新信任新的 `ca.pem`；worker 用控制台“添加机器”里的新命令安装时会自动核对。

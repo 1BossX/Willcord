@@ -408,6 +408,71 @@ class MainNodeTests(unittest.TestCase):
             self.assertNotEqual(r.returncode, 0)
         self.assertEqual((self.deploy / '.env').read_text(), after)
 
+    def test_upgrade_stops_before_touching_anything_while_the_registry_is_the_dead_org_path(self):
+        self.deployed()
+        env_file, compose_file = self.deploy / '.env', self.deploy / 'compose.yaml'
+        compose_file.write_text(compose_file.read_text().replace('ghcr.io/bossoptional', 'ghcr.io/1bossx'))
+        before = env_file.read_text()
+        before_bytes = env_file.read_bytes()
+        for registry in [None, {'WILLCORD_REGISTRY': 'GHCR.IO/1BossX'}]:
+            r = self.cli('main', 'upgrade', '--image-version', 'v1.3.0', '--dir', str(self.deploy), env=registry)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn('ghcr.io/1bossx', r.stderr)
+            self.assertIn('WILLCORD_REGISTRY=ghcr.io/bossoptional', r.stderr)
+            self.assertIn(str(env_file), r.stderr)
+            self.assertEqual(env_file.read_bytes(), before_bytes)
+            self.assertEqual(self.compose_calls(), [])
+        env_file.write_text(before + 'WILLCORD_REGISTRY=ghcr.io/1bossx\n')
+        r = self.cli('main', 'upgrade', '--image-version', 'v1.3.0', '--dir', str(self.deploy))
+        self.assertNotEqual(r.returncode, 0)
+        # Once the registry is set to the new path, the upgrade goes through.
+        env_file.write_text(before + 'WILLCORD_REGISTRY=ghcr.io/bossoptional\n')
+        r = self.cli('main', 'upgrade', '--image-version', 'v1.3.0', '--dir', str(self.deploy))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.compose_calls(), [['pull'], ['up', '-d']])
+
+    def test_upgrade_follows_the_last_registry_line_like_compose_does(self):
+        self.deployed()
+        env_file, compose_file = self.deploy / '.env', self.deploy / 'compose.yaml'
+        compose_file.write_text(compose_file.read_text().replace('ghcr.io/bossoptional', 'ghcr.io/1bossx'))
+        base = env_file.read_text()
+        dead, good = 'WILLCORD_REGISTRY=ghcr.io/1bossx\n', 'WILLCORD_REGISTRY=ghcr.io/bossoptional\n'
+        # A stale line above the fixed one is harmless: compose uses the last assignment.
+        env_file.write_text(base + dead + good)
+        r = self.cli('main', 'upgrade', '--image-version', 'v1.3.0', '--dir', str(self.deploy))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.compose_calls(), [['pull'], ['up', '-d']])
+        self.assertEqual(env_file.read_text(), (base + dead + good).replace('WILLCORD_VERSION="1.2.3"', 'WILLCORD_VERSION="1.3.0"'))
+        # The dead path last means compose would pull it, whatever stands above.
+        (self.root / 'calls').unlink()
+        blocked = base + good + dead
+        env_file.write_text(blocked)
+        r = self.cli('main', 'upgrade', '--image-version', 'v1.4.0', '--dir', str(self.deploy))
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('WILLCORD_REGISTRY=ghcr.io/bossoptional', r.stderr)
+        self.assertEqual(env_file.read_text(), blocked)
+        self.assertEqual(self.compose_calls(), [])
+        # A commented-out old line is not an assignment.
+        env_file.write_text(base + '# ' + dead + good)
+        r = self.cli('main', 'upgrade', '--image-version', 'v1.4.0', '--dir', str(self.deploy))
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_a_failed_pull_leaves_env_byte_identical(self):
+        self.deployed()
+        env_file = self.deploy / '.env'
+        # Comments, an unrelated key and no trailing newline must all survive the round trip.
+        original = ('# kept by the operator\n' + env_file.read_text() + '\n# trailing note\nEXTRA="a b"\n\nLAST=1').encode()
+        env_file.write_bytes(original)
+        r = self.cli('main', 'upgrade', '--image-version', 'v1.3.0', '--dir', str(self.deploy), env={'TEST_START_FAIL': '1'})
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('已恢复原样', r.stderr)
+        self.assertEqual(env_file.read_bytes(), original)
+        self.assertEqual(self.compose_calls(), [['pull']])
+        # The same file upgrades normally once the pull works, touching only the version line.
+        r = self.cli('main', 'upgrade', '--image-version', 'v1.3.0', '--dir', str(self.deploy))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(env_file.read_bytes(), original.replace(b'WILLCORD_VERSION="1.2.3"', b'WILLCORD_VERSION="1.3.0"'))
+
     # ------------------------------------------------- worker data directory
 
     def test_worker_refuses_a_data_directory_too_long_for_its_control_socket(self):

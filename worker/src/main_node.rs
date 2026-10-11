@@ -167,6 +167,7 @@ fn without_env(text: &str, key: &str) -> String {
         .filter(|line| !line.starts_with(&prefix))
         .collect()
 }
+
 /// `text` with the line setting `key` replaced; the key must already be there.
 fn with_env(text: &str, key: &str, value: &str) -> Result<String, Error> {
     let prefix = format!("{key}=");
@@ -659,6 +660,53 @@ async fn status(mut args: Vec<String>) -> Result<(), Error> {
     }
 }
 
+/// The value Compose reads for `key` from an env file: the last assignment
+/// wins, `export ` and spaces around `=` are allowed, comment lines are
+/// skipped, a quoted value ends at its closing quote and an unquoted one at
+/// ` #`.
+fn last_env_assignment(text: &str, key: &str) -> Option<String> {
+    text.lines()
+        .filter_map(|line| {
+            let line = line.trim_start();
+            let line = line.strip_prefix("export ").unwrap_or(line).trim_start();
+            if line.starts_with('#') {
+                return None;
+            }
+            let (name, value) = line.split_once('=')?;
+            if name.trim() != key {
+                return None;
+            }
+            let value = value.trim();
+            Some(match value.chars().next() {
+                Some(quote @ ('"' | '\'')) => match value[1..].find(quote) {
+                    Some(end) => value[1..=end].to_string(),
+                    None => value[1..].to_string(),
+                },
+                _ => value.split(" #").next().unwrap_or("").trim().to_string(),
+            })
+        })
+        .last()
+}
+
+/// Whether `docker compose pull` would use the path the organization rename
+/// left dead (`ghcr.io/1bossx`). Compose takes `WILLCORD_REGISTRY` from the
+/// shell first (even when empty), then the last assignment in `.env`, then the
+/// default written into `compose.yaml`. An empty value counts as unset, so the
+/// default applies; any other value that is not the old path means the
+/// deployment is already fixed.
+fn dead_registry(compose: &str, env: &str, shell: Option<&str>) -> bool {
+    const DEAD: &str = "ghcr.io/1bossx";
+    let dead = |text: &str| text.to_ascii_lowercase().contains(DEAD);
+    let value = match shell {
+        Some(value) => Some(value.to_string()),
+        None => last_env_assignment(env, "WILLCORD_REGISTRY"),
+    };
+    match value.filter(|v| !v.is_empty()) {
+        Some(registry) => dead(&registry),
+        None => dead(compose),
+    }
+}
+
 async fn upgrade(mut args: Vec<String>) -> Result<(), Error> {
     let dir = deployment_dir(&mut args)?;
     let version = image_version(take_value(&mut args, "--image-version")?)?;
@@ -666,10 +714,39 @@ async fn upgrade(mut args: Vec<String>) -> Result<(), Error> {
         return Err(format!("未知参数：{extra}\n{MAIN_USAGE}").into());
     }
     let env = dir.join(".env");
-    let updated = with_env(&fs::read_to_string(&env)?, "WILLCORD_VERSION", &version)?;
+    let original = fs::read(&env)?;
+    let env_text = String::from_utf8(original.clone())
+        .map_err(|_| format!("{} 不是有效的 UTF-8 文本。", env.display()))?;
+    let compose_text = fs::read_to_string(dir.join("compose.yaml")).unwrap_or_default();
+    // Nothing is written until the registry is known to be pullable.
+    if dead_registry(
+        &compose_text,
+        &env_text,
+        std::env::var("WILLCORD_REGISTRY").ok().as_deref(),
+    ) {
+        return Err(format!(
+            "{} 和 {} 仍指向旧镜像路径 ghcr.io/1bossx，该路径已不能拉取（GitHub 组织已改名为 BossOptional），升级会失败。请先在 {} 里加一行 WILLCORD_REGISTRY=ghcr.io/bossoptional，再重新执行 willcord main upgrade。",
+            env.display(),
+            dir.join("compose.yaml").display(),
+            env.display()
+        )
+        .into());
+    }
+    let updated = with_env(&env_text, "WILLCORD_VERSION", &version)?;
     fs::write(&env, updated)?;
     println!("镜像版本：{version}");
-    compose(&dir, &["pull"])?;
+    // Nothing is running from the new images yet, so a failed pull leaves the
+    // deployment as it was: put the original bytes back.
+    if let Err(pull) = compose(&dir, &["pull"]) {
+        return Err(match fs::write(&env, &original) {
+            Ok(()) => format!("{pull}\n{} 已恢复原样，部署没有改动。", env.display()),
+            Err(restore) => format!(
+                "{pull}\n恢复 {} 失败（{restore}）：请手动把 WILLCORD_VERSION 改回升级前的值。",
+                env.display()
+            ),
+        }
+        .into());
+    }
     compose(&dir, &["up", "-d"])?;
     let server = deployment_server(&dir)?;
     if !wait_ready(&dir, &server, false).await {
@@ -836,5 +913,86 @@ mod tests {
     fn the_embedded_compose_file_is_the_deployed_one() {
         assert!(COMPOSE.contains("WILLCORD_VERSION:?set WILLCORD_VERSION"));
         assert!(COMPOSE.contains("willcord-main"));
+    }
+
+    #[test]
+    fn the_dead_registry_is_found_unless_it_was_overridden() {
+        let old = "image: ${WILLCORD_REGISTRY:-ghcr.io/1bossx}/willcord-main:${WILLCORD_VERSION}\n";
+        let new =
+            "image: ${WILLCORD_REGISTRY:-ghcr.io/bossoptional}/willcord-main:${WILLCORD_VERSION}\n";
+        let fixed = "WILLCORD_VERSION=\"0.6.0\"\nWILLCORD_REGISTRY=ghcr.io/bossoptional\n";
+        assert!(dead_registry(old, "WILLCORD_VERSION=\"0.6.0\"\n", None));
+        assert!(dead_registry(
+            old,
+            "WILLCORD_REGISTRY=\"GHCR.io/1BossX\"\n",
+            None
+        ));
+        assert!(dead_registry(
+            new,
+            "WILLCORD_REGISTRY=ghcr.io/1bossx\n",
+            None
+        ));
+        assert!(!dead_registry(new, "WILLCORD_VERSION=\"0.6.0\"\n", None));
+        assert!(!dead_registry(old, fixed, None));
+        assert!(!dead_registry(
+            old,
+            "WILLCORD_REGISTRY='ghcr.io/bossoptional'\n",
+            None
+        ));
+        assert!(!dead_registry(old, "", Some("registry.example/willcord")));
+        assert!(dead_registry(new, "", Some("ghcr.io/1bossx")));
+        assert!(dead_registry(old, "WILLCORD_REGISTRY=\n", Some("")));
+    }
+
+    #[test]
+    fn the_last_assignment_in_env_is_the_one_compose_uses() {
+        let old = "image: ${WILLCORD_REGISTRY:-ghcr.io/1bossx}/willcord-main\n";
+        let (dead, good) = (
+            "WILLCORD_REGISTRY=ghcr.io/1bossx\n",
+            "WILLCORD_REGISTRY=ghcr.io/bossoptional\n",
+        );
+        assert!(!dead_registry(old, &format!("{dead}{good}"), None));
+        assert!(dead_registry(old, &format!("{good}{dead}"), None));
+        assert!(!dead_registry(
+            old,
+            &format!("{dead}X=1\n{good}Y=2\n"),
+            None
+        ));
+        // An empty last assignment unsets it, so the compose default applies.
+        assert!(dead_registry(
+            old,
+            &format!("{good}WILLCORD_REGISTRY=\n"),
+            None
+        ));
+        assert!(!dead_registry(
+            old,
+            &format!("{dead}{good}WILLCORD_REGISTRY=\n"),
+            Some("mirror.example/w")
+        ));
+        // The shell wins over .env, in either direction, even when empty.
+        assert!(dead_registry(old, good, Some("ghcr.io/1bossx")));
+        assert!(!dead_registry(old, dead, Some("ghcr.io/bossoptional")));
+        assert!(dead_registry(old, good, Some("")));
+        // Comments, other keys and syntax variants are not assignments.
+        assert!(!dead_registry(
+            old,
+            "# WILLCORD_REGISTRY=ghcr.io/1bossx\nWILLCORD_REGISTRY=ghcr.io/bossoptional\n",
+            None
+        ));
+        assert!(!dead_registry(
+            "image: ghcr.io/bossoptional/x\n",
+            "NOTE=ghcr.io/1bossx\n",
+            None
+        ));
+        assert!(!dead_registry(
+            old,
+            "export WILLCORD_REGISTRY = \"ghcr.io/bossoptional\" # new\n",
+            None
+        ));
+        assert!(dead_registry(
+            old,
+            "WILLCORD_REGISTRY=ghcr.io/1bossx # old\n",
+            None
+        ));
     }
 }

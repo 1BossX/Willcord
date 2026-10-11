@@ -659,6 +659,33 @@ async fn status(mut args: Vec<String>) -> Result<(), Error> {
     }
 }
 
+/// The registry that `docker compose pull` would use, when it is the path the
+/// organization rename left dead (`ghcr.io/1bossx`). Compose takes
+/// `WILLCORD_REGISTRY` from the shell first, then `.env`, then the default
+/// written into `compose.yaml`; an explicit value that is not the old path
+/// means the deployment has already been fixed.
+fn dead_registry(compose: &str, env: &str, shell: Option<&str>) -> bool {
+    const DEAD: &str = "ghcr.io/1bossx";
+    let dead = |text: &str| text.to_ascii_lowercase().contains(DEAD);
+    let from_env = env.lines().find_map(|line| {
+        let value = line.strip_prefix("WILLCORD_REGISTRY=")?;
+        Some(
+            value
+                .trim()
+                .trim_matches(|c| c == '"' || c == '\'')
+                .to_string(),
+        )
+    });
+    let explicit = shell
+        .map(str::to_string)
+        .filter(|v| !v.is_empty())
+        .or(from_env.filter(|v| !v.is_empty()));
+    match explicit {
+        Some(registry) => dead(&registry),
+        None => dead(compose) || dead(env),
+    }
+}
+
 async fn upgrade(mut args: Vec<String>) -> Result<(), Error> {
     let dir = deployment_dir(&mut args)?;
     let version = image_version(take_value(&mut args, "--image-version")?)?;
@@ -666,7 +693,22 @@ async fn upgrade(mut args: Vec<String>) -> Result<(), Error> {
         return Err(format!("未知参数：{extra}\n{MAIN_USAGE}").into());
     }
     let env = dir.join(".env");
-    let updated = with_env(&fs::read_to_string(&env)?, "WILLCORD_VERSION", &version)?;
+    let env_text = fs::read_to_string(&env)?;
+    let compose_text = fs::read_to_string(dir.join("compose.yaml")).unwrap_or_default();
+    if dead_registry(
+        &compose_text,
+        &env_text,
+        std::env::var("WILLCORD_REGISTRY").ok().as_deref(),
+    ) {
+        return Err(format!(
+            "{} 和 {} 仍指向旧镜像路径 ghcr.io/1bossx，该路径已不能拉取（GitHub 组织已改名为 BossOptional），升级会失败。请先在 {} 里加一行 WILLCORD_REGISTRY=ghcr.io/bossoptional，再重新执行 willcord main upgrade。",
+            env.display(),
+            dir.join("compose.yaml").display(),
+            env.display()
+        )
+        .into());
+    }
+    let updated = with_env(&env_text, "WILLCORD_VERSION", &version)?;
     fs::write(&env, updated)?;
     println!("镜像版本：{version}");
     compose(&dir, &["pull"])?;
@@ -836,5 +878,34 @@ mod tests {
     fn the_embedded_compose_file_is_the_deployed_one() {
         assert!(COMPOSE.contains("WILLCORD_VERSION:?set WILLCORD_VERSION"));
         assert!(COMPOSE.contains("willcord-main"));
+    }
+
+    #[test]
+    fn the_dead_registry_is_found_unless_it_was_overridden() {
+        let old = "image: ${WILLCORD_REGISTRY:-ghcr.io/1bossx}/willcord-main:${WILLCORD_VERSION}\n";
+        let new =
+            "image: ${WILLCORD_REGISTRY:-ghcr.io/bossoptional}/willcord-main:${WILLCORD_VERSION}\n";
+        let fixed = "WILLCORD_VERSION=\"0.6.0\"\nWILLCORD_REGISTRY=ghcr.io/bossoptional\n";
+        assert!(dead_registry(old, "WILLCORD_VERSION=\"0.6.0\"\n", None));
+        assert!(dead_registry(
+            old,
+            "WILLCORD_REGISTRY=\"GHCR.io/1BossX\"\n",
+            None
+        ));
+        assert!(dead_registry(
+            new,
+            "WILLCORD_REGISTRY=ghcr.io/1bossx\n",
+            None
+        ));
+        assert!(!dead_registry(new, "WILLCORD_VERSION=\"0.6.0\"\n", None));
+        assert!(!dead_registry(old, fixed, None));
+        assert!(!dead_registry(
+            old,
+            "WILLCORD_REGISTRY='ghcr.io/bossoptional'\n",
+            None
+        ));
+        assert!(!dead_registry(old, "", Some("registry.example/willcord")));
+        assert!(dead_registry(new, "", Some("ghcr.io/1bossx")));
+        assert!(dead_registry(old, "WILLCORD_REGISTRY=\n", Some("")));
     }
 }

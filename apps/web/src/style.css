@@ -2468,3 +2468,8 @@ summary:focus-visible {
 .enrollment-install label { display: block; margin: 12px 0; }
 .enrollment-install input, .enrollment-install select, .enrollment-install textarea { display: block; width: 100%; margin-top: 6px; padding: 10px; font: inherit; }
 .enrollment-install textarea { font-family: monospace; resize: vertical; }
+.pending-badge { margin-left: 8px; padding: 2px 8px; border-radius: 999px; background: #f2b84b; color: #2b2100; font-size: 12px; font-weight: 600; }
+.machines-empty { margin: 4px 0 16px; padding: 12px 14px; border: 1px dashed var(--line); border-radius: 8px; color: var(--muted, #5f7480); }
+.has-pending { border-style: solid; border-color: #f2b84b; background: rgba(242, 184, 75, 0.12); }
+.sidebar-empty.has-pending { padding: 10px; border: 1px solid #f2b84b; border-radius: 8px; color: #f5dfa8; }
+.job-notes .secondary-button { margin-left: 8px; padding: 4px 10px; font-size: 13px; }

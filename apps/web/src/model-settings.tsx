@@ -5,6 +5,9 @@ type View = {
   provider: string; name: string; has_key: boolean; key_hint: string | null;
   source: "console" | "environment"; key_unreadable: boolean; providers: string[];
 };
+const OPEN_EVENT = "willcord:open-model-settings";
+/** Lets a failed task point straight at the dialog that fixes it. */
+export const openModelSettings = () => window.dispatchEvent(new Event(OPEN_EVENT));
 const sources = { console: "控制台设置", environment: "主节点环境变量" } as const;
 
 /** Where the main node's model connection is chosen; applies to jobs started after saving. */
@@ -20,6 +23,11 @@ export function ModelSettingsPanel() {
   const [error, setError] = useState("");
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
 
+  useEffect(() => {
+    const show = () => { dialog.current?.showModal(); setOpen(true); };
+    window.addEventListener(OPEN_EVENT, show);
+    return () => window.removeEventListener(OPEN_EVENT, show);
+  }, []);
   function show(next: View) { setView(next); setProvider(next.provider); setName(next.name); setApiKey(""); }
   async function load() {
     try { show(await request<View>("/api/settings/model")); setError(""); } catch (e) { setError(e instanceof Error ? e.message : String(e)); }

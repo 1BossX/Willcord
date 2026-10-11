@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { request } from "./api";
 import { installCommand, loadCaFingerprint } from "./install-command";
 
@@ -7,11 +7,35 @@ type Device = {
   online: number | null; reconciled: number | null; blocked: number | null; active_job_id: string | null;
   workspaces: Array<{ workspace_id: string; path: string; is_default: number }>;
 };
+// One poll of the device list feeds the sidebar badge and the home page, so a
+// worker that has just applied is visible without opening the dialog.
+let pendingCount = 0;
+const subscribers = new Set<() => void>();
+let poller: ReturnType<typeof setInterval> | undefined;
+async function pollPending() {
+  try {
+    const data = await request<{ devices: Device[] }>("/api/enrollments");
+    const count = data.devices.filter(d => d.state === "pending").length;
+    if (count !== pendingCount) { pendingCount = count; subscribers.forEach(notify => notify()); }
+  } catch { /* signed out or offline: keep the last count */ }
+}
+export const refreshPending = () => void pollPending();
+export function usePendingEnrollments(): number {
+  return useSyncExternalStore(notify => {
+    subscribers.add(notify);
+    if (subscribers.size === 1) { void pollPending(); poller = setInterval(() => void pollPending(), 8000); }
+    return () => { subscribers.delete(notify); if (!subscribers.size) { clearInterval(poller); poller = undefined; } };
+  }, () => pendingCount);
+}
+const OPEN_EVENT = "willcord:open-enrollment";
+export const openEnrollment = () => window.dispatchEvent(new Event(OPEN_EVENT));
 const states: Record<string, string> = { pending: "等待授权", approved: "已授权", rejected: "已拒绝", revoked: "已撤销" };
 export function EnrollmentPanel() {
   const dialog = useRef<HTMLDialogElement>(null);
   const [open, setOpen] = useState(false);
   const [devices, setDevices] = useState<Device[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const pending = usePendingEnrollments();
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
@@ -51,7 +75,7 @@ export function EnrollmentPanel() {
       loading = true;
       try {
         const data = await request<{ devices: Device[] }>("/api/enrollments", { signal: controller.signal });
-        if (!controller.signal.aborted) { setError(""); setDevices(data.devices); }
+        if (!controller.signal.aborted) { setError(""); setDevices(data.devices); setLoaded(true); }
       } catch (e) { if (!controller.signal.aborted) setError(String(e)); }
       finally { loading = false; }
     }
@@ -59,15 +83,20 @@ export function EnrollmentPanel() {
     const timer = setInterval(() => void refresh(), 5000);
     return () => { controller.abort(); clearInterval(timer); };
   }, [open, revision]);
-  function close() { dialog.current?.close(); setOpen(false); setEditing(null); setError(""); }
+  function close() { dialog.current?.close(); setOpen(false); setEditing(null); setError(""); setLoaded(false); }
+  useEffect(() => {
+    const show = () => { dialog.current?.showModal(); setOpen(true); };
+    window.addEventListener(OPEN_EVENT, show);
+    return () => window.removeEventListener(OPEN_EVENT, show);
+  }, []);
   async function mutate(url: string, method: string, body: object) {
     setBusy(true); setError("");
-    try { await request(url, { method, body: JSON.stringify(body) }); setRevision(r => r + 1); setEditing(null); }
+    try { await request(url, { method, body: JSON.stringify(body) }); setRevision(r => r + 1); setEditing(null); refreshPending(); }
     catch (e) { setError(String(e)); }
     finally { setBusy(false); }
   }
   return <>
-    <button className="enrollment-open" onClick={() => { dialog.current?.showModal(); setOpen(true); }}>机器授权</button>
+    <button className="enrollment-open" onClick={() => { dialog.current?.showModal(); setOpen(true); }}>机器授权{pending > 0 && <span className="pending-badge">{pending} 台待批准</span>}</button>
     <dialog ref={dialog} className="session-dialog enrollment-dialog" aria-labelledby="enrollment-title" onCancel={close}>
       <div className="dialog-heading"><h2 id="enrollment-title">机器授权</h2><button className="secondary-button" onClick={close} aria-label="关闭机器授权">关闭</button></div>
       <button className="secondary-button" aria-expanded={adding} onClick={() => { setAdding(v => !v); setCopyStatus(""); }}>添加机器</button>
@@ -91,7 +120,8 @@ export function EnrollmentPanel() {
       </section>}
       <p>批准前，请核对本机终端显示的节点指纹。</p>
       {error && <p role="alert">{error}</p>}
-      {!devices.length && <p>尚无加入申请。安装 worker 后运行 join 即可申请。</p>}
+      {!loaded && !error && <p role="status">正在读取加入申请…</p>}
+      {loaded && !devices.length && <p>尚无加入申请。在执行机器上运行“添加机器”里的安装命令后，申请会出现在这里。</p>}
       {devices.map(d => <article className="enrollment-device" key={d.worker_id}>
         <strong>{d.name}</strong><p>{d.os} / {d.arch} · {states[d.state]}</p>
         <p>节点 ID / 公钥 SHA-256 指纹</p><code>{d.worker_id}</code><p>{new Date(d.created_at).toLocaleString()}</p>

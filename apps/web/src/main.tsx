@@ -1,10 +1,10 @@
-import { EnrollmentPanel } from "./enrollment";
-import { ModelSettingsPanel } from "./model-settings";
+import { EnrollmentPanel, openEnrollment, usePendingEnrollments } from "./enrollment";
+import { ModelSettingsPanel, openModelSettings } from "./model-settings";
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { marked } from "marked";
 import { ApiError, request } from "./api";
-import { AttentionPanel, BudgetRows, CancelButton, DispatchBanner, LogViewer, RetryButton, type JobControl } from "./control";
+import { AttentionPanel, BudgetRows, CancelButton, DispatchBanner, LogViewer, RetryButton, endReasonLabel, type JobControl } from "./control";
 import { useFeed } from "./feed";
 import "./style.css";
 
@@ -736,8 +736,24 @@ type LogState = { job_id: string; call_id: string; stream: string; bytes_held: n
  * machine it waits for, children, a stop in progress, a check it needs, and
  * earlier exchanges the model did not see.
  */
+/** With no machine yet: say whether one is already waiting for approval, which is easy to miss. */
+function NoMachines({ className }: { className: string }) {
+  const pending = usePendingEnrollments();
+  return pending > 0 ? (
+    <div className={`${className} has-pending`}>
+      有 {pending} 台机器已申请加入，等待批准。{" "}
+      <button type="button" className="primary-button" onClick={openEnrollment}>去批准</button>
+    </div>
+  ) : (
+    <div className={className}>还没有注册的机器。点击“机器授权 → 添加机器”复制安装命令。</div>
+  );
+}
+const modelReasons = new Set(["model_auth_failed", "model_not_configured", "model_error"]);
 function JobNotes({ job, worker }: { job: Job; worker?: Worker }) {
-  const notes: { tone: string; text: string }[] = [];
+  const notes: { tone: string; text: string; action?: { label: string; run: () => void } }[] = [];
+  // The reason a task failed belongs where the user is looking, with the way to fix it.
+  if (job.state === "failed" && job.end_reason && modelReasons.has(job.end_reason))
+    notes.push({ tone: "danger", text: `任务没有执行：${endReasonLabel(job.end_reason)}。`, action: job.end_reason === "model_error" ? undefined : { label: "打开模型连接", run: openModelSettings } });
   const summary = job.children_summary;
   // A blocked machine may be online: say why it waits, not that it is away.
   if (queuedStates.has(job.state) && worker?.blocked)
@@ -764,7 +780,12 @@ function JobNotes({ job, worker }: { job: Job; worker?: Worker }) {
   if (!notes.length) return null;
   return (
     <ul className="job-notes">
-      {notes.map((n) => <li key={n.text} className={`tone-${n.tone}`}>{n.text}</li>)}
+      {notes.map((n) => (
+        <li key={n.text} className={`tone-${n.tone}`}>
+          {n.text}
+          {n.action && <> <button type="button" className="secondary-button" onClick={n.action.run}>{n.action.label}</button></>}
+        </li>
+      ))}
     </ul>
   );
 }
@@ -1351,7 +1372,7 @@ function App() {
               );
             })
           ) : (
-            <div className="sidebar-empty">还没有注册的机器</div>
+            <NoMachines className="sidebar-empty" />
           )}
         </div>
         <div className="sidebar-section-label session-section">
@@ -1584,6 +1605,7 @@ function App() {
                 {workers.length} 在线
               </span>
             </div>
+            {workers.length === 0 && <NoMachines className="machines-empty" />}
             <div className="machine-cards">
               {workers.map((worker) => {
                 const state = workerStatus(worker);

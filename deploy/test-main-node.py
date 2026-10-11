@@ -431,6 +431,32 @@ class MainNodeTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.compose_calls(), [['pull'], ['up', '-d']])
 
+    def test_upgrade_follows_the_last_registry_line_like_compose_does(self):
+        self.deployed()
+        env_file, compose_file = self.deploy / '.env', self.deploy / 'compose.yaml'
+        compose_file.write_text(compose_file.read_text().replace('ghcr.io/bossoptional', 'ghcr.io/1bossx'))
+        base = env_file.read_text()
+        dead, good = 'WILLCORD_REGISTRY=ghcr.io/1bossx\n', 'WILLCORD_REGISTRY=ghcr.io/bossoptional\n'
+        # A stale line above the fixed one is harmless: compose uses the last assignment.
+        env_file.write_text(base + dead + good)
+        r = self.cli('main', 'upgrade', '--image-version', 'v1.3.0', '--dir', str(self.deploy))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.compose_calls(), [['pull'], ['up', '-d']])
+        self.assertEqual(env_file.read_text(), (base + dead + good).replace('WILLCORD_VERSION="1.2.3"', 'WILLCORD_VERSION="1.3.0"'))
+        # The dead path last means compose would pull it, whatever stands above.
+        (self.root / 'calls').unlink()
+        blocked = base + good + dead
+        env_file.write_text(blocked)
+        r = self.cli('main', 'upgrade', '--image-version', 'v1.4.0', '--dir', str(self.deploy))
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('WILLCORD_REGISTRY=ghcr.io/bossoptional', r.stderr)
+        self.assertEqual(env_file.read_text(), blocked)
+        self.assertEqual(self.compose_calls(), [])
+        # A commented-out old line is not an assignment.
+        env_file.write_text(base + '# ' + dead + good)
+        r = self.cli('main', 'upgrade', '--image-version', 'v1.4.0', '--dir', str(self.deploy))
+        self.assertEqual(r.returncode, 0, r.stderr)
+
     def test_a_failed_pull_leaves_env_byte_identical(self):
         self.deployed()
         env_file = self.deploy / '.env'

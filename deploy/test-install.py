@@ -55,6 +55,10 @@ elif name in ['sleep','systemctl','launchctl']:pass
 else:
  if args[:2]==['main','init']:
   if os.environ.get('TEST_MAIN_FAIL')=='1':sys.exit(3)
+ elif args[:1]==['self-install']:
+  target=p(os.environ['WILLCORD_SYSTEM_ROOT'])/'bin/willcord' if '--system' in args else p(os.environ['WILLCORD_HOME'])/'bin/willcord'
+  target.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(sys.argv[0],target);target.chmod(0o700)
+  print('已安装命令：'+str(target))
  elif args[:2]==['worker','join']:
   # The real binary installs the service, saves the CA and files the request.
   if os.environ.get('TEST_JOIN_FAIL')=='1':sys.exit(3)
@@ -195,4 +199,31 @@ class InstallerTests(unittest.TestCase):
   r=self.run_worker('--system','--user','ops');self.assertEqual(r.returncode,0,r.stderr)
   self.assertEqual(len([1 for n,a in self.calls() if n=='sudo']),1)
   self.assertEqual(self.handed_over(),[['worker','join','https://plane.internal:8443','--ca',str(self.ca),'--system','--user','ops']])
+ def run_install(self,*extra,env=None):
+  return subprocess.run([BASH,str(SCRIPT),*extra],env={**self.env,**(env or {})},capture_output=True,text=True)
+ def test_without_a_role_only_the_command_is_installed(self):
+  r=self.run_install();self.assertEqual(r.returncode,0,r.stderr)
+  self.assertEqual(self.handed_over(),[['self-install']])
+  self.assertTrue((Path(self.env['WILLCORD_HOME'])/'bin/willcord').exists())
+  self.assertIn('willcord main init',r.stdout);self.assertIn('willcord worker join',r.stdout)
+  self.assertFalse(any(a[:1] in (['main'],['worker']) for a in self.handed_over()))
+  self.clean_tmp()
+ def test_a_pinned_version_and_the_platform_binary_are_used_when_only_installing(self):
+  r=self.run_install('--version','v1.2.3',env={'TEST_OS':'Darwin','TEST_ARCH':'arm64'});self.assertEqual(r.returncode,0,r.stderr)
+  self.assertTrue(any('willcord-v1.2.3-darwin-arm64' in str(a) for n,a in self.calls() if n=='curl'))
+ def test_a_system_install_of_the_command_is_one_sudo(self):
+  r=self.run_install('--system');self.assertEqual(r.returncode,0,r.stderr)
+  self.assertEqual(len([1 for n,a in self.calls() if n=='sudo']),1)
+  self.assertEqual(self.handed_over(),[['self-install','--system']])
+  self.assertTrue((Path(self.env['WILLCORD_SYSTEM_ROOT'])/'bin/willcord').exists())
+ def test_installing_the_command_takes_no_start_options_and_runs_nothing_untrusted(self):
+  for extra in [['--server','https://plane.internal:8443'],['--ca','/x.pem'],['--ca-fingerprint','0'*64],['--user','ops'],['--dir','/x']]:
+   with self.subTest(extra=extra):
+    r=self.run_install(*extra);self.assertNotEqual(r.returncode,0);self.assertEqual(self.handed_over(),[])
+  for env in [{'TEST_BAD_HASH':'1'},{'TEST_DOWNLOAD_FAIL':'1'},{'TEST_NO_RELEASE':'1'}]:
+   with self.subTest(env=env):
+    r=self.run_install(env=env);self.assertNotEqual(r.returncode,0);self.assertEqual(self.handed_over(),[])
+    self.assertFalse((Path(self.env['WILLCORD_HOME'])/'bin/willcord').exists());self.clean_tmp()
+ def test_an_unknown_first_word_is_a_usage_error(self):
+  r=self.run_install('both');self.assertNotEqual(r.returncode,0);self.assertIn('用法',r.stderr)
 if __name__=='__main__':unittest.main()

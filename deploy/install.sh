@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Public entry point: the entire script defines functions before invoking main.
+# `install.sh` alone installs the willcord command; `install.sh main|worker …`
+# installs it and starts that role in one step.
 # Requires Bash 3.2+, curl and a SHA-256 utility; no jq or Python dependency.
 set -euo pipefail
 
@@ -119,9 +121,36 @@ main_install() {
   [[ -z "$server" ]] || args+=(--server "$server")
   "$tmp/$name" "${args[@]}"
 }
+# Without a role the script only installs: the verified binary puts the
+# `willcord` command on PATH and nothing is started. `willcord main init` and
+# `willcord worker join` are then run by hand.
+install_only() {
+  [[ -z "$server" && -z "$ca" && -z "$fingerprint" && -z "$account" ]] || fail "只安装命令时不接受 --server、--ca、--ca-fingerprint 或 --user；安装后用 willcord main init / willcord worker join 启动。"
+  if [[ "$system" == true ]]; then
+    if [[ $(id -u) != 0 ]]; then need sudo; fi
+  else
+    [[ $(id -u) != 0 ]] || fail "用户级安装请不要使用 sudo；系统级安装请加 --system。"
+  fi
+  local name="willcord-$version-$os-$arch"
+  verified "$name"
+  chmod 700 "$tmp/$name"
+  local args=(self-install)
+  [[ "$system" == false ]] || args+=(--system)
+  if [[ "$system" == true && $(id -u) != 0 ]]; then
+    sudo "$tmp/$name" "${args[@]}"
+  else
+    "$tmp/$name" "${args[@]}"
+  fi
+  printf '\n下一步，按这台机器的角色启动：\n  主节点：willcord main init\n  执行机器：willcord worker join https://<主节点地址> --ca-fingerprint <控制台提供的指纹>\n'
+}
 main() {
-  local role="${1:-}"; [[ "$role" == worker || "$role" == main ]] || fail '用法：install.sh main|worker [--version vX.Y.Z] [--server HTTPS_ORIGIN] [--ca /absolute/ca.pem | --ca-fingerprint SHA256] [--system --user ACCOUNT] [--dir PATH]'
-  shift
+  local usage='用法：install.sh [--version vX.Y.Z] [--system]（只安装 willcord 命令）；install.sh main|worker [--version vX.Y.Z] [--server HTTPS_ORIGIN] [--ca /absolute/ca.pem | --ca-fingerprint SHA256] [--system --user ACCOUNT] [--dir PATH]（安装并立即启动）'
+  local role="${1:-install}"
+  case "$role" in
+    worker|main) shift;;
+    install|-*) role=install;;
+    *) fail "$usage";;
+  esac
   version=''; server=''; ca=''; fingerprint=''; system=false; account=''; directory="$PWD/willcord"
   while (( $# )); do
     case "$1" in
@@ -142,6 +171,6 @@ main() {
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/willcord-install.XXXXXX")
   trap 'rm -rf "$tmp"' EXIT
   resolve_version
-  if [[ "$role" == worker ]]; then worker_install; else main_install; fi
+  case "$role" in worker) worker_install;; main) main_install;; *) install_only;; esac
 }
 main "$@"

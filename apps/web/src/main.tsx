@@ -1,4 +1,5 @@
 import { EnrollmentPanel, openEnrollment, usePendingEnrollments } from "./enrollment";
+import { Icon } from "./icon";
 import { ModelSettingsPanel, openModelSettings } from "./model-settings";
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -106,116 +107,6 @@ type Content = {
   arguments?: { path?: string; command?: string; prompt?: string; job_id?: string };
   content: string | { type?: string; text?: string }[] | ToolContent;
 };
-type IconName =
-  | "plane"
-  | "grid"
-  | "server"
-  | "chat"
-  | "plus"
-  | "arrow"
-  | "chevron"
-  | "check"
-  | "clock"
-  | "alert"
-  | "terminal"
-  | "file"
-  | "write"
-  | "lock"
-  | "close"
-  | "menu"
-  | "logout";
-const paths: Record<IconName, React.ReactNode> = {
-  plane: (
-    <>
-      <path d="m3 10 18-7-7 18-3-8-8-3Z" />
-      <path d="m11 13 10-10" />
-    </>
-  ),
-  grid: (
-    <>
-      <rect x="3" y="3" width="7" height="7" rx="2" />
-      <rect x="14" y="3" width="7" height="7" rx="2" />
-      <rect x="3" y="14" width="7" height="7" rx="2" />
-      <rect x="14" y="14" width="7" height="7" rx="2" />
-    </>
-  ),
-  server: (
-    <>
-      <rect x="3" y="4" width="18" height="6" rx="2" />
-      <rect x="3" y="14" width="18" height="6" rx="2" />
-      <path d="M7 7h.01M7 17h.01M17 7h1M17 17h1" />
-    </>
-  ),
-  chat: <path d="M21 11a8 8 0 0 1-8 8H6l-4 3V11a9 9 0 0 1 19 0Z" />,
-  plus: <path d="M12 5v14M5 12h14" />,
-  arrow: <path d="M5 12h14m-6-6 6 6-6 6" />,
-  chevron: <path d="m9 5 7 7-7 7" />,
-  check: <path d="m5 12 4 4L19 6" />,
-  clock: (
-    <>
-      <circle cx="12" cy="12" r="9" />
-      <path d="M12 7v5l3 2" />
-    </>
-  ),
-  alert: (
-    <>
-      <path d="m12 3 10 18H2L12 3Z" />
-      <path d="M12 9v4m0 4h.01" />
-    </>
-  ),
-  terminal: (
-    <>
-      <rect x="3" y="4" width="18" height="16" rx="3" />
-      <path d="m7 9 3 3-3 3m6 0h4" />
-    </>
-  ),
-  file: (
-    <>
-      <path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9l-6-6Z" />
-      <path d="M14 3v6h6m-12 4h8m-8 4h5" />
-    </>
-  ),
-  write: (
-    <>
-      <path d="m15 4 5 5M4 20l5-1L21 7a2 2 0 0 0-4-4L5 15l-1 5Z" />
-    </>
-  ),
-  lock: (
-    <>
-      <rect x="5" y="10" width="14" height="11" rx="2" />
-      <path d="M8 10V7a4 4 0 0 1 8 0v3m-4 5v2" />
-    </>
-  ),
-  close: <path d="m6 6 12 12M6 18 18 6" />,
-  menu: <path d="M4 6h16M4 12h16M4 18h16" />,
-  logout: (
-    <>
-      <path d="M10 3H5v18h5m3-9h8m-3-3 3 3-3 3" />
-    </>
-  ),
-};
-function Icon({
-  name,
-  className = "",
-}: {
-  name: IconName;
-  className?: string;
-}) {
-  return (
-    <svg
-      className={`icon ${className}`}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.65"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      {paths[name]}
-    </svg>
-  );
-}
 const jobLabels: Record<string, string> = {
   queued: "排队中",
   waiting_worker: "等待机器",
@@ -746,6 +637,18 @@ function NoMachines({ className }: { className: string }) {
     </div>
   ) : (
     <div className={className}>还没有注册的机器。点击“机器授权 → 添加机器”复制安装命令。</div>
+  );
+}
+/** The home page's one empty state: what to do next, or that a machine is already waiting. */
+function FirstMachineHint() {
+  const pending = usePendingEnrollments();
+  return pending > 0 ? (
+    <>
+      <p>有 {pending} 台机器已申请加入，等待批准。</p>
+      <button type="button" className="primary-button" onClick={openEnrollment}>去批准</button>
+    </>
+  ) : (
+    <p>点击侧栏“机器授权 → 添加机器”，复制安装命令到要接入的机器上运行；批准后它会出现在这里。</p>
   );
 }
 const modelReasons = new Set(["model_auth_failed", "model_not_configured", "model_error"]);
@@ -1605,7 +1508,6 @@ function App() {
                 {workers.length} 在线
               </span>
             </div>
-            {workers.length === 0 && <NoMachines className="machines-empty" />}
             <div className="machine-cards">
               {workers.map((worker) => {
                 const state = workerStatus(worker);
@@ -1643,7 +1545,7 @@ function App() {
                 <div className="empty-state">
                   <Icon name="server" />
                   <h3>连接你的第一台机器</h3>
-                  <p>注册 worker 后，它会出现在这里。</p>
+                  <FirstMachineHint />
                 </div>
               )}
             </div>
@@ -1734,8 +1636,8 @@ function App() {
                   </p>
                   <div className="prompt-suggestions">
                     {[
+                      "列出当前工作目录的文件，并报告工作目录路径",
                       "检查项目状态并总结当前改动",
-                      "运行项目校验并解释结果",
                     ].map((prompt) => (
                       <button
                         key={prompt}

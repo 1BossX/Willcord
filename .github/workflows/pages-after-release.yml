@@ -1,0 +1,20 @@
+name: Refresh site after a Release
+
+# Publishing a Release changes the installer the site serves. The deployment
+# itself must run on main (the github-pages environment rejects tags), so this
+# workflow only asks pages.yml to run there.
+on:
+  release:
+    types: [published]
+
+permissions:
+  actions: write
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run the Pages workflow on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run pages.yml --repo "$GITHUB_REPOSITORY" --ref main

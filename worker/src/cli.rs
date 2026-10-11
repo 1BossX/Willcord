@@ -595,14 +595,87 @@ fn install_system(root: &Path, user: Option<&str>) -> Result<System, Error> {
     )?;
     Ok(sys)
 }
+/// The machine's own name, so the console shows "my-laptop" rather than a
+/// generic "worker". HOSTNAME is a shell variable that is usually not exported.
+fn device_name() -> String {
+    let mut buf = [0u8; 256];
+    let from_os = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len() - 1) } == 0;
+    let host = if from_os {
+        String::from_utf8_lossy(&buf[..buf.iter().position(|b| *b == 0).unwrap_or(buf.len())])
+            .into_owned()
+    } else {
+        String::new()
+    };
+    normalize_device_name(&host, std::env::var("HOSTNAME").ok().as_deref())
+}
+fn normalize_device_name(host: &str, env: Option<&str>) -> String {
+    for candidate in [host, env.unwrap_or("")] {
+        let name = candidate.trim().trim_end_matches(".local").trim();
+        let name: String = name.chars().filter(|c| !c.is_control()).take(128).collect();
+        if !name.is_empty() {
+            return name;
+        }
+    }
+    "worker".into()
+}
+/// What `join` tells the person: an already approved machine has nothing left to approve.
+fn join_summary(state: &Value, fingerprint: &str, base: &str) -> String {
+    let authorization = state["state"].as_str().unwrap_or("unknown");
+    let next = match authorization {
+        "approved" => "本机已获授权，无需再次批准；等待控制台显示“可执行”后即可使用。",
+        "pending" => "核对控制台指纹后批准；等待机器显示可执行，再验证只读任务。",
+        "rejected" | "revoked" => "此机器的授权已被拒绝或撤销；如需恢复，请在控制台重新批准。",
+        _ => "请在控制台查看本机的授权状态。",
+    };
+    format!(
+        "Node: {}\nFingerprint (SHA-256 of public key): {fingerprint}\nAuthorization: {authorization}\nConsole: {base}\nNext: {next}",
+        state["worker_id"].as_str().unwrap_or("unknown"),
+    )
+}
+const USAGE: &str = "usage: worker install [--system --user ACCOUNT] | join URL | status [--json] | workspace add ID PATH | workspace list | run | uninstall [--delete-data]  (add --system to manage the system service)";
+/// A mistyped command is not a failure with a backtrace-style message: say so plainly and exit.
+fn usage_error(command: Option<&str>) -> ! {
+    if let Some(command) = command {
+        eprintln!("worker: unknown command '{command}'");
+    }
+    eprintln!("{USAGE}");
+    std::process::exit(2)
+}
+const COMMANDS: [&str; 6] = ["install", "join", "status", "workspace", "run", "uninstall"];
+/// What the first argument means: a command, a request for help, or the legacy
+/// config-file path. Anything else is a typo, not a file to open.
+#[derive(Debug, PartialEq)]
+enum Route {
+    Command,
+    Help,
+    ConfigFile,
+    Unknown,
+}
+fn route(first: &str, is_file: bool) -> Route {
+    if COMMANDS.contains(&first) {
+        Route::Command
+    } else if ["-h", "--help", "help"].contains(&first) {
+        Route::Help
+    } else if is_file {
+        Route::ConfigFile
+    } else {
+        Route::Unknown
+    }
+}
 pub async fn dispatch() -> Result<Option<PathBuf>, Error> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let Some(command) = args.first().cloned() else {
-        return Err("usage: worker install [--system --user ACCOUNT]|join URL|status [--json]|workspace add ID PATH|workspace list|run|uninstall [--delete-data] (add --system to manage the system service)|config.toml".into());
+        usage_error(None);
     };
     let command = command.as_str();
-    if !["install", "join", "status", "workspace", "run", "uninstall"].contains(&command) {
-        return Ok(Some(PathBuf::from(command)));
+    match route(command, Path::new(command).is_file()) {
+        Route::Command => {}
+        Route::Help => {
+            println!("{USAGE}");
+            return Ok(None);
+        }
+        Route::ConfigFile => return Ok(Some(PathBuf::from(command))),
+        Route::Unknown => usage_error(Some(command)),
     }
     let system = take_flag(&mut args, "--system");
     let account = take_value(&mut args, "--user")?;
@@ -673,15 +746,27 @@ pub async fn dispatch() -> Result<Option<PathBuf>, Error> {
             }
             service(&dir, sys, true)?;
             println!("Service: {}", service_name(&dir));
+            let joined = dir.join("enrollment.json").exists();
             match sys {
                 Some(s) => println!(
-                    "Installed as a system service running as {}. Run: sudo {} join --system https://your-server",
+                    "Installed as a system service running as {}.{}",
                     s.user,
-                    shell_quote(&target)
+                    if joined {
+                        " Already joined; no need to join again.".into()
+                    } else {
+                        format!(
+                            " Next: sudo {} join --system <server-https-origin>",
+                            shell_quote(&target)
+                        )
+                    }
                 ),
                 None => println!(
-                    "Installed. Run: {} join https://your-server",
-                    shell_quote(&target)
+                    "Installed.{}",
+                    if joined {
+                        " Already joined; no need to join again.".into()
+                    } else {
+                        format!(" Next: {} join <server-https-origin>", shell_quote(&target))
+                    }
                 ),
             }
         }
@@ -710,16 +795,20 @@ pub async fn dispatch() -> Result<Option<PathBuf>, Error> {
                 }
             } else {
                 identity(&dir)?;
-                save(&dir.join("enrollment.json"),serde_json::to_string(&json!({"url":base,"name":std::env::var("HOSTNAME").unwrap_or_else(|_|"worker".into())}))?.as_bytes())?;
+                save(
+                    &dir.join("enrollment.json"),
+                    serde_json::to_string(&json!({"url":base,"name":device_name()}))?.as_bytes(),
+                )?;
             }
             setup(&dir, base)?;
             let state = proof(&dir, "apply").await?;
             println!(
-                "Node: {}\nFingerprint (SHA-256 of public key): {}\nAuthorization: {}\nConsole: {}\nNext: 核对控制台指纹后批准；等待机器显示可执行，再验证只读任务。",
-                state["worker_id"].as_str().unwrap_or("unknown"),
-                format!("{:x}", Sha256::digest(public(&identity(&dir)?))),
-                state["state"].as_str().unwrap_or("unknown"),
-                base
+                "{}",
+                join_summary(
+                    &state,
+                    &format!("{:x}", Sha256::digest(public(&identity(&dir)?))),
+                    base
+                )
             );
         }
         "run" => {
@@ -1017,5 +1106,43 @@ mod tests {
         assert!(valid_user("worker-plane"));
         assert!(lookup("root").is_err());
         assert!(lookup("no-such-account-wp").is_err());
+    }
+    #[test]
+    fn first_argument_is_a_command_help_or_an_existing_config_never_a_typo() {
+        assert_eq!(route("join", false), Route::Command);
+        assert_eq!(route("--help", false), Route::Help);
+        assert_eq!(route("help", false), Route::Help);
+        assert_eq!(route("/etc/worker.toml", true), Route::ConfigFile);
+        assert_eq!(route("statsu", false), Route::Unknown);
+        assert_eq!(route("--version", false), Route::Unknown);
+    }
+    #[test]
+    fn device_name_is_the_hostname_with_safe_fallbacks() {
+        assert_eq!(normalize_device_name("my-laptop.local", None), "my-laptop");
+        assert_eq!(normalize_device_name("", Some("ci-box")), "ci-box");
+        assert_eq!(normalize_device_name("  ", None), "worker");
+        assert_eq!(normalize_device_name(&"a".repeat(300), None).len(), 128);
+        assert!(!device_name().is_empty());
+    }
+    #[test]
+    fn an_approved_machine_is_not_asked_to_be_approved_again() {
+        let pending = join_summary(
+            &json!({"worker_id": "w1", "state": "pending"}),
+            "ff",
+            "https://s",
+        );
+        assert!(
+            pending.contains("Authorization: pending") && pending.contains("核对控制台指纹后批准")
+        );
+        let approved = join_summary(
+            &json!({"worker_id": "w1", "state": "approved"}),
+            "ff",
+            "https://s",
+        );
+        assert!(
+            approved.contains("Authorization: approved")
+                && !approved.contains("核对控制台指纹后批准")
+        );
+        assert!(approved.contains("无需再次批准"));
     }
 }

@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { request } from "./api";
+import { Icon } from "./icon";
+import { explainModelFailure } from "./model-errors";
 
 type View = {
   provider: string; name: string; has_key: boolean; key_hint: string | null;
@@ -21,7 +23,7 @@ export function ModelSettingsPanel() {
   const [models, setModels] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
+  const [result, setResult] = useState<{ ok: boolean; text: string; detail?: string } | null>(null);
 
   useEffect(() => {
     const show = () => { dialog.current?.showModal(); setOpen(true); };
@@ -53,7 +55,9 @@ export function ModelSettingsPanel() {
   }
   const test = () => run(async () => {
     const r = await request<{ ok: boolean; message: string }>("/api/settings/model/test", { method: "POST", body: JSON.stringify(body()) });
-    setResult({ ok: r.ok, text: r.ok ? "连接正常：模型返回了响应。" : `连接失败：${r.message}` });
+    if (r.ok) return setResult({ ok: true, text: "连接正常：模型返回了响应。" });
+    const failure = explainModelFailure(r.message);
+    setResult({ ok: false, text: `连接失败：${failure.summary}`, detail: failure.detail });
   });
   const save = () => run(async () => {
     show(await request<View>("/api/settings/model", { method: "PUT", body: JSON.stringify(body()) }));
@@ -66,7 +70,7 @@ export function ModelSettingsPanel() {
   });
 
   return <>
-    <button className="enrollment-open" onClick={() => { dialog.current?.showModal(); setOpen(true); }}>模型连接</button>
+    <button className="nav-button sidebar-link sidebar-link-last" onClick={() => { dialog.current?.showModal(); setOpen(true); }}><Icon name="key" />模型连接</button>
     <dialog ref={dialog} className="session-dialog enrollment-dialog" aria-labelledby="model-title" onCancel={close}>
       <div className="dialog-heading"><h2 id="model-title">模型连接</h2><button className="secondary-button" onClick={close} aria-label="关闭模型连接">关闭</button></div>
       <p>模型调用只发生在主节点，API key 不会发送到执行机器，也不会在这里显示。</p>
@@ -85,7 +89,10 @@ export function ModelSettingsPanel() {
         <button className="primary-button" type="submit" disabled={busy || !name.trim() || needsKey || !dirty}>保存</button>{" "}
         {view.source === "console" && <button className="secondary-button" type="button" disabled={busy} onClick={() => void reset()}>恢复为环境变量</button>}
       </form>}
-      {result && <p role="status" className={result.ok ? "" : "form-error"}>{result.text}</p>}
+      {result && <div role="status" className={result.ok ? "" : "form-error"}>
+        <p>{result.text}</p>
+        {result.detail && <details><summary>查看 provider 原始返回</summary><pre className="raw-detail">{result.detail}</pre></details>}
+      </div>}
       {error && <p role="alert">{error}</p>}
     </dialog>
   </>;

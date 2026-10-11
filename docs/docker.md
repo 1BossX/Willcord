@@ -20,7 +20,7 @@
 1. 准备目录，复制 `deploy/docker/compose.yaml`，并在同一目录写 `.env`：
 
    ```bash
-   WORKER_PLANE_VERSION=0.4.0
+   WORKER_PLANE_VERSION=0.4.1
    WORKER_PLANE_SITE=plane.internal:8443
    WORKER_PLANE_PORT=8443
    ```

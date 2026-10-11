@@ -1,6 +1,6 @@
 # Security policy
 
-Willcord / WorkerPlane is pre-1.0 (latest release: v0.4.0). Support is best-effort with no response-time guarantee, and only the latest release receives fixes.
+Willcord / WorkerPlane is pre-1.0 (latest release: v0.4.1). Support is best-effort with no response-time guarantee, and only the latest release receives fixes.
 
 中文摘要：项目处于 1.0 之前的开发与受控验收阶段，仅对最新版本尽力修复。核心前提：Bash 不是沙箱、仅限单管理员、文件与命令输出可能进入模型上下文；CA 指纹只能从可信控制台复制。
 

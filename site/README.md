@@ -21,4 +21,4 @@ Willcord 的静态介绍页，使用 B「错位牵引」品牌图形。纯 HTML 
 
 ## 维护
 
-页面只放产品介绍与安装概览。完整步骤链接到主仓库的 README、安装指南、Docker 部署指南、worker 安装文档和运维手册，不在此处重复。修改命令或参数时，对照 `deploy/install.sh` 和 `worker/src/cli.rs`。不需要另建 `willcord-site` 仓库。
+页面只放产品介绍与安装概览：先 `install.sh`（只安装命令），再 `willcord main init` / `willcord worker join`。完整步骤链接到主仓库的 README、安装指南、Docker 部署指南、worker 安装文档和运维手册，不在此处重复。修改命令或参数时，对照 `deploy/install.sh` 和 `worker/src/cli.rs`。不需要另建 `willcord-site` 仓库。

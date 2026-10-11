@@ -130,4 +130,4 @@ curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- worker --se
 - TLS 失败：确认地址和浏览器/控制台的信任状态。根 CA 变化后，从可信控制台重新复制带新指纹的安装命令；手动 CA 模式则重新运行带新 `--ca` 的安装命令。
 - 用户级与系统级安装各有独立身份，不要克隆数据目录到第二台机器。撤销、未知执行状态和恢复见 [worker 安装与授权](worker-onboarding.md) 与 [运维手册](operations.md)。
 
-安装器与实机验收的历史记录见 [一行安装验收](dev/acceptance/one-line-install.md)。
+安装器与实机验收的历史记录见 [一行安装验收](dev/acceptance/one-line-install.md)。每次发版后以新用户视角走一遍的流程见 [新用户走查流程](dev/acceptance/first-run-walkthrough.md)。

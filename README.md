@@ -54,11 +54,12 @@ curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- worker --se
 
 ## 当前状态
 
-当前版本 v0.3.0，处于开发与受控验收阶段。用于生产前，请在自己的环境完成安全、权限与故障恢复验收。
+当前版本 v0.4.0，处于开发与受控验收阶段。用于生产前，请在自己的环境完成安全、权限与故障恢复验收。
 
 已具备：
 
-- 一行安装主节点与 worker，CA 指纹接入，设备审批与撤销
+- 一行安装主节点与 worker，CA 指纹接入，设备审批与撤销；主节点向导可在 macOS（Docker Desktop）上本机试用
+- 控制台“模型连接”：在线更换 provider、模型与 API key，并先测试连接
 - 固定 worker 与工作目录的会话，read/write/bash 工具，FIFO 调度
 - 执行账本、重连对账与主节点重启恢复
 - 取消、超时、任务预算、分块输出与人工处置

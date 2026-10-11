@@ -13,5 +13,5 @@ url = "wss://localhost:8443/ws/worker"
 workspace_id = "project"
 config_version = 1
 path = "/absolute/project/path"
-repo_id = "github.com/1BossX/Willcord"
+repo_id = "github.com/BossOptional/Willcord"
 is_default = true

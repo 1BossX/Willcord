@@ -15,3 +15,6 @@ data/
 /output/brand/willcord/*.png
 /output/playwright/willcord-brand/*.png
 /output/playwright/willcord-site/*.png
+
+__pycache__/
+*.pyc

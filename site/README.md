@@ -4,7 +4,7 @@ Willcord 的静态介绍页，使用 B「错位牵引」品牌图形。纯 HTML 
 
 ## 发布
 
-通过 `.github/workflows/pages.yml` 发布到 GitHub Pages，地址 https://1bossx.github.io/Willcord/ 。仓库改名后以工作流返回的 `page_url` 为准。
+通过 `.github/workflows/pages.yml` 发布到 GitHub Pages，地址 https://bossoptional.github.io/Willcord/ 。仓库改名后以工作流返回的 `page_url` 为准。
 
 以下情况会自动重新发布：
 

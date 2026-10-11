@@ -86,7 +86,7 @@ test(
       const config = join(dir, `${id}.toml`);
       writeFileSync(
         config,
-        `worker_id = "${id}"\ndata_dir = "${dir}/${id}"\nurl = "wss://localhost:${port}/ws/worker"\n[[workspaces]]\nworkspace_id = "repo"\nconfig_version = 1\npath = "${root}"\nrepo_id = "github.com/1BossX/Willcord"\nis_default = true\n`,
+        `worker_id = "${id}"\ndata_dir = "${dir}/${id}"\nurl = "wss://localhost:${port}/ws/worker"\n[[workspaces]]\nworkspace_id = "repo"\nconfig_version = 1\npath = "${root}"\nrepo_id = "github.com/BossOptional/Willcord"\nis_default = true\n`,
       );
       const env = { ...process.env, WORKER_TOKEN: tokens[id], SSL_CERT_FILE: ca };
       // rustls-native-certs prefers SSL_CERT_DIR over SSL_CERT_FILE when both are set.

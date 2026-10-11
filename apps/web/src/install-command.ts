@@ -1,4 +1,4 @@
-export const installerUrl = "https://1bossx.github.io/Willcord/install.sh";
+export const installerUrl = "https://bossoptional.github.io/Willcord/install.sh";
 export function shellQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }

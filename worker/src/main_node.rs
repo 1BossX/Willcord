@@ -252,8 +252,36 @@ fn compose_quiet(dir: &Path, args: &[&str]) -> bool {
         .is_ok_and(|s| s.success())
 }
 
-/// A deployment directory: `--dir`, else the one this binary was copied into,
-/// else the current directory.
+/// Where `main init` leaves the path of the deployment it made, so the day-to-day
+/// commands work from any directory. Kept apart from a worker's data directory,
+/// which `worker uninstall --delete-data` removes whole.
+fn remembered_file() -> Option<PathBuf> {
+    let base = match std::env::var_os("WILLCORD_CONFIG_DIR") {
+        Some(dir) => PathBuf::from(dir),
+        None => PathBuf::from(std::env::var_os("HOME")?).join(".config/willcord"),
+    };
+    base.is_absolute().then(|| base.join("main-dir"))
+}
+fn remember(dir: &Path) -> Result<(), Error> {
+    let file = remembered_file().ok_or("HOME required")?;
+    crate::cli::private_dir(file.parent().ok_or("no parent")?)?;
+    crate::cli::save(&file, dir.to_string_lossy().as_bytes())
+}
+fn remembered() -> Option<PathBuf> {
+    let text = fs::read_to_string(remembered_file()?).ok()?;
+    let dir = PathBuf::from(text.trim());
+    dir.is_absolute().then_some(dir)
+}
+/// The first of these that holds a compose.yaml, in order of how deliberate the
+/// choice was: the directory this binary sits in, the current one, the last one
+/// `main init` made.
+fn find_deployment(candidates: impl IntoIterator<Item = PathBuf>) -> Option<PathBuf> {
+    candidates
+        .into_iter()
+        .find(|c| c.join("compose.yaml").is_file())
+}
+/// A deployment directory: `--dir`, else where this binary or the shell already
+/// is, else the one `main init` last made.
 fn deployment_dir(args: &mut Vec<String>) -> Result<PathBuf, Error> {
     if let Some(dir) = take_value(args, "--dir")? {
         let dir = PathBuf::from(dir);
@@ -265,12 +293,22 @@ fn deployment_dir(args: &mut Vec<String>) -> Result<PathBuf, Error> {
     let beside = std::env::current_exe()
         .ok()
         .and_then(|e| e.parent().map(Path::to_path_buf));
-    for candidate in beside.into_iter().chain(std::env::current_dir().ok()) {
-        if candidate.join("compose.yaml").is_file() {
-            return Ok(candidate);
-        }
+    let local = beside.into_iter().chain(std::env::current_dir().ok());
+    if let Some(dir) = find_deployment(local) {
+        return Ok(dir);
     }
-    Err("找不到部署目录（没有 compose.yaml）：请在部署目录里运行，或用 --dir 指定。".into())
+    match remembered() {
+        Some(dir) if dir.join("compose.yaml").is_file() => Ok(dir),
+        Some(dir) => Err(format!(
+            "上次部署的目录 {} 已经不在了（没有 compose.yaml）：用 --dir 指定新的位置。",
+            dir.display()
+        )
+        .into()),
+        None => Err(
+            "找不到部署目录（没有 compose.yaml）：请用 --dir 指定，或先运行 willcord main init。"
+                .into(),
+        ),
+    }
 }
 
 enum Health {
@@ -615,7 +653,8 @@ async fn init(mut args: Vec<String>) -> Result<(), Error> {
         eprintln!("{RECOVERY}");
         return Err(e);
     }
-    // Keep a copy of this binary beside the deployment: `./willcord main status`.
+    // Keep a copy of this binary beside the deployment, and remember where the
+    // deployment is, so `willcord main status` works from any directory.
     let beside = dir.join("willcord");
     if std::env::current_exe().ok().as_deref() != Some(beside.as_path()) {
         if let Ok(exe) = std::env::current_exe() {
@@ -623,11 +662,15 @@ async fn init(mut args: Vec<String>) -> Result<(), Error> {
                 .and_then(|_| fs::set_permissions(&beside, fs::Permissions::from_mode(0o755)));
         }
     }
+    if let Err(e) = remember(&dir) {
+        eprintln!("提示：没能记住部署目录（{e}）；之后的 willcord main 命令请加 --dir。");
+    }
     println!(
         "\n主节点已就绪：{}\n根证书：{}/ca.pem",
         origin.server,
         dir.display()
     );
+    let command = crate::path_install::ensure(crate::path_install::Scope::User, &beside);
     println!("\n下一步：\n1. 让浏览器信任根证书，否则控制台会提示证书不安全。");
     trust_hint(&dir.join("ca.pem"));
     println!(
@@ -635,8 +678,7 @@ async fn init(mut args: Vec<String>) -> Result<(), Error> {
         origin.server
     );
     println!(
-        "日常管理：cd {} && ./willcord main status | logs | down | up | upgrade --image-version vX.Y.Z",
-        shell_quote(&dir)
+        "日常管理（在任意目录）：{command} main status | logs | down | up | upgrade --image-version vX.Y.Z"
     );
     if is_macos() {
         println!(
@@ -726,6 +768,28 @@ async fn upgrade(mut args: Vec<String>) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_nearest_deployment_wins() {
+        let root = std::env::temp_dir().join(format!("wc-find-{}", uuid::Uuid::new_v4()));
+        let (a, b, none) = (root.join("a"), root.join("b"), root.join("none"));
+        for d in [&a, &b, &none] {
+            fs::create_dir_all(d).unwrap();
+        }
+        for d in [&a, &b] {
+            fs::write(d.join("compose.yaml"), "").unwrap();
+        }
+        assert_eq!(
+            find_deployment([none.clone(), b.clone(), a.clone()]),
+            Some(b.clone())
+        );
+        assert_eq!(find_deployment([none.clone()]), None);
+        assert_eq!(find_deployment([]), None);
+        // A directory named compose.yaml is not a deployment.
+        fs::create_dir_all(none.join("compose.yaml")).unwrap();
+        assert_eq!(find_deployment([none, a.clone()]), Some(a));
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn origins_are_normalised_and_bounded() {

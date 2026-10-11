@@ -21,7 +21,7 @@ curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- worker --se
 
 CA 指纹接入从 v0.3.0 起提供，主节点与 worker 须同为 v0.3.0 或更新版本。更早的版本使用[手动 CA 兼容流程](#手动-ca-兼容流程)。
 
-安装器仅在获取 `/.well-known/willcord/ca.pem` 时暂不验证证书，不携带登录凭据、不跟随重定向，并限制响应大小。核对根证书指纹后，所有 HTTPS/WSS 请求恢复完整证书链及主机名验证。错误指纹会在安装前退出。不要从同一条未经验证的连接取得并信任指纹；应从已信任的控制台或管理员渠道复制。
+`willcord` 仅在获取 `/.well-known/willcord/ca.pem` 这一个请求中暂不验证证书，不携带登录凭据、不跟随重定向，并限制响应大小。核对根证书指纹后，所有 HTTPS/WSS 请求恢复完整证书链及主机名验证。错误指纹会在安装前退出，什么都不会安装。不要从同一条未经验证的连接取得并信任指纹；应从已信任的控制台或管理员渠道复制。
 
 系统级安装仍需 `--system --user 'ops'`。手动 `--ca '/absolute/ca.pem'` 继续可用；公共证书或系统已信任的内部 CA 可不带这两项。`--ca` 与 `--ca-fingerprint` 不能同时使用。自动取得的 CA 会保存到安装目录，后续命令及服务自动复用。
 
@@ -35,7 +35,7 @@ CA 指纹接入从 v0.3.0 起提供，主节点与 worker 须同为 v0.3.0 或�
 curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- main
 ```
 
-安装器只下载并校验 `willcord` 二进制，随后交给它的 `willcord main init` 完成配置（下载的是同一个二进制，之后也用它管理主节点）。向导通过终端收集 HTTPS 地址（默认 `https://plane.internal:8443`）、模型 provider/name、API key 和至少 16 字符的管理员密码。密钥输入不回显。provider 不区分大小写，拼错会立即提示并列出可选值；只有 openrouter 有默认模型，其他 provider 需要自己填写模型名称。向导结束时会给出信任根证书的命令（macOS 与 Debian/Ubuntu）。也可以预先指定地址和目录：
+安装器只下载并校验 `willcord` 二进制，随后交给它的 `willcord main init` 完成配置（下载的是同一个二进制，之后也用它管理主节点）。向导通过终端收集 HTTPS 地址（默认 `https://plane.internal:8443`）、模型 provider/name、API key 和至少 16 字符的管理员密码。密钥输入不回显。provider 不区分大小写，拼错会立即提示并列出可选值；只有 openrouter 有默认模型，其他 provider 需要自己填写模型名称。向导结束时会给出信任根证书的命令（macOS 与 Debian/Ubuntu），并把 `willcord` 命令装到 PATH（见[下文](#willcord-命令放在哪里)）。也可以预先指定地址和目录：
 
 ```sh
 curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- main --server 'https://plane.internal:8443' --dir '/opt/my-plane'
@@ -49,15 +49,17 @@ curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- main --serv
 
 **启动失败**：配置和数据卷会保留。在部署目录执行 `docker compose logs main caddy`，检查主机名解析、端口及模型配置；修复后 `docker compose up -d`。确认 HTTPS 就绪后从 `main.env` 删除 `INITIAL_ADMIN_PASSWORD`，再执行 `docker compose up -d main`。不要通过重跑向导覆盖既有部署。
 
-**日常管理**：向导会把 `willcord` 复制到部署目录，在那里（或用 `--dir` 指定）运行：
+**日常管理**：在任意目录直接运行 `willcord main …`。向导记住了它刚创建的部署目录；在另一个部署目录里运行，或用 `--dir` 指定，则以那个为准。
 
 ```sh
-./willcord main status                      # 容器状态，加上用部署自己的 CA 检查 /health
-./willcord main logs main caddy --tail 100  # 其余参数原样交给 docker compose logs
-./willcord main down                        # 停止，数据卷保留
-./willcord main up
-./willcord main upgrade --image-version vX.Y.Z   # 改 .env 里的镜像版本，pull 并重启
+willcord main status                      # 容器状态，加上用部署自己的 CA 检查 /health
+willcord main logs main caddy --tail 100  # 其余参数原样交给 docker compose logs
+willcord main down                        # 停止，数据卷保留
+willcord main up
+willcord main upgrade --image-version vX.Y.Z   # 改 .env 里的镜像版本，pull 并重启
 ```
+
+查找顺序：`--dir`，然后是 `willcord` 所在目录、当前目录，最后是上次 `main init` 记下的目录（保存在 `~/.config/willcord/main-dir`）。记下的目录不存在时会直接指出路径，而不是悄悄换一个。
 
 升级前先按 [Docker 指南](docker.md#升级)备份；`main upgrade` 不会替你备份，也不会改写 `compose.yaml`。
 
@@ -106,9 +108,24 @@ Linux 需要 systemd 用户会话；管理员可以通过 `loginctl enable-linge
 curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- worker --server 'https://plane.internal:8443' --ca-fingerprint '<控制台提供的64位指纹>' --system --user 'ops'
 ```
 
-支持 Linux/macOS x86_64/arm64；Linux 二进制需要 glibc 2.17 或更新。安装器自动选择文件并校验 SHA-256，核对 CA 指纹，再安装服务并提交加入申请。CA 被保存到安装目录，后台服务及后续 CLI 自动使用。安装不修改 PATH，命令输出会给出带引号的绝对路径。
+支持 Linux/macOS x86_64/arm64；Linux 二进制需要 glibc 2.17 或更新。安装器自动选择文件并校验 SHA-256，然后交给 `willcord worker join` 一步完成：核对 CA 指纹、安装服务、提交加入申请。CA 被保存到安装目录，后台服务及后续 CLI 自动使用。`willcord` 命令同时装到 PATH（见[下文](#willcord-命令放在哪里)），之后的命令都直接写 `willcord worker …`。
 
 **成功标志**：终端显示节点 ID、公钥 SHA-256 指纹及授权状态。申请成功并不意味着已经可执行。
+
+### willcord 命令放在哪里
+
+主节点向导和 worker 安装器都会把同一个 `willcord` 放到固定位置，所以先装哪一个都行：
+
+| 安装方式 | 命令位置 |
+|---|---|
+| 用户级（主节点向导、个人电脑的 worker） | `~/.local/bin/willcord` |
+| 系统级 worker（`--system`） | `/usr/local/bin/willcord` |
+
+- 目录不在 `PATH` 里时，安装器只打印一行 `export PATH="$HOME/.local/bin:$PATH"`，不会改 `~/.zshrc` 等任何 shell 配置文件；想永久生效请自己加进去。
+- 该位置已有不是 willcord 安装的同名文件时，不覆盖，并告诉你；服务照常运行，命令则继续显示带引号的绝对路径。
+- 服务运行的是它自己数据目录里的那份，不是 PATH 上这份。替换或删除 PATH 上的命令不会影响正在运行的服务；重新运行安装命令即升级。
+- worker 的 `uninstall` 会保留 PATH 上的命令（主节点命令也在用它）。不再需要时运行 `willcord self-uninstall`（系统级加 `sudo` 和 `--system`），它只删除 willcord 自己装的那份。
+- 也可以手动放置：`willcord self-install [--system]`。
 
 ## 4. 在控制台授权
 
@@ -122,7 +139,7 @@ curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- worker --se
 | 需要核对 | 有无法证明执行状态的调用，按运维手册人工处置 |
 | 可执行 | 在线、完成对账且空闲，可以创建会话 |
 
-后台服务每 5 秒检查授权。后续诊断使用安装器输出的 `willcord worker status --json` 命令；系统级命令带 `--system`。
+后台服务每 5 秒检查授权。后续诊断使用 `willcord worker status --json`；系统级命令前加 `sudo`、后面带 `--system`。
 
 ## 5. 第一个任务
 

@@ -19,7 +19,7 @@ test("managed worker joins with a stable identity, runs in automatic workspace, 
  const start=()=>{worker=spawn(binary,["worker","run"],{env:{...env,SSL_CERT_FILE:join(dir,"ca.pem")},stdio:["ignore","ignore","pipe"]});worker.stderr!.on("data",d=>errors+=d);};
  const stop=async()=>{if(worker&&worker.exitCode===null&&worker.signalCode===null){worker.kill("SIGTERM");await waitFor(()=>worker!.exitCode!==null||worker!.signalCode!==null);}};
  try{
-  const joined = await cli("join",s.proxy.url.replace("wss:","https:").replace("/ws/worker",""));
+  const joined = await cli("join","--no-service",s.proxy.url.replace("wss:","https:").replace("/ws/worker",""));
   const first=s.one("SELECT worker_id FROM enrollments"),id=first.worker_id;
   assert.ok(joined.stdout.includes(`Fingerprint (SHA-256 of public key): ${id}`));
   // After installation, every CLI operation and the background process should
@@ -29,7 +29,7 @@ test("managed worker joins with a stable identity, runs in automatic workspace, 
   env.SSL_CERT_FILE = join(dir,"missing-explicit-ca.pem");
   assert.ok(JSON.parse((await cli("status","--json")).stdout).last_error, "explicit CA must take precedence over the saved copy");
   delete env.SSL_CERT_FILE;
-  await cli("join",s.proxy.url.replace("wss:","https:").replace("/ws/worker",""));
+  await cli("join","--no-service",s.proxy.url.replace("wss:","https:").replace("/ws/worker",""));
   assert.equal(s.all("SELECT * FROM enrollments").length,1);
   assert.equal(statSync(join(dir,"identity.pk8")).mode&0o777,0o600);
   assert.equal(statSync(dir).mode&0o777,0o700);

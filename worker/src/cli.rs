@@ -227,20 +227,104 @@ fn copy_user_ca(dir: &Path, explicit: Option<PathBuf>) -> Result<(), Error> {
 pub(crate) fn shell_quote(value: &Path) -> String {
     format!("'{}'", value.to_string_lossy().replace('\'', "'\\''"))
 }
-async fn client() -> Result<reqwest::Client, Error> {
+fn client_trusting(ca: Option<&Path>) -> Result<reqwest::Client, Error> {
     let mut b = reqwest::Client::builder()
         .https_only(true)
         .redirect(reqwest::redirect::Policy::none())
         .timeout(std::time::Duration::from_secs(15));
-    let ca = std::env::var_os("SSL_CERT_FILE")
-        .map(PathBuf::from)
-        .or_else(|| SYSTEM_CA.get().cloned());
     if let Some(p) = ca {
         for cert in reqwest::Certificate::from_pem_bundle(&fs::read(p)?)? {
             b = b.add_root_certificate(cert);
         }
     }
     Ok(b.build()?)
+}
+async fn client() -> Result<reqwest::Client, Error> {
+    let ca = std::env::var_os("SSL_CERT_FILE")
+        .map(PathBuf::from)
+        .or_else(|| SYSTEM_CA.get().cloned());
+    client_trusting(ca.as_deref())
+}
+/// The root certificate a main node publishes for first contact. This is the one
+/// request made without verifying the server, which is only safe because the
+/// certificate it returns must match a fingerprint the person got out of band,
+/// and nothing else from that connection is used. Returns a private temporary file.
+async fn fetch_pinned_ca(base: &str, fingerprint: &str) -> Result<PathBuf, Error> {
+    const LIMIT: usize = 64 * 1024;
+    if fingerprint.len() != 64 || !fingerprint.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("CA 指纹必须是证书 DER 的 64 位 SHA-256。".into());
+    }
+    let client = reqwest::Client::builder()
+        .https_only(true)
+        .danger_accept_invalid_certs(true)
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(15))
+        .build()?;
+    let mut response = client
+        .get(format!("{base}/.well-known/willcord/ca.pem"))
+        .send()
+        .await
+        .and_then(|r| r.error_for_status())
+        .map_err(|e| format!("根证书获取失败：{e}"))?;
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        body.extend_from_slice(&chunk);
+        if body.len() > LIMIT {
+            return Err("根证书响应过大。".into());
+        }
+    }
+    let pem = pinned_ca_pem(&body, fingerprint)?;
+    let path = std::env::temp_dir().join(format!("willcord-ca-{}.pem", uuid::Uuid::new_v4()));
+    use std::os::unix::fs::OpenOptionsExt;
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)?
+        .write_all(pem.as_bytes())?;
+    Ok(path)
+}
+/// A single certificate whose DER hashes to `fingerprint`, as clean PEM; anything
+/// else the response carried is dropped.
+fn pinned_ca_pem(body: &[u8], fingerprint: &str) -> Result<String, Error> {
+    let text = std::str::from_utf8(body).map_err(|_| "根证书不是文本 PEM。")?;
+    if text.matches("-----BEGIN CERTIFICATE-----").count() != 1
+        || text.matches("-----END CERTIFICATE-----").count() != 1
+    {
+        return Err("必须提供单张根证书。".into());
+    }
+    // Must be something rustls would accept as a trust anchor, not merely base64.
+    reqwest::Certificate::from_pem(body).map_err(|_| "根证书格式无效。")?;
+    let inner = text
+        .split_once("-----BEGIN CERTIFICATE-----")
+        .and_then(|(_, rest)| rest.split_once("-----END CERTIFICATE-----"))
+        .map(|(inner, _)| inner.split_whitespace().collect::<String>())
+        .ok_or("根证书格式无效。")?;
+    let der = B64.decode(inner).map_err(|_| "根证书格式无效。")?;
+    if format!("{:x}", Sha256::digest(&der)) != fingerprint.to_ascii_lowercase() {
+        return Err("CA 指纹不匹配，未安装或申请加入。".into());
+    }
+    let b64 = B64.encode(&der);
+    let mut pem = String::from("-----BEGIN CERTIFICATE-----\n");
+    for line in b64.as_bytes().chunks(64) {
+        pem.push_str(std::str::from_utf8(line)?);
+        pem.push('\n');
+    }
+    pem.push_str("-----END CERTIFICATE-----\n");
+    Ok(pem)
+}
+/// Before anything is installed: does the main node answer HTTPS under this trust?
+async fn check_main_node(base: &str, ca: Option<&Path>) -> Result<(), Error> {
+    let client = client_trusting(ca)?;
+    client
+        .get(format!("{base}/health"))
+        .timeout(std::time::Duration::from_secs(15))
+        .send()
+        .await
+        .and_then(|r| r.error_for_status())
+        .map_err(|e| format!("无法通过 CA 验证主节点 HTTPS，请检查证书、地址与网络：{e}"))?;
+    Ok(())
 }
 pub async fn proof(dir: &Path, action: &str) -> Result<Value, Error> {
     let meta: Value = serde_json::from_slice(&fs::read(dir.join("enrollment.json"))?)?;
@@ -539,9 +623,49 @@ fn service(dir: &Path, sys: Option<&System>, install: bool) -> Result<(), Error>
     }
     Ok(())
 }
-fn install_system(root: &Path, user: Option<&str>) -> Result<System, Error> {
+/// Copy this binary into the data directory, put the command on PATH, and
+/// (re)start the service. Returns the installed copy and the command to show in hints.
+async fn install_service(
+    dir: &Path,
+    sys: Option<&System>,
+    ca: Option<PathBuf>,
+) -> Result<(PathBuf, String), Error> {
+    if worker_running(dir) {
+        proof(dir, "workspace").await?;
+    }
+    use std::os::unix::fs::PermissionsExt;
+    let (target, mode) = match sys {
+        Some(s) => (s.root.join("bin/willcord"), 0o755),
+        None => {
+            copy_user_ca(dir, ca)?;
+            private_dir(&dir.join("bin"))?;
+            (dir.join("bin/willcord"), 0o700)
+        }
+    };
+    let current = std::env::current_exe()?;
+    if current != target {
+        save(&target, &fs::read(current)?)?;
+        fs::set_permissions(&target, fs::Permissions::from_mode(mode))?;
+    }
+    let marker = sys.map_or_else(|| dir.to_owned(), |s| s.root.clone());
+    if sys.is_some() {
+        save_public(&marker.join("managed-install"), b"willcord-managed-v1")?;
+    } else {
+        save(&marker.join("managed-install"), b"willcord-managed-v1")?;
+    }
+    service(dir, sys, true)?;
+    let scope = if sys.is_some() {
+        Scope::System
+    } else {
+        Scope::User
+    };
+    let command = crate::path_install::ensure(scope, &target);
+    Ok((target, command))
+}
+use crate::path_install::Scope;
+fn install_system(root: &Path, user: Option<&str>, ca: Option<PathBuf>) -> Result<System, Error> {
     if unsafe { libc::geteuid() } != 0 {
-        return Err("install --system must run as root (sudo)".into());
+        return Err("a system service must be installed as root (sudo)".into());
     }
     let user = user
         .ok_or("install --system requires --user ACCOUNT, the existing account commands run as")?;
@@ -568,7 +692,7 @@ fn install_system(root: &Path, user: Option<&str>) -> Result<System, Error> {
     }
     // Root can read a CA the service account cannot (under /root or a 0700
     // home), so keep a public copy inside the install root.
-    let ca = match std::env::var_os("SSL_CERT_FILE") {
+    let ca = match ca {
         Some(p) => {
             let pem = fs::read(p)?;
             let copy = root.join("ca.pem");
@@ -616,9 +740,9 @@ fn normalize_device_name(host: &str, env: Option<&str>) -> String {
     }
     "worker".into()
 }
-/// What `install` tells the person to run next: the `worker join` command that
-/// lives under the `worker` namespace, with the real path to the installed binary.
-fn install_next_step(system_user: Option<&str>, binary: &Path, attempted: bool) -> String {
+/// What `install` tells the person to run next: the `worker join` command under
+/// the `worker` namespace, spelled the way it can be run (`command`).
+fn install_next_step(system_user: Option<&str>, command: &str, attempted: bool) -> String {
     let note = if attempted {
         " (a join was already attempted; this shows its current state)"
     } else {
@@ -626,17 +750,21 @@ fn install_next_step(system_user: Option<&str>, binary: &Path, attempted: bool) 
     };
     match system_user {
         Some(user) => format!(
-            "Installed as a system service running as {user}. Next: sudo {} worker join --system <server-https-origin>{note}",
-            shell_quote(binary)
+            "Installed as a system service running as {user}. Next: sudo {command} worker join --system <server-https-origin>{note}"
         ),
-        None => format!(
-            "Installed. Next: {} worker join <server-https-origin>{note}",
-            shell_quote(binary)
-        ),
+        None => format!("Installed. Next: {command} worker join <server-https-origin>{note}"),
+    }
+}
+/// The command that shows this machine's state, as it can be typed.
+fn status_command(command: &str, system: bool) -> String {
+    if system {
+        format!("sudo {command} worker status --system --json")
+    } else {
+        format!("{command} worker status --json")
     }
 }
 /// What `join` tells the person: an already approved machine has nothing left to approve.
-fn join_summary(state: &Value, fingerprint: &str, base: &str) -> String {
+fn join_summary(state: &Value, fingerprint: &str, base: &str, status: &str) -> String {
     let authorization = state["state"].as_str().unwrap_or("unknown");
     let next = match authorization {
         "approved" => "本机已获授权，无需再次批准；等待控制台显示“可执行”后即可使用。",
@@ -645,19 +773,173 @@ fn join_summary(state: &Value, fingerprint: &str, base: &str) -> String {
         _ => "请在控制台查看本机的授权状态。",
     };
     format!(
-        "Node: {}\nFingerprint (SHA-256 of public key): {fingerprint}\nAuthorization: {authorization}\nConsole: {base}\nNext: {next}",
+        "Node: {}\nFingerprint (SHA-256 of public key): {fingerprint}\nAuthorization: {authorization}\nConsole: {base}\nNext: {next}\nStatus: {status}",
         state["worker_id"].as_str().unwrap_or("unknown"),
     )
+}
+/// A bare HTTPS origin, without a trailing slash.
+fn https_origin(raw: &str) -> Result<String, Error> {
+    let url = reqwest::Url::parse(raw)?;
+    if url.scheme() != "https"
+        || url.host_str().is_none()
+        || url.path() != "/"
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return Err("join requires an HTTPS origin".into());
+    }
+    Ok(url.as_str().trim_end_matches('/').to_owned())
+}
+/// The CA an earlier install of this scope saved.
+fn saved_ca(system: bool) -> Option<PathBuf> {
+    if system {
+        read_system(&system_root().ok()?).ok()?.ca
+    } else {
+        user_ca(&root().ok()?)
+    }
+}
+/// The service copy differs from this binary, or is missing.
+fn install_needed(system: bool) -> Result<bool, Error> {
+    let target = if system {
+        system_root()?.join("bin/willcord")
+    } else {
+        root()?.join("bin/willcord")
+    };
+    let current = std::env::current_exe()?;
+    if !target.is_file() {
+        return Ok(true);
+    }
+    if fs::canonicalize(&target)? == fs::canonicalize(&current)? {
+        return Ok(false);
+    }
+    Ok(fs::read(&target)? != fs::read(&current)?)
+}
+/// A user service needs a session to live in; saying so beforehand beats failing
+/// halfway through an install.
+fn session_available(system: bool) -> Result<(), Error> {
+    if system {
+        return Ok(());
+    }
+    let (ok, why) = if cfg!(target_os = "macos") {
+        (
+            Command::new("launchctl")
+                .args(["print", &format!("gui/{}", unsafe { libc::getuid() })])
+                .output()
+                .is_ok_and(|o| o.status.success()),
+            "macOS 用户级服务需要登录图形会话。",
+        )
+    } else {
+        (
+            Command::new("systemctl")
+                .args(["--user", "show-environment"])
+                .output()
+                .is_ok_and(|o| o.status.success()),
+            "需要 systemd 用户会话；常驻服务器请用 --system --user ACCOUNT。",
+        )
+    };
+    if ok { Ok(()) } else { Err(why.into()) }
+}
+/// `willcord worker join URL`, on a machine where the service is not installed
+/// yet (or is an older build): install it, then join through the installed copy.
+/// `--ca FILE` or `--ca-fingerprint SHA256` says whom to trust for a private CA.
+/// Returns false when there is nothing to install and the plain join should run.
+async fn join_installing(args: &[String]) -> Result<bool, Error> {
+    let mut probe = args.to_vec();
+    let ca = take_value(&mut probe, "--ca")?;
+    let fingerprint = take_value(&mut probe, "--ca-fingerprint")?;
+    let system = take_flag(&mut probe, "--system");
+    let account = take_value(&mut probe, "--user")?;
+    if ca.is_some() && fingerprint.is_some() {
+        return Err("--ca 与 --ca-fingerprint 不能同时使用。".into());
+    }
+    if ca.is_none() && fingerprint.is_none() && !install_needed(system)? {
+        return Ok(false);
+    }
+    if probe.len() != 2 {
+        return Err("usage: willcord worker join URL [--ca FILE | --ca-fingerprint SHA256] [--system --user ACCOUNT]".into());
+    }
+    let base = https_origin(&probe[1])?;
+    let unix_euid = unsafe { libc::geteuid() };
+    if system {
+        if account.is_none() {
+            return Err("--system 需要 --user 指定已有普通账户。".into());
+        }
+        if unix_euid != 0 {
+            return Err("系统级安装需要 root：请用 sudo 运行。".into());
+        }
+    } else {
+        if account.is_some() {
+            return Err("--user 只能与 --system 一起使用。".into());
+        }
+        if unix_euid == 0 {
+            return Err("用户级安装请不要使用 sudo；服务器请指定 --system --user。".into());
+        }
+    }
+    if let Some(file) = &ca {
+        let path = Path::new(file);
+        if !path.is_absolute() || !path.is_file() || fs::File::open(path).is_err() {
+            return Err("CA 必须是可读的绝对文件路径。".into());
+        }
+    }
+    session_available(system)?;
+    let temporary = match &fingerprint {
+        Some(fp) => {
+            let path = fetch_pinned_ca(&base, fp).await?;
+            println!("CA 指纹已核对：{}", fp.to_ascii_lowercase());
+            Some(path)
+        }
+        None => None,
+    };
+    let ca_file = temporary
+        .clone()
+        .or_else(|| ca.map(PathBuf::from))
+        .or_else(|| std::env::var_os("SSL_CERT_FILE").map(PathBuf::from))
+        // Re-running the installer to upgrade needs no CA again: the first install kept it.
+        .or_else(|| saved_ca(system));
+    let installed = async {
+        check_main_node(&base, ca_file.as_deref()).await?;
+        let (sys, dir) = if system {
+            let sys = install_system(&system_root()?, account.as_deref(), ca_file.clone())?;
+            let dir = sys.data();
+            (Some(sys), dir)
+        } else {
+            let dir = root()?;
+            private_dir(&dir)?;
+            (None, dir)
+        };
+        let (target, _) = install_service(&dir, sys.as_ref(), ca_file.clone()).await?;
+        Ok::<PathBuf, Error>(target)
+    }
+    .await;
+    if let Some(path) = temporary {
+        let _ = fs::remove_file(path);
+    }
+    let target = installed?;
+    // The installed copy joins, so the service and the join run the same build.
+    let mut join = Command::new(target);
+    join.args(["worker", "join"]);
+    if system {
+        join.arg("--system");
+    }
+    let status = join.arg(&base).status()?;
+    std::process::exit(status.code().unwrap_or(1));
 }
 const USAGE: &str = "usage:
   willcord main init [--dir DIR] [--server HTTPS_ORIGIN] [--image-version vX.Y.Z]
   willcord main up | down | status | logs [SERVICE...] | upgrade --image-version vX.Y.Z   (add --dir DIR outside the deployment directory)
-  willcord worker install [--system --user ACCOUNT] | join URL | status [--json] | workspace add ID PATH | workspace list | run [--config FILE] | uninstall [--delete-data]   (add --system to manage the system service)
+  willcord worker install [--system --user ACCOUNT] | join URL [--ca FILE | --ca-fingerprint SHA256] [--system --user ACCOUNT] [--no-service] | status [--json] | workspace add ID PATH | workspace list | run [--config FILE] | uninstall [--delete-data]   (add --system to manage the system service)
+  willcord self-install | self-uninstall [--system]   (put this program on PATH, or take it off again)
   willcord version";
 /// A mistyped command is not a failure with a backtrace-style message: say so plainly and exit.
 fn usage_error(command: Option<&str>) -> ! {
     if let Some(command) = command {
         eprintln!("willcord: unknown command '{command}'");
+        // The worker commands used to be top-level.
+        if COMMANDS.contains(&command) {
+            eprintln!("你是不是想运行：willcord worker {command} …");
+        }
     }
     eprintln!("{USAGE}");
     std::process::exit(2)
@@ -695,6 +977,32 @@ pub async fn dispatch() -> Result<Option<PathBuf>, Error> {
         Some("worker") => {
             args.remove(0);
         }
+        Some(command @ ("self-install" | "self-uninstall")) => {
+            let command = command.to_owned();
+            args.remove(0);
+            let scope = if take_flag(&mut args, "--system") {
+                crate::path_install::Scope::System
+            } else {
+                crate::path_install::Scope::User
+            };
+            if let Some(extra) = args.first() {
+                return Err(format!("unexpected argument '{extra}'\n{USAGE}").into());
+            }
+            let text = if command == "self-install" {
+                match crate::path_install::install_running(scope)? {
+                    // Exit status 0 would claim a command that is not there.
+                    (crate::path_install::Installed::Foreign, text) => {
+                        eprintln!("{text}");
+                        std::process::exit(1);
+                    }
+                    (_, text) => text,
+                }
+            } else {
+                crate::path_install::uninstall_running(scope)?.1
+            };
+            println!("{text}");
+            return Ok(None);
+        }
         Some("version" | "-V" | "--version") => {
             println!("willcord {}", crate::main_node::version().unwrap_or("dev"));
             return Ok(None);
@@ -720,6 +1028,16 @@ async fn worker(mut args: Vec<String>) -> Result<Option<PathBuf>, Error> {
         }
         Route::Unknown => usage_error(Some(command)),
     }
+    // `join --no-service` only files the request, for a process managed some other way.
+    let no_service = command == "join" && take_flag(&mut args, "--no-service");
+    if no_service && args.iter().any(|a| a == "--ca" || a == "--ca-fingerprint") {
+        return Err(
+            "--no-service 不安装服务，也就不保存 CA：不能与 --ca、--ca-fingerprint 同用。".into(),
+        );
+    }
+    if command == "join" && !no_service && join_installing(&args).await? {
+        return Ok(None);
+    }
     // A hand-installed service names its configuration file instead of
     // enrolling: `willcord worker run --config /etc/willcord/worker.toml`.
     if command == "run" {
@@ -729,8 +1047,8 @@ async fn worker(mut args: Vec<String>) -> Result<Option<PathBuf>, Error> {
     }
     let system = take_flag(&mut args, "--system");
     let account = take_value(&mut args, "--user")?;
-    if account.is_some() && !(system && command == "install") {
-        return Err("--user only applies to install --system".into());
+    if account.is_some() && !(system && ["install", "join"].contains(&command)) {
+        return Err("--user only applies to install --system and join --system".into());
     }
     if system && command == "run" {
         return Err("run takes WILLCORD_HOME from the service definition".into());
@@ -738,7 +1056,8 @@ async fn worker(mut args: Vec<String>) -> Result<Option<PathBuf>, Error> {
     let sys = if !system {
         None
     } else if command == "install" {
-        Some(install_system(&system_root()?, account.as_deref())?)
+        let ca = std::env::var_os("SSL_CERT_FILE").map(PathBuf::from);
+        Some(install_system(&system_root()?, account.as_deref(), ca)?)
     } else {
         Some(read_system(&system_root()?)?)
     };
@@ -771,52 +1090,21 @@ async fn worker(mut args: Vec<String>) -> Result<Option<PathBuf>, Error> {
     let sys = sys.as_ref();
     match command {
         "install" => {
-            if worker_running(&dir) {
-                proof(&dir, "workspace").await?;
-            }
-            use std::os::unix::fs::PermissionsExt;
-            let (target, mode) = match sys {
-                Some(s) => (s.root.join("bin/willcord"), 0o755),
-                None => {
-                    copy_user_ca(&dir, std::env::var_os("SSL_CERT_FILE").map(PathBuf::from))?;
-                    private_dir(&dir.join("bin"))?;
-                    (dir.join("bin/willcord"), 0o700)
-                }
-            };
-            let current = std::env::current_exe()?;
-            if current != target {
-                save(&target, &fs::read(current)?)?;
-                fs::set_permissions(&target, fs::Permissions::from_mode(mode))?;
-            }
-            let marker = sys.map_or_else(|| dir.clone(), |s| s.root.clone());
-            if sys.is_some() {
-                save_public(&marker.join("managed-install"), b"willcord-managed-v1")?;
-            } else {
-                save(&marker.join("managed-install"), b"willcord-managed-v1")?;
-            }
-            service(&dir, sys, true)?;
+            let ca = std::env::var_os("SSL_CERT_FILE").map(PathBuf::from);
+            let (target, command) = install_service(&dir, sys, ca).await?;
             println!("Service: {}", service_name(&dir));
             // enrollment.json is written before the request is sent, so it proves an
             // attempt, not an accepted one: always point at `join` for the real state.
             let attempted = dir.join("enrollment.json").exists();
+            let _ = target;
             println!(
                 "{}",
-                install_next_step(sys.map(|s| s.user.as_str()), &target, attempted)
+                install_next_step(sys.map(|s| s.user.as_str()), &command, attempted)
             );
         }
         "join" => {
-            let url = reqwest::Url::parse(args.get(1).ok_or("join requires HTTPS URL")?)?;
-            if url.scheme() != "https"
-                || url.host_str().is_none()
-                || url.path() != "/"
-                || url.query().is_some()
-                || url.fragment().is_some()
-                || !url.username().is_empty()
-                || url.password().is_some()
-            {
-                return Err("join requires an HTTPS origin".into());
-            }
-            let base = url.as_str().trim_end_matches('/');
+            let base = https_origin(args.get(1).ok_or("join requires HTTPS URL")?)?;
+            let base = base.as_str();
             if dir.join("enrollment.json").exists() {
                 if !dir.join("identity.pk8").exists() {
                     return Err(
@@ -836,12 +1124,19 @@ async fn worker(mut args: Vec<String>) -> Result<Option<PathBuf>, Error> {
             }
             setup(&dir, base)?;
             let state = proof(&dir, "apply").await?;
+            let scope = if sys.is_some() {
+                Scope::System
+            } else {
+                Scope::User
+            };
+            let command = crate::path_install::command_for(scope, &std::env::current_exe()?);
             println!(
                 "{}",
                 join_summary(
                     &state,
                     &format!("{:x}", Sha256::digest(public(&identity(&dir)?))),
-                    base
+                    base,
+                    &status_command(&command, sys.is_some()),
                 )
             );
         }
@@ -971,6 +1266,20 @@ async fn worker(mut args: Vec<String>) -> Result<Option<PathBuf>, Error> {
                 fs::remove_dir_all(&installed)?;
             }
             println!("Uninstalled");
+            let scope = if sys.is_some() {
+                Scope::System
+            } else {
+                Scope::User
+            };
+            if crate::path_install::bin_dir(scope)
+                .is_ok_and(|d| crate::path_install::is_ours(&d.join("willcord")))
+            {
+                println!(
+                    "willcord 命令仍留在 PATH（主节点命令也用它）。不再需要时运行：{}willcord self-uninstall{}",
+                    if sys.is_some() { "sudo " } else { "" },
+                    if sys.is_some() { " --system" } else { "" }
+                );
+            }
         }
         _ => unreachable!(),
     }
@@ -1123,17 +1432,103 @@ mod tests {
     }
     #[test]
     fn the_next_step_after_install_is_a_worker_command() {
-        let bin = Path::new("/w/it's/bin/willcord");
-        let user = install_next_step(None, bin, false);
+        let user = install_next_step(None, "willcord", false);
         assert_eq!(
             user,
-            "Installed. Next: '/w/it'\\''s/bin/willcord' worker join <server-https-origin>"
+            "Installed. Next: willcord worker join <server-https-origin>"
         );
-        let system = install_next_step(Some("ops"), bin, true);
-        assert!(system.contains("running as ops. Next: sudo '/w/it'\\''s/bin/willcord' worker join --system <server-https-origin>"));
+        let system = install_next_step(Some("ops"), "willcord", true);
+        assert!(system.contains(
+            "running as ops. Next: sudo willcord worker join --system <server-https-origin>"
+        ));
         assert!(system.ends_with("already attempted; this shows its current state)"));
         // Every command it names must route: nothing is left at the top level.
         assert_eq!(route("worker"), Route::Unknown);
+    }
+    fn test_certificate() -> (String, String) {
+        let d = dir();
+        private_dir(&d).unwrap();
+        let (cert, key) = (d.join("ca.pem"), d.join("key.pem"));
+        assert!(
+            std::process::Command::new("openssl")
+                .args(["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout"])
+                .arg(&key)
+                .arg("-out")
+                .arg(&cert)
+                .args(["-days", "1", "-subj", "/CN=pin-test"])
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+        let der = std::process::Command::new("openssl")
+            .args(["x509", "-outform", "DER", "-in"])
+            .arg(&cert)
+            .output()
+            .unwrap()
+            .stdout;
+        let pem = fs::read_to_string(&cert).unwrap();
+        fs::remove_dir_all(d).unwrap();
+        (pem, format!("{:x}", Sha256::digest(der)))
+    }
+    #[test]
+    fn a_published_ca_is_trusted_only_when_it_matches_the_pinned_fingerprint() {
+        let (pem, pin) = test_certificate();
+        let clean = pinned_ca_pem(pem.as_bytes(), &pin).unwrap();
+        assert!(clean.starts_with("-----BEGIN CERTIFICATE-----\n"));
+        // Upper-case fingerprints are the same fingerprint.
+        pinned_ca_pem(pem.as_bytes(), &pin.to_uppercase()).unwrap();
+        // Text around the certificate is dropped, not saved.
+        let padded = format!("junk\n{pem}\ntrailing");
+        let cleaned = pinned_ca_pem(padded.as_bytes(), &pin).unwrap();
+        assert!(!cleaned.contains("junk") && !cleaned.contains("trailing"));
+        // The cleaned certificate is the same certificate.
+        assert_eq!(pinned_ca_pem(cleaned.as_bytes(), &pin).unwrap(), cleaned);
+        let wrong = "0".repeat(64);
+        assert!(
+            pinned_ca_pem(pem.as_bytes(), &wrong)
+                .unwrap_err()
+                .to_string()
+                .contains("指纹不匹配")
+        );
+        // Two certificates, none, or garbage are all refused.
+        assert!(pinned_ca_pem(format!("{pem}{pem}").as_bytes(), &pin).is_err());
+        assert!(pinned_ca_pem(b"", &pin).is_err());
+        assert!(
+            pinned_ca_pem(
+                b"-----BEGIN CERTIFICATE-----\n!!\n-----END CERTIFICATE-----\n",
+                &pin
+            )
+            .is_err()
+        );
+        assert!(pinned_ca_pem(&[0xff, 0xfe], &pin).is_err());
+    }
+    #[test]
+    fn join_takes_a_bare_https_origin() {
+        assert_eq!(
+            https_origin("https://plane.internal:8443/").unwrap(),
+            "https://plane.internal:8443"
+        );
+        for bad in [
+            "http://plane.internal",
+            "https://plane.internal/path",
+            "https://plane.internal/?q=1",
+            "https://u:p@plane.internal",
+            "plane.internal",
+        ] {
+            assert!(https_origin(bad).is_err(), "{bad}");
+        }
+    }
+    #[test]
+    fn the_status_command_follows_the_scope() {
+        assert_eq!(
+            status_command("willcord", false),
+            "willcord worker status --json"
+        );
+        assert_eq!(
+            status_command("willcord", true),
+            "sudo willcord worker status --system --json"
+        );
     }
     #[test]
     fn system_flags_and_accounts_are_validated() {
@@ -1179,6 +1574,7 @@ mod tests {
             &json!({"worker_id": "w1", "state": "pending"}),
             "ff",
             "https://s",
+            "willcord worker status --json",
         );
         assert!(
             pending.contains("Authorization: pending") && pending.contains("核对控制台指纹后批准")
@@ -1187,6 +1583,7 @@ mod tests {
             &json!({"worker_id": "w1", "state": "approved"}),
             "ff",
             "https://s",
+            "willcord worker status --json",
         );
         assert!(
             approved.contains("Authorization: approved")

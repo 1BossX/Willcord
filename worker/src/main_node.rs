@@ -5,6 +5,7 @@
 use crate::{
     Error,
     cli::{shell_quote, take_value},
+    netaddr,
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -21,10 +22,8 @@ use std::{
 };
 
 const COMPOSE: &str = include_str!("../../deploy/docker/compose.yaml");
-// Providers the main node's model library knows. apps/server/test/installer-providers.test.ts
-// fails when this list and the library drift apart.
-const PROVIDERS: &str = include_str!("../../deploy/providers.txt");
-const DEFAULT_MODEL: &str = "deepseek/deepseek-v4.1-flash";
+const DEFAULT_PORT: u16 = 8443;
+const DEFAULT_SERVER: &str = "https://plane.internal:8443";
 const MAIN_USAGE: &str = "usage: willcord main init [--dir DIR] [--server HTTPS_ORIGIN] [--image-version vX.Y.Z] | up | down | status | logs [SERVICE...] | upgrade --image-version vX.Y.Z  (add --dir DIR outside the deployment directory)";
 const RECOVERY: &str = "启动未完成，配置和数据已保留。请在部署目录执行 docker compose logs main caddy 查看原因；修复后执行 docker compose up -d。";
 
@@ -430,69 +429,6 @@ impl Tty {
     }
 }
 
-#[derive(Debug, PartialEq)]
-enum Verdict {
-    Accepted,
-    Rejected,
-    Unknown,
-}
-/// Only a definite rejection (HTTP 401) counts: restricted keys may get 403 on
-/// the listing endpoint, and an unreachable provider proves nothing.
-fn verdict(status: u16) -> Verdict {
-    match status {
-        200 => Verdict::Accepted,
-        401 => Verdict::Rejected,
-        _ => Verdict::Unknown,
-    }
-}
-async fn key_status(provider: &str, key: &str) -> Option<u16> {
-    #[cfg(debug_assertions)]
-    if let Ok(seq) = std::env::var("WILLCORD_TEST_KEY_STATUS") {
-        // Tests answer each attempt from a comma-separated list, no network.
-        static ATTEMPT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let codes: Vec<u16> = seq.split(',').filter_map(|c| c.parse().ok()).collect();
-        let n = ATTEMPT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        return codes.get(n.min(codes.len().saturating_sub(1))).copied();
-    }
-    let url = match provider {
-        "openrouter" => "https://openrouter.ai/api/v1/auth/key",
-        "openai" => "https://api.openai.com/v1/models",
-        "anthropic" => "https://api.anthropic.com/v1/models",
-        _ => return Some(0),
-    };
-    let client = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(5))
-        .timeout(Duration::from_secs(15))
-        .build()
-        .ok()?;
-    let request = client.get(url);
-    let request = if provider == "anthropic" {
-        request
-            .header("x-api-key", key)
-            .header("anthropic-version", "2023-06-01")
-    } else {
-        request.bearer_auth(key)
-    };
-    request.send().await.ok().map(|r| r.status().as_u16())
-}
-/// false only when the provider definitely rejected the key.
-async fn check_model_key(provider: &str, key: &str) -> bool {
-    if !matches!(provider, "openrouter" | "openai" | "anthropic") {
-        println!("未内置 {provider} 的 API key 检查，已跳过；可在控制台侧栏“模型连接”中核对。");
-        return true;
-    }
-    let status = key_status(provider, key).await;
-    match status.map_or(Verdict::Unknown, verdict) {
-        Verdict::Accepted => println!("模型 API key 检查通过。"),
-        Verdict::Rejected => return false,
-        Verdict::Unknown => eprintln!(
-            "无法确认模型 API key（HTTP {}），继续安装；之后可在控制台侧栏“模型连接”中修改并测试。",
-            status.map_or("000".to_string(), |s| format!("{s:03}"))
-        ),
-    }
-    true
-}
-
 // --------------------------------------------------------------------- init
 
 /// Show how the root certificate is trusted on this machine; the browser and
@@ -523,6 +459,42 @@ fn create_new(path: &Path, content: &str) -> Result<(), Error> {
         .open(path)?;
     file.write_all(content.as_bytes())?;
     Ok(())
+}
+
+/// Where the main node is reached from: the addresses found on this machine
+/// are offered by number, and anything else typed must be a full HTTPS origin.
+fn choose_server(tty: &mut Tty) -> Result<String, Error> {
+    let found = netaddr::candidates();
+    let offered: Vec<String> = found
+        .iter()
+        .map(|c| format!("https://{}:{DEFAULT_PORT}", c.address))
+        .collect();
+    if offered.is_empty() {
+        return tty.prompt("浏览器和 worker 可访问的 HTTPS 地址", DEFAULT_SERVER, false);
+    }
+    println!("检测到本机地址（浏览器和 worker 须能访问）：");
+    for (n, (url, c)) in offered.iter().zip(&found).enumerate() {
+        println!("  {}) {url}   {}", n + 1, c.interface);
+    }
+    println!("动态分配（DHCP）的 IP 换网络后会变，长期使用建议改用固定 IP 或域名。");
+    let answer = tty.prompt(
+        "服务地址（输入序号，或完整 https:// 地址）",
+        &offered[0],
+        false,
+    )?;
+    pick_server(&answer, &offered)
+}
+
+/// A number picks from the offered list; anything else is taken as typed.
+fn pick_server(answer: &str, offered: &[String]) -> Result<String, Error> {
+    let answer = answer.trim();
+    if !answer.is_empty() && answer.bytes().all(|b| b.is_ascii_digit()) {
+        return match answer.parse::<usize>() {
+            Ok(n) if (1..=offered.len()).contains(&n) => Ok(offered[n - 1].clone()),
+            _ => Err(format!("没有序号 {answer}，可选 1–{}。", offered.len()).into()),
+        };
+    }
+    Ok(answer.to_string())
 }
 
 async fn init(mut args: Vec<String>) -> Result<(), Error> {
@@ -559,66 +531,9 @@ async fn init(mut args: Vec<String>) -> Result<(), Error> {
     }
     let server = match server_flag {
         Some(s) => s,
-        None => tty.prompt(
-            "浏览器和 worker 可访问的 HTTPS 地址",
-            "https://plane.internal:8443",
-            false,
-        )?,
+        None => choose_server(&mut tty)?,
     };
     let origin = parse_origin(&server)?;
-    let mut provider = String::new();
-    for attempt in 1..=3 {
-        provider = tty
-            .prompt("模型 provider", "openrouter", false)?
-            .to_lowercase()
-            .split_whitespace()
-            .collect();
-        if PROVIDERS.split_whitespace().any(|p| p == provider) {
-            break;
-        }
-        if attempt == 3 {
-            return Err(format!("不支持的 provider：{provider}。").into());
-        }
-        eprintln!(
-            "不支持的 provider：{provider}。可选值：{}",
-            PROVIDERS.trim()
-        );
-    }
-    // The default model is an OpenRouter id; another provider has its own names.
-    let mut model = String::new();
-    for attempt in 1..=3 {
-        let fallback = if provider == "openrouter" {
-            DEFAULT_MODEL
-        } else {
-            ""
-        };
-        model = tty.prompt("模型名称", fallback, false)?;
-        if !model.is_empty() {
-            break;
-        }
-        if attempt == 3 {
-            return Err("模型名称不能为空。".into());
-        }
-        eprintln!("{provider} 没有默认模型，请输入要使用的模型。");
-    }
-    // A rejected key can be corrected here instead of rerunning the whole wizard.
-    let mut api_key = String::new();
-    for attempt in 1..=3 {
-        api_key = tty.prompt("模型 API key", "", true)?;
-        if api_key.is_empty() {
-            return Err("模型 API key 不能为空。".into());
-        }
-        if check_model_key(&provider, &api_key).await {
-            break;
-        }
-        if attempt == 3 {
-            return Err(format!("{provider} 连续拒绝了 3 次输入的 API key（HTTP 401）。请到 provider 控制台确认 key 后重新运行；未写入任何配置。").into());
-        }
-        eprintln!(
-            "{provider} 拒绝了这个 API key（HTTP 401）。请核对 provider 与 key 后重新输入（还可再试 {} 次）。",
-            3 - attempt
-        );
-    }
     let password = tty.prompt("首次管理员密码（至少 16 字符）", "", true)?;
     if password.chars().count() < 16 {
         return Err("管理员密码至少需要 16 字符。".into());
@@ -639,14 +554,11 @@ async fn init(mut args: Vec<String>) -> Result<(), Error> {
         &dir.join("main.env"),
         &[
             env_line("PUBLIC_BASE_URL", &origin.server)?,
-            env_line("MODEL_PROVIDER", &provider)?,
-            env_line("MODEL_NAME", &model)?,
-            env_line("MODEL_API_KEY", &api_key)?,
             env_line("INITIAL_ADMIN_PASSWORD", &password)?,
         ]
         .concat(),
     )?;
-    drop((api_key, password));
+    drop(password);
     println!("部署目录：{}", dir.display());
     // From here on, keep the files and volumes if startup fails.
     if let Err(e) = start(&dir, &origin.server).await {
@@ -674,9 +586,10 @@ async fn init(mut args: Vec<String>) -> Result<(), Error> {
     println!("\n下一步：\n1. 让浏览器信任根证书，否则控制台会提示证书不安全。");
     trust_hint(&dir.join("ca.pem"));
     println!(
-        "2. 打开 {} 登录，在“机器授权 → 添加机器”复制安装命令，到执行机器上运行。",
+        "2. 打开 {} 登录，在侧栏“模型连接”绑定模型 API key；未绑定前任务无法执行。",
         origin.server
     );
+    println!("3. 在“机器授权 → 添加机器”复制安装命令，到执行机器上运行。");
     println!(
         "日常管理（在任意目录）：{command} main status | logs | down | up | upgrade --image-version vX.Y.Z"
     );
@@ -902,22 +815,20 @@ mod tests {
     }
 
     #[test]
-    fn only_a_401_rejects_a_model_key() {
-        assert_eq!(verdict(200), Verdict::Accepted);
-        assert_eq!(verdict(401), Verdict::Rejected);
-        for other in [0, 403, 429, 500] {
-            assert_eq!(verdict(other), Verdict::Unknown, "{other}");
+    fn a_number_picks_a_detected_address_and_anything_else_is_kept() {
+        let offered = vec![
+            "https://192.168.1.5:8443".to_string(),
+            "https://10.8.0.2:8443".to_string(),
+        ];
+        assert_eq!(pick_server("2", &offered).unwrap(), offered[1]);
+        assert_eq!(pick_server(" 1 ", &offered).unwrap(), offered[0]);
+        assert_eq!(
+            pick_server("https://plane.example.com", &offered).unwrap(),
+            "https://plane.example.com"
+        );
+        for bad in ["0", "3", "99999999999999999999"] {
+            assert!(pick_server(bad, &offered).is_err(), "{bad}");
         }
-    }
-
-    #[test]
-    fn the_provider_list_has_no_blanks_or_duplicates() {
-        let mut names: Vec<&str> = PROVIDERS.split_whitespace().collect();
-        let count = names.len();
-        names.sort_unstable();
-        names.dedup();
-        assert_eq!(names.len(), count);
-        assert!(names.contains(&"openrouter"));
     }
 
     #[test]

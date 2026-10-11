@@ -28,9 +28,9 @@ curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- main --serv
 
 向导读 `/dev/tty`，自动化时需要伪终端（见“辅助工具”）。检查点：
 
-- provider 输入大小写混合（如 `OpenRouter`）被接受并规范成小写；输入不存在的名字立即提示并列出可选值，3 次后退出且不写任何文件。
-- 只有 openrouter 有默认模型；其他 provider 不输入模型名会被再次询问。
-- **先故意输一个错误 key**：应提示“拒绝了这个 API key”和剩余次数并重问；换成正确 key 后通过。查看 `main.env`：只含正确的 key，且不再有 `INITIAL_ADMIN_PASSWORD`。
+- 向导只问两项：服务地址和管理员密码，**不再问模型**。查看 `main.env`：只有 `PUBLIC_BASE_URL`，不含 `MODEL_*`，成功后也不再有 `INITIAL_ADMIN_PASSWORD`。
+- 服务地址提示先列出本机探测到的地址（私有网段在前，没有 `127.0.0.1`、Docker 网卡），回车取第 1 项，输入序号选择，输入完整 `https://` 地址按原样使用；序号越界时报错且不写任何文件。
+- 登录后控制台顶部应出现“尚未绑定模型”提示；在“模型连接”保存 key 后提示消失（见第 5 步）。
 - 结尾打印信任根证书的命令（macOS / Debian-Ubuntu），并指向“机器授权 → 添加机器”。
 - `https://localhost:8443/health` 用 `--cacert <目录>/ca.pem` 访问，返回 `scheduling_ready: true`。
 
@@ -62,9 +62,9 @@ curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- worker --se
 
 ### 5. 模型连接
 
-打开侧栏“模型连接”：
+刚装好、还没绑定时，控制台顶部有“尚未绑定模型”提示；点“绑定模型”（或侧栏“模型连接”）：
 
-- 用真实 key“测试连接”：显示“连接正常”。
+- 用真实 key“测试连接”：显示“连接正常”；保存后顶部提示消失。
 - 失败时（可用错误 key 再试一次）：显示一句人话，原始返回收在“查看 provider 原始返回”里；弹窗里的表单与上方文字对齐。
 
 ### 6. 第一个任务
@@ -111,10 +111,7 @@ rm -rf <部署目录>                            # 含写有临时 key 的 main.
 
 ```python
 import os, pty, select, sys, time
-answers = [("模型 provider".encode(), b"OpenRouter\n"), ("模型名称".encode(), b"\n"),
-           ("模型 API key:".encode(), b"<故意错误的 key>\n"),
-           ("模型 API key:".encode(), os.environ["WP_KEY"].encode() + b"\n"),
-           ("管理员密码".encode(), os.environ["WP_ADMIN"].encode() + b"\n")]
+answers = [("管理员密码".encode(), os.environ["WP_ADMIN"].encode() + b"\n")]   # 带 --server 时不会问地址
 cmd = f"curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- main --server '{sys.argv[2]}' --dir '{sys.argv[1]}'"
 pid, fd = pty.fork()
 if pid == 0: os.execvp("bash", ["bash", "-c", cmd])

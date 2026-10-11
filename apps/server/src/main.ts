@@ -4,6 +4,7 @@ import { openDatabase } from "./storage.js";
 import { createApp } from "./app.js";
 import { acquireOwnerLock } from "./lock.js";
 import { loadConfig } from "./config.js";
+import { resolveModel } from "./model-settings.js";
 const config = loadConfig(process.env);
 const dir = config.dataDir;
 mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -12,6 +13,9 @@ const release = acquireOwnerLock(dir);
 let db: ReturnType<typeof openDatabase> | undefined;
 try {
   db = openDatabase(`${dir}/main.sqlite`);
+  // A key bound in the console counts, so only warn when neither it nor the environment has one.
+  if (!resolveModel(db, dir, config.model).apiKey && !config.scriptFile && process.env.P2_FAKE_MODEL !== "1")
+    console.warn('no model API key yet: bind one under "模型连接" in the console (or set MODEL_API_KEY); jobs cannot run until then');
   if (!db.prepare("SELECT 1 FROM administrators").get()) {
     const password = process.env.INITIAL_ADMIN_PASSWORD;
     if (!password || password.length < 16)

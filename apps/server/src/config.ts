@@ -53,9 +53,8 @@ export function loadConfig(env: NodeJS.ProcessEnv): MainConfig {
   const port = int("PORT", 1) ?? 3000;
   if (port > 65535) errors.push("PORT must be <= 65535");
   const scriptFile = env.P3_FAKE_SCRIPT_FILE || undefined;
+  // The key is optional here: the console's "模型连接" can bind it after the first start.
   const model = modelFromEnv(env);
-  const fake = Boolean(scriptFile) || env.P2_FAKE_MODEL === "1";
-  if (!fake && !model.apiKey) errors.push("MODEL_API_KEY (or OPENROUTER_API_KEY) is required");
   const logCapacityBytes = int("MAIN_LOG_CAPACITY_BYTES", 0);
   const maxToolCalls = int("MAX_JOB_TOOL_CALLS", 1);
   const maxTokens = int("MAX_JOB_TOKENS", 1);

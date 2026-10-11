@@ -35,7 +35,7 @@ CA 指纹接入从 v0.3.0 起提供，主节点与 worker 须同为 v0.3.0 或�
 curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- main
 ```
 
-安装器只下载并校验 `willcord` 二进制，随后交给它的 `willcord main init` 完成配置（下载的是同一个二进制，之后也用它管理主节点）。向导通过终端收集 HTTPS 地址（默认 `https://plane.internal:8443`）、模型 provider/name、API key 和至少 16 字符的管理员密码。密钥输入不回显。provider 不区分大小写，拼错会立即提示并列出可选值；只有 openrouter 有默认模型，其他 provider 需要自己填写模型名称。向导结束时会给出信任根证书的命令（macOS 与 Debian/Ubuntu），并把 `willcord` 命令装到 PATH（见[下文](#willcord-命令放在哪里)）。也可以预先指定地址和目录：
+安装器只下载并校验 `willcord` 二进制，随后交给它的 `willcord main init` 完成配置（下载的是同一个二进制，之后也用它管理主节点）。向导通过终端只收集两项：主节点的 HTTPS 地址，以及至少 16 字符的管理员密码（输入不回显）。地址会自动探测本机网卡，按“私有网段（192.168/16、10/8、172.16/12）→ 100.64/10（含 Tailscale）→ 其他”列出候选，已排除回环、链路本地和 Docker 等容器网卡；输入序号选择，直接回车取第 1 项，也可以输入完整的 `https://` 地址或域名。探测不到任何地址时默认 `https://plane.internal:8443`。DHCP 分配的 IP 换网络后会变，长期使用建议改用固定 IP 或域名。模型不在向导里设置，登录后在控制台绑定（见下文）。向导结束时会给出信任根证书的命令（macOS 与 Debian/Ubuntu），并把 `willcord` 命令装到 PATH（见[下文](#willcord-命令放在哪里)）。也可以预先指定地址和目录：
 
 ```sh
 curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- main --server 'https://plane.internal:8443' --dir '/opt/my-plane'
@@ -43,7 +43,7 @@ curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- main --serv
 
 目录默认 `./willcord`，当前账户必须可写。向导生成 `compose.yaml`、`.env` 和 `main.env`，固定镜像版本；环境文件权限 0600，不要提交到 Git。不同目录使用独立的 Compose 项目及数据卷。已有部署文件时拒绝覆盖。
 
-向导在写入任何文件之前，会向模型服务商确认 API key（支持 openrouter、openai、anthropic）：只有被明确拒绝（HTTP 401）才会要求重新输入（最多 3 次，第 3 次仍被拒绝才退出，此时未写入任何配置）；无法确认（网络受限、其他 provider、权限受限的 key）时只给出提示并继续。
+`main.env` 只含 `PUBLIC_BASE_URL` 和首次管理员密码，不含 `MODEL_*`。在绑定模型之前主节点照常启动，控制台顶部会显示“尚未绑定模型”的提示，任务暂时无法执行。
 
 **成功标志**：向导显示“主节点已就绪”、控制台地址及 `ca.pem` 路径，HTTPS `/health` 的 `scheduling_ready` 为 true。成功后环境文件不再保留首次管理员密码；登录使用刚才输入的密码。
 
@@ -65,9 +65,9 @@ willcord main upgrade --image-version vX.Y.Z   # 改 .env 里的镜像版本，p
 
 手动 Docker 部署与升级见 [Docker 指南](docker.md)，Linux systemd 部署见 [运维手册](operations.md#2-安装主节点linux)。
 
-### 在控制台修改模型连接
+### 在控制台绑定模型连接
 
-登录后点击侧栏“模型连接”，可以更换 provider、模型和 API key，并先“测试连接”（发送一个很短的请求，消耗极少量 token）。控制台的设置优先于 `main.env` 中的 `MODEL_*`，只影响之后开始的任务；“恢复为环境变量”会删除控制台设置。API key 用数据卷中的密钥文件加密后保存，不会回显，也不会下发给 worker。任务因 API key 无效而失败时，任务详情的“结束原因”会写明“模型服务拒绝了 API key”，不必再翻容器日志。
+首次登录后，点击顶部提示里的“绑定模型”（或侧栏“模型连接”），默认 provider 为 openrouter、模型为 `deepseek/deepseek-v4.1-flash`，只需填入 API key 即可；也可以更换 provider、模型和 API key，并先“测试连接”（发送一个很短的请求，消耗极少量 token）。控制台的设置优先于 `main.env` 中的 `MODEL_*`，只影响之后开始的任务；“恢复为环境变量”会删除控制台设置。API key 用数据卷中的密钥文件加密后保存，不会回显，也不会下发给 worker。任务因 API key 无效而失败时，任务详情的“结束原因”会写明“模型服务拒绝了 API key”，不必再翻容器日志。
 
 ## 2. 信任内部 CA
 

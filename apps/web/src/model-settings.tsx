@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { request } from "./api";
 import { Icon } from "./icon";
-import { explainModelFailure } from "./model-errors";
+import { explainModelFailure, modelUnbound } from "./model-errors";
 
 type View = {
   provider: string; name: string; has_key: boolean; key_hint: string | null;
@@ -10,7 +10,28 @@ type View = {
 const OPEN_EVENT = "willcord:open-model-settings";
 /** Lets a failed task point straight at the dialog that fixes it. */
 export const openModelSettings = () => window.dispatchEvent(new Event(OPEN_EVENT));
+const CHANGED_EVENT = "willcord:model-settings-changed";
 const sources = { console: "控制台设置", environment: "主节点环境变量" } as const;
+
+/** Shown above the workspace while no model API key is bound, so a first login knows what is missing. */
+export function ModelNotice() {
+  const [unbound, setUnbound] = useState(false);
+  useEffect(() => {
+    let live = true;
+    const check = () => request<View>("/api/settings/model")
+      .then(v => { if (live) setUnbound(modelUnbound(v)); })
+      .catch(() => {});
+    void check();
+    window.addEventListener(CHANGED_EVENT, check);
+    return () => { live = false; window.removeEventListener(CHANGED_EVENT, check); };
+  }, []);
+  if (!unbound) return null;
+  return <div className="model-banner" role="alert">
+    <Icon name="key" />
+    <span>尚未绑定模型：任务暂时无法执行。绑定模型 API key 后即可使用。</span>
+    <button className="secondary-button" onClick={openModelSettings}>绑定模型</button>
+  </div>;
+}
 
 /** Where the main node's model connection is chosen; applies to jobs started after saving. */
 export function ModelSettingsPanel() {
@@ -61,11 +82,13 @@ export function ModelSettingsPanel() {
   });
   const save = () => run(async () => {
     show(await request<View>("/api/settings/model", { method: "PUT", body: JSON.stringify(body()) }));
+    window.dispatchEvent(new Event(CHANGED_EVENT));
     setResult({ ok: true, text: "已保存。之后开始的任务使用新配置，正在运行的任务不受影响。" });
   });
   const reset = () => run(async () => {
     if (!window.confirm("删除控制台里的模型设置，改用主节点环境变量？")) return;
     show(await request<View>("/api/settings/model", { method: "DELETE" }));
+    window.dispatchEvent(new Event(CHANGED_EVENT));
     setResult({ ok: true, text: "已恢复为主节点环境变量中的配置。" });
   });
 

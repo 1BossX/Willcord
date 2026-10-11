@@ -3,6 +3,7 @@ mod generated;
 mod ledger;
 mod logs;
 mod main_node;
+mod netaddr;
 mod path_install;
 mod process;
 mod tools;

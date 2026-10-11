@@ -1,6 +1,6 @@
 import { EnrollmentPanel, openEnrollment, usePendingEnrollments } from "./enrollment";
 import { Icon } from "./icon";
-import { ModelSettingsPanel, openModelSettings } from "./model-settings";
+import { ModelNotice, ModelSettingsPanel, openModelSettings } from "./model-settings";
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { marked } from "marked";
@@ -1456,6 +1456,7 @@ function App() {
             </button>
           </div>
         )}
+        <ModelNotice />
         <DispatchBanner
           dispatch={feed.state.dispatch}
           unreconciled={workers.filter((w) => !w.reconciled).map((w) => w.worker_id)}

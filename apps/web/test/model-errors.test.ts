@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { explainModelFailure } from "../src/model-errors.ts";
+import { explainModelFailure, modelUnbound } from "../src/model-errors.ts";
 
 test("a provider's raw failure becomes a plain sentence, with the raw text kept as detail", () => {
   const raw = '401: {"message":"Invalid API Key","code":401}';
@@ -26,4 +26,9 @@ test("common failures are told apart", () => {
 
 test("a key-looking secret in a reply is not repeated in the summary", () => {
   assert.doesNotMatch(explainModelFailure("401 bad key fixture-abababababababababababab").summary, /fixture-/);
+});
+
+test("the console asks for a model only while no API key is in effect", () => {
+  assert.equal(modelUnbound({ has_key: false }), true);
+  assert.equal(modelUnbound({ has_key: true }), false);
 });

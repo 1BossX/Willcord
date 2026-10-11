@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-"""Round-trip the installer's environment values through real Compose containers.
+"""Round-trip the model key `willcord main init` writes through real Compose containers.
 
-Run after deploy/docker/smoke.sh builds local/willcord-main:smoke, or set
+The wizard is the real debug binary (cargo build --manifest-path worker/Cargo.toml)
+with a fake docker that fails the first pull, which leaves the generated main.env
+behind. Run after deploy/docker/smoke.sh builds local/willcord-main:smoke, or set
 COMPOSE_ENV_TEST_IMAGE to an already-built main-node image. No deployment volumes
 are mounted and each one-shot container is removed after checking its value.
 """
@@ -12,37 +14,47 @@ import tempfile
 import unittest
 import uuid
 
-SCRIPT = Path(__file__).with_name('install.sh')
-DEFINITIONS = SCRIPT.read_text().rsplit('\nmain "$@"', 1)[0]
+from wizard_pty import BINARY, answers, drive, install_fake_docker
+
 IMAGE = os.environ.get('COMPOSE_ENV_TEST_IMAGE', 'local/willcord-main:smoke')
+
 
 class ComposeEnvironmentTests(unittest.TestCase):
     def test_single_line_values_survive_compose_and_container_environment(self):
         values = ["plain", "let's go", r"one\two", "one\\'two", "one'two\\",
                   "one\\\\'two", 'double "quote"', '$VAR ${VAR} $$ #hash',
                   '中文🙂 spaces', '\ttabs\t']
-        with tempfile.TemporaryDirectory(prefix='wp-compose-env-') as directory:
+        assert BINARY.exists(), f'build the debug binary first: {BINARY}'
+        with tempfile.TemporaryDirectory(prefix='wc-compose-env-') as directory:
             root = Path(directory)
-            (root / 'compose.yaml').write_text(
+            install_fake_docker(root / 'bin')
+            env = {**os.environ, 'LANG': 'en_US.UTF-8', 'PATH': f'{root / "bin"}:{os.environ["PATH"]}',
+                   'TEST_ROOT': str(root), 'TEST_START_FAIL': '1', 'WILLCORD_TEST_KEY_STATUS': '200'}
+            (root / 'probe.yaml').write_text(
                 f'services:\n  probe:\n    image: {IMAGE}\n    env_file: main.env\n')
-            project = 'wp-env-' + uuid.uuid4().hex[:12]
+            project = 'wc-env-' + uuid.uuid4().hex[:12]
             try:
-                for value in values:
+                for number, value in enumerate(values):
                     with self.subTest(value=value):
-                        line = subprocess.check_output(
-                            ['/bin/bash', '-c', DEFINITIONS + '\nenv_line VALUE "$1"',
-                             'fixture', value], text=True,
-                            env={**os.environ, 'LC_ALL': 'en_US.UTF-8'})
-                        (root / 'main.env').write_text(line)
+                        deployment = root / f'deployment-{number}'
+                        code, out = drive(
+                            [str(BINARY), 'main', 'init', '--dir', str(deployment), '--server',
+                             'https://127.0.0.1:8443', '--image-version', 'v1.2.3'],
+                            env, answers(keys=((value + '\n').encode(),)))
+                        self.assertNotEqual(code, 0, 'the fake docker fails the first pull: ' + out)
+                        main_env = deployment / 'main.env'
+                        self.assertTrue(main_env.exists(), out)
+                        (root / 'main.env').write_text(main_env.read_text())
                         actual = subprocess.check_output(
-                            ['docker', 'compose', '-p', project, '-f', str(root / 'compose.yaml'),
+                            ['docker', 'compose', '-p', project, '-f', str(root / 'probe.yaml'),
                              'run', '--rm', '-T', '--no-deps', '--entrypoint', 'node',
-                             'probe', '-e', 'process.stdout.write(process.env.VALUE)'], text=True)
+                             'probe', '-e', 'process.stdout.write(process.env.MODEL_API_KEY)'], text=True)
                         self.assertEqual(actual, value)
             finally:
-                subprocess.run(['docker', 'compose', '-p', project, '-f', str(root / 'compose.yaml'),
+                subprocess.run(['docker', 'compose', '-p', project, '-f', str(root / 'probe.yaml'),
                                 'down', '-v', '--remove-orphans'], check=True,
                                stdout=subprocess.DEVNULL)
+
 
 if __name__ == '__main__':
     unittest.main()

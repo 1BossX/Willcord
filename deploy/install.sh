@@ -32,30 +32,6 @@ origin() {
   site="$host:$port"; server="https://$host"
   [[ "$port" == 443 ]] || server="$server:$port"
 }
-prompt() {
-  local variable="$1" label="$2" fallback="${3:-}" secret="${4:-}" value
-  [[ -r /dev/tty ]] || fail "初始化需要交互终端 /dev/tty。"
-  # Disable echo before displaying a secret prompt, including fast paste input.
-  if [[ "$secret" == secret ]]; then
-    tty_state=$(stty -g </dev/tty); stty -echo </dev/tty
-  fi
-  printf '%s%s: ' "$label" "${fallback:+ [$fallback]}" >/dev/tty
-  IFS= read -r value </dev/tty || fail "输入已取消。"
-  if [[ "$secret" == secret ]]; then
-    stty "$tty_state" </dev/tty; tty_state=''; printf '\n' >/dev/tty
-  fi
-  printf -v "$variable" '%s' "${value:-$fallback}"
-}
-# Preserve arbitrary single-line secrets with Compose's double-quote rules.
-# $$ prevents interpolation; backslashes and double quotes are escaped first.
-env_line() {
-  local value="$2"
-  [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] || fail "配置值不能包含换行。"
-  value=${value//\\/\\\\}
-  value=${value//\"/\\\"}
-  value=${value//\$/\$\$}
-  printf '%s="%s"\n' "$1" "$value"
-}
 resolve_version() {
   local resolved stable=true explicit=true
   if [[ -z "$version" ]]; then
@@ -146,20 +122,20 @@ worker_install() {
     fi
     installed="$system_root/bin/willcord"
     if [[ $(id -u) == 0 ]]; then
-      if [[ -n "$ca" ]]; then SSL_CERT_FILE="$ca" "$tmp/$name" install --system --user "$account"; else "$tmp/$name" install --system --user "$account"; fi
-      joined=$("$installed" join --system "$server")
+      if [[ -n "$ca" ]]; then SSL_CERT_FILE="$ca" "$tmp/$name" worker install --system --user "$account"; else "$tmp/$name" worker install --system --user "$account"; fi
+      joined=$("$installed" worker join --system "$server")
     else
       local install_env=("WILLCORD_SYSTEM_ROOT=$system_root")
       [[ -z "$ca" ]] || install_env+=("SSL_CERT_FILE=$ca")
-      sudo env "${install_env[@]}" "$tmp/$name" install --system --user "$account"
-      joined=$(sudo env "WILLCORD_SYSTEM_ROOT=$system_root" "$installed" join --system "$server")
+      sudo env "${install_env[@]}" "$tmp/$name" worker install --system --user "$account"
+      joined=$(sudo env "WILLCORD_SYSTEM_ROOT=$system_root" "$installed" worker join --system "$server")
     fi
   else
     if [[ -n "${WILLCORD_HOME:-}" ]]; then installed="$WILLCORD_HOME/bin/willcord"
     elif [[ "$os" == darwin ]]; then installed="$HOME/Library/Application Support/Willcord/bin/willcord"
     else installed="$HOME/.local/share/willcord/bin/willcord"; fi
-    if [[ -n "$ca" ]]; then SSL_CERT_FILE="$ca" "$tmp/$name" install; else "$tmp/$name" install; fi
-    joined=$("$installed" join "$server")
+    if [[ -n "$ca" ]]; then SSL_CERT_FILE="$ca" "$tmp/$name" worker install; else "$tmp/$name" worker install; fi
+    joined=$("$installed" worker join "$server")
   fi
   printf '%s\n' "$joined"
   # The text follows the state join reported: approved needs nothing, denied needs a re-approval.
@@ -170,137 +146,20 @@ worker_install() {
        printf '批准后等待“可执行”，再创建独立会话验证只读任务。\n状态命令：';;
   esac
   [[ "$system" == false || $(id -u) == 0 ]] || printf 'sudo '
-  quote "$installed"; printf ' status'; [[ "$system" == false ]] || printf ' --system'; printf ' --json\n'
+  quote "$installed"; printf ' worker status'; [[ "$system" == false ]] || printf ' --system'; printf ' --json\n'
 }
-# Providers the main node's model library knows. apps/server/test/installer-providers.test.ts
-# fails when this list and the library drift apart.
-PROVIDERS="amazon-bedrock ant-ling anthropic azure baseten cerebras cloudflare-ai-gateway cloudflare-workers-ai deepseek fireworks github-copilot google google-vertex groq huggingface kimi-coding meta minimax minimax-cn mistral moonshotai moonshotai-cn nvidia openai openai-codex opencode opencode-go openrouter qwen-token-plan qwen-token-plan-cn qwen-token-plan-individual radius together typesafe vercel-ai-gateway xai xiaomi xiaomi-token-plan-ams xiaomi-token-plan-cn xiaomi-token-plan-sgp zai zai-coding-cn"
-known_provider() { case " $PROVIDERS " in *" $1 "*) return 0;; *) return 1;; esac; }
-# Ask the model provider whether it accepts the key. Only a definite rejection
-# (HTTP 401) is reported as one (return 1): restricted keys may get 403 on the
-# listing endpoint, and an unreachable provider or an unknown one proves
-# nothing. The key goes to curl through stdin so it never appears in the
-# process list.
-check_model_key() {
-  local provider="$1" key="$2" url status
-  local -a extra=()
-  case "$provider" in
-    openrouter) url=https://openrouter.ai/api/v1/auth/key;;
-    openai) url=https://api.openai.com/v1/models;;
-    anthropic) url=https://api.anthropic.com/v1/models; extra=('header = "anthropic-version: 2023-06-01"');;
-    *) printf '未内置 %s 的 API key 检查，已跳过；可在控制台侧栏“模型连接”中核对。\n' "$provider"; return 0;;
-  esac
-  key=${key//\\/\\\\}; key=${key//\"/\\\"}
-  if [[ "$provider" == anthropic ]]; then extra+=("header = \"x-api-key: $key\"")
-  else extra+=("header = \"Authorization: Bearer $key\""); fi
-  status=$(printf '%s\n' "${extra[@]}" | curl --disable --silent --output /dev/null --write-out '%{http_code}' --connect-timeout 5 --max-time 15 --config - "$url" 2>/dev/null) || status=000
-  case "$status" in
-    200) printf '模型 API key 检查通过。\n';;
-    401) return 1;;
-    *) printf '无法确认模型 API key（HTTP %s），继续安装；之后可在控制台侧栏“模型连接”中修改并测试。\n' "$status" >&2;;
-  esac
-}
-# Show how the root certificate is trusted on this machine; main's own browser
-# and every worker need it unless the certificate is publicly trusted.
-trust_hint() {
-  local ca="$1"
-  if [[ "$os" == darwin ]]; then
-    printf '信任根证书（macOS，需要管理员密码）：\n  sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain %s\n' "$(quote "$ca")"
-    printf '然后重启浏览器。也可以双击 ca.pem，在“钥匙串访问”里把它设为“始终信任”。\n'
-  else
-    printf '信任根证书（Debian/Ubuntu）：\n  sudo cp %s /usr/local/share/ca-certificates/willcord-ca.crt && sudo update-ca-certificates\n' "$(quote "$ca")"
-    printf '其他发行版请把它加入系统信任库；Firefox 需要在“设置 → 证书 → 查看证书 → 证书颁发机构”里单独导入。\n'
-  fi
-  printf '执行机器用“添加机器”里的命令安装时会自动获取并核对 CA，无需单独信任。\n'
-}
+# The setup wizard is `willcord main init`: this script only fetches a verified
+# binary and hands over. The wizard reads /dev/tty itself, so it also works when
+# the script arrives through `curl | bash`.
 main_install() {
   [[ "$system" == false && -z "$account" && -z "$ca" && -z "$fingerprint" ]] || fail "main 不接受 --system、--user 或 CA 参数。"
-  need docker; need stty
-  docker compose version >/dev/null || fail "请先安装 Docker Compose v2。"
-  docker info >/dev/null || fail "无法访问 Docker，请检查 Docker 服务及当前账户权限。"
-  [[ -d "$directory" ]] || mkdir -p "$directory"
-  directory=$(cd "$directory" && pwd)
-  for existing in compose.yaml .env main.env ca.pem; do
-    [[ ! -e "$directory/$existing" && ! -L "$directory/$existing" ]] || fail "目录已有 ${existing}，拒绝覆盖，请使用新的 --dir。"
-  done
-  if [[ -z "$server" ]]; then prompt server '浏览器和 worker 可访问的 HTTPS 地址' 'https://plane.internal:8443'; fi
-  origin "$server"
-  local provider model api_key password attempt
-  for attempt in 1 2 3; do
-    prompt provider '模型 provider' openrouter
-    provider=$(printf '%s' "$provider" | tr 'A-Z' 'a-z' | tr -d '[:space:]')
-    known_provider "$provider" && break
-    [[ "$attempt" -lt 3 ]] || fail "不支持的 provider：${provider}。"
-    printf '不支持的 provider：%s。可选值：%s\n' "$provider" "$PROVIDERS" >&2
-  done
-  # The default model is an OpenRouter id; another provider has its own names.
-  for attempt in 1 2 3; do
-    prompt model '模型名称' "$([[ "$provider" != openrouter ]] || printf 'deepseek/deepseek-v4.1-flash')"
-    [[ -z "$model" ]] || break
-    [[ "$attempt" -lt 3 ]] || fail "模型名称不能为空。"
-    printf '%s 没有默认模型，请输入要使用的模型。\n' "$provider" >&2
-  done
-  # A rejected key can be corrected here instead of rerunning the whole wizard.
-  for attempt in 1 2 3; do
-    prompt api_key '模型 API key' '' secret
-    [[ -n "$api_key" ]] || fail "模型 API key 不能为空。"
-    check_model_key "$provider" "$api_key" && break
-    [[ "$attempt" -lt 3 ]] || fail "$provider 连续拒绝了 3 次输入的 API key（HTTP 401）。请到 provider 控制台确认 key 后重新运行；未写入任何配置。"
-    printf '%s 拒绝了这个 API key（HTTP 401）。请核对 provider 与 key 后重新输入（还可再试 %d 次）。\n' "$provider" $((3 - attempt)) >&2
-  done
-  prompt password '首次管理员密码（至少 16 字符）' '' secret
-  [[ ${#password} -ge 16 ]] || fail "管理员密码至少需要 16 字符。"
-  verified compose.yaml
-  # Each install directory receives distinct volumes, rather than sharing the
-  # template's fixed project name with another deployment on the same host.
-  # Exclusive creation also protects against another initializer racing us.
-  set -C
-  cat "$tmp/compose.yaml" > "$directory/compose.yaml"
-  {
-    env_line COMPOSE_PROJECT_NAME "willcord-$(printf '%s' "$directory" | sha256_stdin | cut -c1-12)"
-    env_line WILLCORD_VERSION "${version#v}"
-    env_line WILLCORD_SITE "$site"
-    env_line WILLCORD_PORT "$port"
-  } > "$directory/.env"
-  {
-    env_line PUBLIC_BASE_URL "$server"
-    env_line MODEL_PROVIDER "$provider"
-    env_line MODEL_NAME "$model"
-    env_line MODEL_API_KEY "$api_key"
-    env_line INITIAL_ADMIN_PASSWORD "$password"
-  } > "$directory/main.env"
-  set +C
-  unset api_key password
-  cd "$directory"
-  printf '部署目录：%s\n' "$directory"
-  # From here on, keep the files/volumes if startup fails.
-  trap 'printf "启动未完成，配置和数据已保留。请在部署目录执行 docker compose logs main caddy 查看原因；修复后执行 docker compose up -d。\n" >&2' ERR
-  docker compose pull
-  docker compose up -d
-  local ready=false attempt
-  for attempt in {1..60}; do
-    if docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt ./ca.pem >/dev/null 2>&1 && curl --fail --silent --show-error --cacert ./ca.pem --connect-timeout 2 --max-time 5 "$server/health" -o "$tmp/health.json" 2>/dev/null && grep -Eq '"scheduling_ready":[[:space:]]*true' "$tmp/health.json"; then ready=true; break; fi
-    sleep 2
-  done
-  [[ "$ready" == true ]] || { printf 'HTTPS 未就绪。检查主机名解析、端口和 docker compose logs main caddy。\n' >&2; return 1; }
-  chmod 644 ca.pem
-  sed '/^INITIAL_ADMIN_PASSWORD=/d' main.env > "$tmp/main.env"
-  cat "$tmp/main.env" > main.env
-  docker compose up -d main
-  ready=false
-  for attempt in {1..60}; do
-    if curl --fail --silent --cacert ./ca.pem --connect-timeout 2 --max-time 5 "$server/health" -o "$tmp/health.json" && grep -Eq '"scheduling_ready":[[:space:]]*true' "$tmp/health.json"; then ready=true; break; fi
-    sleep 2
-  done
-  [[ "$ready" == true ]] || { printf '移除首次密码后的主节点未就绪，请查看 docker compose logs main。\n' >&2; return 1; }
-  trap - ERR
-  printf '\n主节点已就绪：%s\n根证书：%s/ca.pem\n' "$server" "$directory"
-  printf '\n下一步：\n1. 让浏览器信任根证书，否则控制台会提示证书不安全。\n'
-  trust_hint "$directory/ca.pem"
-  printf '2. 打开 %s 登录，在“机器授权 → 添加机器”复制安装命令，到执行机器上运行。\n' "$server"
-  [[ "$os" != darwin ]] || printf '提示：macOS 上的主节点依赖 Docker Desktop，适合本机试用；Docker Desktop 退出后服务随之停止，生产环境请使用 Linux。\n'
+  local name="willcord-$version-$os-$arch"
+  verified "$name"
+  chmod 700 "$tmp/$name"
+  local args=(main init --dir "$directory" --image-version "$version")
+  [[ -z "$server" ]] || args+=(--server "$server")
+  "$tmp/$name" "${args[@]}"
 }
-sha256_stdin() { if command -v shasum >/dev/null 2>&1; then shasum -a 256; else sha256sum; fi; }
 main() {
   local role="${1:-}"; [[ "$role" == worker || "$role" == main ]] || fail '用法：install.sh main|worker [--version vX.Y.Z] [--server HTTPS_ORIGIN] [--ca /absolute/ca.pem | --ca-fingerprint SHA256] [--system --user ACCOUNT] [--dir PATH]'
   shift
@@ -322,8 +181,7 @@ main() {
   case "$arch" in x86_64|amd64) arch=x86_64;; arm64|aarch64) if [[ "$os" == darwin ]]; then arch=arm64; else arch=aarch64; fi;; *) fail "不支持的架构：$arch";; esac
   umask 077
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/willcord-install.XXXXXX")
-  tty_state=''
-  trap '[[ -z "$tty_state" ]] || stty "$tty_state" </dev/tty; rm -rf "$tmp"' EXIT
+  trap 'rm -rf "$tmp"' EXIT
   resolve_version
   if [[ "$role" == worker ]]; then worker_install; else main_install; fi
 }

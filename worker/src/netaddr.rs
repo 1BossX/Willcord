@@ -6,17 +6,59 @@ use std::net::Ipv4Addr;
 pub struct Candidate {
     pub interface: String,
     pub address: Ipv4Addr,
+    /// The overlay network it belongs to, when it is one the person knows by name.
+    pub overlay: Option<&'static str>,
 }
 
-/// Interfaces that exist only inside this host: container bridges and the like.
-const VIRTUAL_PREFIXES: [&str; 7] = ["docker", "br-", "veth", "virbr", "cni", "flannel", "podman"];
+/// Interfaces that exist only inside this host or between it and its virtual
+/// machines: container and VM bridges and the like. `feth` is not here: on macOS
+/// it is also what ZeroTier uses, and a ZeroTier address is a valid choice.
+const VIRTUAL_PREFIXES: [&str; 12] = [
+    "docker", "br-", "veth", "virbr", "cni", "flannel", "podman", "bridge", "vmnet", "vmenet",
+    "vboxnet", "vnic",
+];
+/// Names of real network cards, which come before tunnels and the rest at the same rank.
+const PHYSICAL_PREFIXES: [&str; 6] = ["en", "eth", "wl", "wlan", "ens", "eno"];
+
+/// 198.18.0.0/15 is reserved for benchmarking; a proxy's virtual interface
+/// (Clash, Surge, …) sits there and no other machine can reach it.
+fn is_benchmark(address: Ipv4Addr) -> bool {
+    let [a, b, ..] = address.octets();
+    a == 198 && (b == 18 || b == 19)
+}
+
+fn is_physical(name: &str) -> bool {
+    PHYSICAL_PREFIXES.iter().any(|p| name.starts_with(p))
+}
+
+fn in_cgnat(address: Ipv4Addr) -> bool {
+    let [a, b, ..] = address.octets();
+    a == 100 && (64..128).contains(&b)
+}
+
+/// Overlay networks a main node is often reached through. The name decides
+/// where the system tells them apart (`tailscale0`, `wt0`, `zt…`, macOS's
+/// `feth` pair); a macOS tunnel (`utun…`) in 100.64.0.0/10 is Tailscale's or
+/// NetBird's default range, and nothing here can say which.
+fn overlay_kind(name: &str, address: Ipv4Addr) -> Option<&'static str> {
+    if name.starts_with("tailscale") {
+        Some("Tailscale")
+    } else if name.starts_with("wt") && name[2..].bytes().all(|b| b.is_ascii_digit()) {
+        Some("NetBird")
+    } else if name.starts_with("zt") || name.starts_with("feth") {
+        Some("ZeroTier")
+    } else if in_cgnat(address) {
+        Some("Tailscale / NetBird")
+    } else {
+        None
+    }
+}
 
 fn rank(address: Ipv4Addr) -> u8 {
-    let [a, b, ..] = address.octets();
     if address.is_private() {
         0
-    } else if a == 100 && (64..128).contains(&b) {
-        // Carrier-grade NAT space, which is also what Tailscale hands out.
+    } else if in_cgnat(address) {
+        // Carrier-grade NAT space, which is also what Tailscale and NetBird hand out.
         1
     } else {
         2
@@ -32,11 +74,27 @@ pub fn rank_candidates(found: Vec<(String, Ipv4Addr)>) -> Vec<Candidate> {
             !address.is_loopback()
                 && !address.is_link_local()
                 && !address.is_unspecified()
+                && !is_benchmark(*address)
                 && !VIRTUAL_PREFIXES.iter().any(|p| name.starts_with(p))
         })
-        .map(|(interface, address)| Candidate { interface, address })
+        .map(|(interface, address)| Candidate {
+            overlay: overlay_kind(&interface, address),
+            interface,
+            address,
+        })
         .collect();
-    kept.sort_by_key(|c| rank(c.address));
+    // Within a range a real card comes first, then overlay networks, then the rest.
+    // A stable sort: equal keys keep the order the system listed them in.
+    kept.sort_by_key(|c| {
+        let class = if is_physical(&c.interface) {
+            0
+        } else if c.overlay.is_some() {
+            1
+        } else {
+            2
+        };
+        (rank(c.address), class)
+    });
     let mut seen = std::collections::HashSet::new();
     kept.retain(|c| seen.insert(c.address));
     kept
@@ -138,6 +196,76 @@ mod tests {
             ranked[0].address,
             "192.168.1.5".parse::<Ipv4Addr>().unwrap()
         );
+    }
+
+    #[test]
+    fn vm_bridges_and_proxy_tunnels_are_dropped_but_overlay_networks_stay() {
+        // Taken from a Mac running OrbStack, other VMs, a proxy's TUN device and
+        // ZeroTier (feth), NetBird and Tailscale (utun).
+        let ranked = rank_candidates(found(&[
+            ("feth1832", "192.168.193.11"),
+            ("en1", "192.168.30.113"),
+            ("bridge100", "192.168.139.3"),
+            ("bridge101", "192.168.117.0"),
+            ("utun100", "100.90.36.151"),
+            ("utun4", "100.99.69.60"),
+            ("utun5", "198.18.0.1"),
+        ]));
+        let listed: Vec<(&str, Option<&str>)> = ranked
+            .iter()
+            .map(|c| (c.interface.as_str(), c.overlay))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                ("en1", None),
+                ("feth1832", Some("ZeroTier")),
+                ("utun100", Some("Tailscale / NetBird")),
+                ("utun4", Some("Tailscale / NetBird")),
+            ]
+        );
+    }
+
+    #[test]
+    fn tailscale_zerotier_and_netbird_are_named_on_linux() {
+        let ranked = rank_candidates(found(&[
+            ("tailscale0", "100.101.1.2"),
+            ("wt0", "100.64.7.9"),
+            ("ztabcdefgh", "10.147.17.5"),
+            ("eth0", "192.168.1.5"),
+        ]));
+        let listed: Vec<(&str, Option<&str>)> = ranked
+            .iter()
+            .map(|c| (c.interface.as_str(), c.overlay))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                ("eth0", None),
+                ("ztabcdefgh", Some("ZeroTier")),
+                ("tailscale0", Some("Tailscale")),
+                ("wt0", Some("NetBird")),
+            ]
+        );
+    }
+
+    #[test]
+    fn only_a_digit_suffix_makes_wt_a_netbird_interface() {
+        assert_eq!(
+            overlay_kind("wt0", "100.64.0.1".parse().unwrap()),
+            Some("NetBird")
+        );
+        assert_eq!(
+            overlay_kind("wt", "10.0.0.1".parse().unwrap()),
+            Some("NetBird")
+        );
+        assert_eq!(overlay_kind("wtf", "10.0.0.1".parse().unwrap()), None);
+    }
+
+    #[test]
+    fn a_real_card_comes_before_another_interface_of_the_same_range() {
+        let ranked = rank_candidates(found(&[("utun3", "10.8.0.2"), ("eth0", "10.0.0.7")]));
+        assert_eq!(ranked[0].interface, "eth0");
     }
 
     #[test]

@@ -616,6 +616,25 @@ fn normalize_device_name(host: &str, env: Option<&str>) -> String {
     }
     "worker".into()
 }
+/// What `install` tells the person to run next: the `worker join` command that
+/// lives under the `worker` namespace, with the real path to the installed binary.
+fn install_next_step(system_user: Option<&str>, binary: &Path, attempted: bool) -> String {
+    let note = if attempted {
+        " (a join was already attempted; this shows its current state)"
+    } else {
+        ""
+    };
+    match system_user {
+        Some(user) => format!(
+            "Installed as a system service running as {user}. Next: sudo {} worker join --system <server-https-origin>{note}",
+            shell_quote(binary)
+        ),
+        None => format!(
+            "Installed. Next: {} worker join <server-https-origin>{note}",
+            shell_quote(binary)
+        ),
+    }
+}
 /// What `join` tells the person: an already approved machine has nothing left to approve.
 fn join_summary(state: &Value, fingerprint: &str, base: &str) -> String {
     let authorization = state["state"].as_str().unwrap_or("unknown");
@@ -780,27 +799,10 @@ async fn worker(mut args: Vec<String>) -> Result<Option<PathBuf>, Error> {
             // enrollment.json is written before the request is sent, so it proves an
             // attempt, not an accepted one: always point at `join` for the real state.
             let attempted = dir.join("enrollment.json").exists();
-            match sys {
-                Some(s) => println!(
-                    "Installed as a system service running as {}. Next: sudo {} join --system <server-https-origin>{}",
-                    s.user,
-                    shell_quote(&target),
-                    if attempted {
-                        " (a join was already attempted; this shows its current state)"
-                    } else {
-                        ""
-                    }
-                ),
-                None => println!(
-                    "Installed. Next: {} join <server-https-origin>{}",
-                    shell_quote(&target),
-                    if attempted {
-                        " (a join was already attempted; this shows its current state)"
-                    } else {
-                        ""
-                    }
-                ),
-            }
+            println!(
+                "{}",
+                install_next_step(sys.map(|s| s.user.as_str()), &target, attempted)
+            );
         }
         "join" => {
             let url = reqwest::Url::parse(args.get(1).ok_or("join requires HTTPS URL")?)?;
@@ -1118,6 +1120,20 @@ mod tests {
         assert!(daemon.contains("<key>HOME</key><string>/Users/ops</string>"));
         assert!(daemon.contains("<key>ExitTimeOut</key><integer>60</integer>"));
         assert!(daemon.contains("<key>SSL_CERT_FILE</key><string>/c/ca.pem</string>"));
+    }
+    #[test]
+    fn the_next_step_after_install_is_a_worker_command() {
+        let bin = Path::new("/w/it's/bin/willcord");
+        let user = install_next_step(None, bin, false);
+        assert_eq!(
+            user,
+            "Installed. Next: '/w/it'\\''s/bin/willcord' worker join <server-https-origin>"
+        );
+        let system = install_next_step(Some("ops"), bin, true);
+        assert!(system.contains("running as ops. Next: sudo '/w/it'\\''s/bin/willcord' worker join --system <server-https-origin>"));
+        assert!(system.ends_with("already attempted; this shows its current state)"));
+        // Every command it names must route: nothing is left at the top level.
+        assert_eq!(route("worker"), Route::Unknown);
     }
     #[test]
     fn system_flags_and_accounts_are_validated() {

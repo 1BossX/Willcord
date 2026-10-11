@@ -73,6 +73,11 @@ fn parse_origin(input: &str) -> Result<Origin, Error> {
         if addr.is_empty() || !addr.bytes().all(|b| b.is_ascii_hexdigit() || b == b':') {
             return Err(ORIGIN_HELP.into());
         }
+        // Anything after the bracket other than a port (a pasted path, say) is
+        // refused, as it is for host names.
+        if !tail.is_empty() && !tail.starts_with(':') {
+            return Err(ORIGIN_HELP.into());
+        }
         (format!("[{addr}]"), tail.strip_prefix(':'))
     } else {
         let (host, port) = match rest.split_once(':') {
@@ -277,8 +282,13 @@ enum Health {
 async fn health(server: &str, ca: &Path) -> Health {
     let probe = async {
         let cert = reqwest::Certificate::from_pem(&fs::read(ca)?)?;
+        // Only this deployment's CA: a publicly trusted certificate on the same
+        // origin (another service, a proxy) must not pass for the main node, and a
+        // redirect must not carry the probe to a host the CA never vouched for.
         let client = reqwest::Client::builder()
+            .tls_built_in_root_certs(false)
             .add_root_certificate(cert)
+            .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(2))
             .timeout(Duration::from_secs(5))
             .build()?;
@@ -751,6 +761,10 @@ mod tests {
             "https://-plane.internal",
             "https://[]:8443",
             "https://[fd00::1",
+            "https://[fd00::1]/health",
+            "https://[fd00::1]x",
+            "https://[fd00::1]?x=1",
+            "https://[fd00::1]:",
             "https://plane.internal//",
         ] {
             assert!(parse_origin(bad).is_err(), "{bad}");

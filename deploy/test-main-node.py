@@ -279,11 +279,21 @@ class MainNodeTests(unittest.TestCase):
         r = self.cli('main', 'status', '--dir', str(self.deploy))
         self.assertNotEqual(r.returncode, 0)
         self.assertIn('scheduling_ready', r.stderr)
-        # A certificate the CA did not issue is not trusted.
+        # A certificate the CA did not issue is not trusted, not even one the
+        # machine itself trusts (SSL_CERT_FILE stands in for the system store).
         self.set_health(True)
-        (self.deploy / 'ca.pem').write_text((self.root / 'tls/key.pem').read_text())
+        other = self.root / 'tls/other.pem'
+        subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', str(self.root / 'tls/other-key.pem'), '-out', str(other), '-days', '1', '-config', self.write(TLS_CONFIG)], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        shutil.copyfile(other, self.deploy / 'ca.pem')
         r = self.cli('main', 'status', '--dir', str(self.deploy))
         self.assertNotEqual(r.returncode, 0)
+        system_trusts_it = {'SSL_CERT_FILE': str(self.root / 'tls/cert.pem')}
+        r = self.cli('main', 'status', '--dir', str(self.deploy), env=system_trusts_it)
+        self.assertNotEqual(r.returncode, 0, 'a system-trusted certificate must not stand in for the deployment CA')
+        # With its own CA back, the same environment is fine.
+        shutil.copyfile(self.root / 'tls/cert.pem', self.deploy / 'ca.pem')
+        r = self.cli('main', 'status', '--dir', str(self.deploy), env=system_trusts_it)
+        self.assertEqual(r.returncode, 0, r.stderr)
 
     def test_upgrade_changes_only_the_image_version(self):
         self.deployed()

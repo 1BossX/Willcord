@@ -81,7 +81,7 @@ curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- worker --se
 ### 8. 清理
 
 ```bash
-willcord uninstall --delete-data            # 卸载 worker 服务并删除数据
+willcord worker uninstall --delete-data     # 卸载 worker 服务并删除数据
 docker compose down -v                      # 在部署目录执行：删除主节点容器与数据卷
 rm -rf <部署目录>                            # 含写有临时 key 的 main.env
 ```

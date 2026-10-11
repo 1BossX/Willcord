@@ -20,7 +20,7 @@
 1. 准备目录，复制 `deploy/docker/compose.yaml`，并在同一目录写 `.env`：
 
    ```bash
-   WILLCORD_VERSION=0.4.2
+   WILLCORD_VERSION=0.5.0
    WILLCORD_SITE=plane.internal:8443
    WILLCORD_PORT=8443
    ```

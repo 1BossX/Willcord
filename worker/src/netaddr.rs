@@ -8,8 +8,25 @@ pub struct Candidate {
     pub address: Ipv4Addr,
 }
 
-/// Interfaces that exist only inside this host: container bridges and the like.
-const VIRTUAL_PREFIXES: [&str; 7] = ["docker", "br-", "veth", "virbr", "cni", "flannel", "podman"];
+/// Interfaces that exist only inside this host or between it and its virtual
+/// machines: container and VM bridges, macOS `feth`/`bridge` pairs and the like.
+const VIRTUAL_PREFIXES: [&str; 13] = [
+    "docker", "br-", "veth", "virbr", "cni", "flannel", "podman", "bridge", "feth", "vmnet",
+    "vmenet", "vboxnet", "vnic",
+];
+/// Names of real network cards, which come before tunnels and the rest at the same rank.
+const PHYSICAL_PREFIXES: [&str; 6] = ["en", "eth", "wl", "wlan", "ens", "eno"];
+
+/// 198.18.0.0/15 is reserved for benchmarking; a proxy's virtual interface
+/// (Clash, Surge, …) sits there and no other machine can reach it.
+fn is_benchmark(address: Ipv4Addr) -> bool {
+    let [a, b, ..] = address.octets();
+    a == 198 && (b == 18 || b == 19)
+}
+
+fn is_physical(name: &str) -> bool {
+    PHYSICAL_PREFIXES.iter().any(|p| name.starts_with(p))
+}
 
 fn rank(address: Ipv4Addr) -> u8 {
     let [a, b, ..] = address.octets();
@@ -32,11 +49,13 @@ pub fn rank_candidates(found: Vec<(String, Ipv4Addr)>) -> Vec<Candidate> {
             !address.is_loopback()
                 && !address.is_link_local()
                 && !address.is_unspecified()
+                && !is_benchmark(*address)
                 && !VIRTUAL_PREFIXES.iter().any(|p| name.starts_with(p))
         })
         .map(|(interface, address)| Candidate { interface, address })
         .collect();
-    kept.sort_by_key(|c| rank(c.address));
+    // A stable sort: equal keys keep the order the system listed them in.
+    kept.sort_by_key(|c| (rank(c.address), !is_physical(&c.interface)));
     let mut seen = std::collections::HashSet::new();
     kept.retain(|c| seen.insert(c.address));
     kept
@@ -138,6 +157,27 @@ mod tests {
             ranked[0].address,
             "192.168.1.5".parse::<Ipv4Addr>().unwrap()
         );
+    }
+
+    #[test]
+    fn virtual_machine_bridges_and_proxy_tunnels_do_not_outrank_the_real_card() {
+        // Taken from a Mac running OrbStack, other VMs and a proxy's TUN device.
+        let ranked = rank_candidates(found(&[
+            ("feth1832", "192.168.193.11"),
+            ("en1", "192.168.30.113"),
+            ("bridge100", "192.168.139.3"),
+            ("bridge101", "192.168.117.0"),
+            ("utun100", "100.90.36.151"),
+            ("utun5", "198.18.0.1"),
+        ]));
+        let names: Vec<&str> = ranked.iter().map(|c| c.interface.as_str()).collect();
+        assert_eq!(names, ["en1", "utun100"]);
+    }
+
+    #[test]
+    fn a_real_card_comes_before_another_interface_of_the_same_range() {
+        let ranked = rank_candidates(found(&[("utun3", "10.8.0.2"), ("eth0", "10.0.0.7")]));
+        assert_eq!(ranked[0].interface, "eth0");
     }
 
     #[test]

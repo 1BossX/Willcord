@@ -40,7 +40,7 @@
 
 ### 备份、恢复与升级（`apps/server/src/ops.ts`、`admin.ts`）
 
-`worker-plane-admin`（`pnpm --filter @worker-plane/server admin <命令>`，或 `node dist/admin.js`）：
+`willcord-admin`（`pnpm --filter @willcord/server admin <命令>`，或 `node dist/admin.js`）：
 
 | 命令 | 作用 |
 |---|---|
@@ -126,8 +126,8 @@
 
 - `p1.yml`：`pnpm build` 之后，在两个平台上从 release 目录启动主节点并跑一遍 smoke，再构建 worker 的 release 二进制。
 - 新增 `release.yml`：推送 `v*` tag 时触发。
-  - 在 macOS 和 Linux 两台 self-hosted runner 上各自原生构建 `worker-plane-worker-<tag>-<os>-<arch>`。
-  - Linux runner 额外构建并 smoke `worker-plane-main-<tag>-linux-<arch>-node24.tar.gz`。
+  - 在 macOS 和 Linux 两台 self-hosted runner 上各自原生构建 `willcord-<tag>-<os>-<arch>`。
+  - Linux runner 额外构建并 smoke `willcord-main-<tag>-linux-<arch>-node24.tar.gz`。
   - 每个文件附带 `.sha256`。
   - 最后用 `gh` 建一个 **draft** release，人工检查后再发布。publish 这一步要求 Linux runner 上装有 `gh`。
 
@@ -135,11 +135,11 @@
 
 | 文件 | 要点 |
 |---|---|
-| `Caddyfile.production` | 内部 CA（`tls internal`）。`/api`、`/auth`、`/ws/worker`、`/health` 转发给主节点，其余路径提供 UI。`flush_interval -1` 让 SSE 不经缓冲；`stream_close_delay 5m` 让配置重载时不会一次断开所有 worker。站点地址和发布目录通过环境变量 `WORKER_PLANE_SITE`、`WORKER_PLANE_ROOT` 指定 |
-| `systemd/worker-plane-main.service` | 专用用户；`EnvironmentFile` 权限 0600；`ProtectSystem=strict`，只有数据目录可写。`Restart=no`：崩溃后 `main.lock` 会故意留下，需要人工确认后删除（运维手册 §10） |
-| `systemd/worker-plane-worker.service` | 停止信号 SIGTERM，等待 60 s，大于 `kill_grace_secs + 7`；`KillMode=control-group`；`StartLimitBurst=5`，避免被吊销的 token 导致无限重启 |
-| `systemd/worker-plane-backup.{service,timer}` | 每天在线备份一次，删除 14 天前的备份 |
-| `launchd/com.workerplane.worker.plist` | LaunchDaemon，`KeepAlive` 只在非正常退出时重启，`ThrottleInterval` 60 s，`ExitTimeOut` 60 s；日志写入文件。launchd 一直持有这个文件，newsyslog 无法正确轮转它，所以运维手册改为停止服务后移走文件 |
+| `Caddyfile.production` | 内部 CA（`tls internal`）。`/api`、`/auth`、`/ws/worker`、`/health` 转发给主节点，其余路径提供 UI。`flush_interval -1` 让 SSE 不经缓冲；`stream_close_delay 5m` 让配置重载时不会一次断开所有 worker。站点地址和发布目录通过环境变量 `WILLCORD_SITE`、`WILLCORD_ROOT` 指定 |
+| `systemd/willcord-main.service` | 专用用户；`EnvironmentFile` 权限 0600；`ProtectSystem=strict`，只有数据目录可写。`Restart=no`：崩溃后 `main.lock` 会故意留下，需要人工确认后删除（运维手册 §10） |
+| `systemd/willcord-worker.service` | 停止信号 SIGTERM，等待 60 s，大于 `kill_grace_secs + 7`；`KillMode=control-group`；`StartLimitBurst=5`，避免被吊销的 token 导致无限重启 |
+| `systemd/willcord-backup.{service,timer}` | 每天在线备份一次，删除 14 天前的备份 |
+| `launchd/org.willcord.worker.plist` | LaunchDaemon，`KeepAlive` 只在非正常退出时重启，`ThrottleInterval` 60 s，`ExitTimeOut` 60 s；日志写入文件。launchd 一直持有这个文件，newsyslog 无法正确轮转它，所以运维手册改为停止服务后移走文件 |
 | `main.env.example`、`worker.config.toml` | 生产配置示例：worker 使用 `token_file`，`data_dir` 放在持久目录 |
 
 ### 文档
@@ -177,7 +177,7 @@
   - 通过 API 签发 token，写进 0600 的 `token_file`；
   - worker 的环境里没有 token，`SSL_CERT_FILE` 只指向部署用的 CA；
   - 两个进程都用 SIGTERM 停止。
-- 用 `pnpm --filter @worker-plane/server test:release` 运行，依次检查：
+- 用 `pnpm --filter @willcord/server test:release` 运行，依次检查：
   1. 安装、登录、签发 token、注册；
   2. 执行；
   3. 超时：1 秒的时间限制终止了 30 秒的 sleep，后续命令没有执行；
@@ -219,7 +219,7 @@
   14. 真实模型双机委派：是否同一轮委派、是否带 verify、最终结果；
   15. 备份和恢复演练；
   16. 汇总。
-- 结果写在 `~/.worker-plane-acceptance/results.env`，不在仓库里。
+- 结果写在 `~/.willcord-acceptance/results.env`，不在仓库里。
 - 模型 key 和管理员初始密码只在主机上输入。向导自己用到的管理员密码是隐藏输入，用完就丢弃。token 只写入本机 0600 文件，装好 worker 后删除。
 
 ### 总验收

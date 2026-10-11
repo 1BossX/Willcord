@@ -30,13 +30,13 @@ test("frame bound and workspace remote identity", () => {
     )["x-max-frame-bytes"],
   );
   assert.throws(() => parseFrame(" ".repeat(MAX_FRAME_BYTES + 1)));
-  const id = normalizeRepo("git@github.com:1BossX/WorkerPlane.git");
-  assert.equal(id, "github.com/1BossX/WorkerPlane");
-  assert.equal(id, normalizeRepo("https://github.com/1BossX/WorkerPlane.git/"));
+  const id = normalizeRepo("git@github.com:1BossX/Willcord.git");
+  assert.equal(id, "github.com/1BossX/Willcord");
+  assert.equal(id, normalizeRepo("https://github.com/1BossX/Willcord.git/"));
   assert.equal(
     id,
-    normalizeRepo("ssh://git@github.com/1BossX/WorkerPlane.git"),
+    normalizeRepo("ssh://git@github.com/1BossX/Willcord.git"),
   );
-  assert.throws(() => normalizeRepo("https://github.com/WorkerPlane.git"));
+  assert.throws(() => normalizeRepo("https://github.com/Willcord.git"));
   assert.throws(() => normalizeRepo("file:///tmp/repo"));
 });

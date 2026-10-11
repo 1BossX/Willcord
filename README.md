@@ -9,7 +9,7 @@ Willcord 是面向内网与生产环境的 AI 运维控制面。模型调用、�
 - **断线先对账，未知不重跑**：重连后先核对执行账本；无法证明执行状态的调用挂起，等待人工核对。
 - **跨机器委派**：Main Agent 查看机器状态并把任务委派给各台 worker，支持取消、超时与预算。
 
-产品名为 Willcord；仓库、包名、CLI、服务名与配置路径沿用工程名 WorkerPlane。
+产品名、仓库、包名、CLI、服务名与配置路径统一为 Willcord。
 
 [产品介绍页](https://1bossx.github.io/Willcord/) · [Releases](https://github.com/1BossX/Willcord/releases) · [安装与首次使用](docs/installation.md) · [架构](docs/architecture.md)
 
@@ -55,6 +55,8 @@ curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- worker --se
 ## 当前状态
 
 当前版本 v0.4.2，处于开发与受控验收阶段。用于生产前，请在自己的环境完成安全、权限与故障恢复验收。
+
+从 v0.5.0 起所有名称统一为 willcord，旧名称下的部署不会被识别，升级步骤见[迁移说明](docs/migrating-to-willcord.md)。
 
 已具备：
 

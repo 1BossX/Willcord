@@ -59,7 +59,7 @@ async function makeSession({ role, root, execute, commitAssistantTurn, onAssista
 }
 
 async function tempRoot(t) {
-  const root = await mkdtemp(join(tmpdir(), 'worker-plane-pi-'));
+  const root = await mkdtemp(join(tmpdir(), 'willcord-pi-'));
   t.after(async () => {
     // Tests use OS temporary storage for fake auth and session files only.
     const { rm } = await import('node:fs/promises');

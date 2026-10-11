@@ -10,7 +10,7 @@ import { coordinatorFixture } from './coordinator-test-support.js';
 function core(messages) { const c = createFauxCore({ provider: 'parent', api: 'parent', models: [{ id: 'test' }] }); c.setResponses(messages); return c; }
 function delegate(id, input = 'child original request') { return fauxToolCall('delegate', { input }, { id }); }
 async function fixture(t, options = {}) {
-  const root = mkdtempSync(join(tmpdir(), 'worker-plane-parent-'));
+  const root = mkdtempSync(join(tmpdir(), 'willcord-parent-'));
   const f = await coordinatorFixture(root, options);
   t.after(() => { f.close(); rmSync(root, { recursive: true, force: true }); });
   f.coordinator.createJob({ jobId: 'parent', role: 'main', maxTokens: 100000, maxSteps: 10, prompt: 'delegate work' });
@@ -93,7 +93,7 @@ test('known child failure is projected explicitly and root budget prevents paren
 
 for (const mode of ['accepted', 'child_completed', 'projection_mid', 'projection']) {
   test(`actual Pi parent-child SIGKILL ${mode} retains stable IDs/wait/results/root budget`, async (t) => {
-    const root = mkdtempSync(join(tmpdir(), 'worker-plane-parent-crash-'));
+    const root = mkdtempSync(join(tmpdir(), 'willcord-parent-crash-'));
     t.after(() => rmSync(root, { recursive: true, force: true }));
     const child = spawnSync(process.execPath, [fileURLToPath(new URL('./parent-child-crash-fixture.js', import.meta.url)), root, mode]);
     assert.equal(child.signal, 'SIGKILL', child.stderr.toString());
@@ -142,7 +142,7 @@ test('child target/session is acceptance-time snapshot and scanners cannot clear
 });
 
 test('lifecycle schema upgrade preserves an old in-flight worker checkpoint and immutable binding', async (t) => {
-  const root = mkdtempSync(join(tmpdir(), 'worker-plane-upgrade-'));
+  const root = mkdtempSync(join(tmpdir(), 'willcord-upgrade-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const child = spawnSync(process.execPath, [fileURLToPath(new URL('./coordinator-crash-fixture.js', import.meta.url)), root, 'intent']);
   assert.equal(child.signal, 'SIGKILL');
@@ -204,7 +204,7 @@ test('all-invalid Main delegate response still commits usage, original intent an
 });
 
 test('SIGKILL immediately after parent cancellation transaction leaves every child fenced on restart', async (t) => {
-  const root = mkdtempSync(join(tmpdir(), 'worker-plane-parent-cancel-crash-'));
+  const root = mkdtempSync(join(tmpdir(), 'willcord-parent-cancel-crash-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const child = spawnSync(process.execPath, [fileURLToPath(new URL('./parent-child-crash-fixture.js', import.meta.url)), root, 'cancel_accepted']);
   assert.equal(child.signal, 'SIGKILL', child.stderr.toString());
@@ -220,7 +220,7 @@ test('SIGKILL immediately after parent cancellation transaction leaves every chi
 });
 
 test('restart parent scan derives child unknown usage from durable attempts and never completes parent', async (t) => {
-  const root = mkdtempSync(join(tmpdir(), 'worker-plane-child-unknown-'));
+  const root = mkdtempSync(join(tmpdir(), 'willcord-child-unknown-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const crash = spawnSync(process.execPath, [fileURLToPath(new URL('./parent-child-crash-fixture.js', import.meta.url)), root, 'child_model']);
   assert.equal(crash.signal, 'SIGKILL', crash.stderr.toString());

@@ -77,7 +77,7 @@ const password = "p3-main-process-password";
 
 /** A main process, its data directory, a TLS proxy and a real worker; `one` reads the live WAL database. */
 export async function processScenario(scripts: Record<string, unknown>) {
-  const dir = mkdtempSync(join(tmpdir(), "worker-plane-p3c-main-"));
+  const dir = mkdtempSync(join(tmpdir(), "willcord-p3c-main-"));
   const dataDir = join(dir, "data");
   mkdirSync(dataDir, { mode: 0o700 });
   const certs = createCertificates(dir);

@@ -1,7 +1,7 @@
-# Worker Plane MVP 开发阶段与验收标准
+# Willcord MVP 开发阶段与验收标准
 
 日期：2026-10-06  
-依据：[最终技术方案](architecture.md)与 Worker Plane MVP Spec v2
+依据：[最终技术方案](architecture.md)与 Willcord MVP Spec v2
 选型：TypeScript 主节点、Pi SDK、Rust worker、React UI、SQLite WAL
 
 ## 执行规则

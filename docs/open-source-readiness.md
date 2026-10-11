@@ -28,8 +28,8 @@ GitHub 查询时没有 Actions artifacts 或 Releases。PR／issue 讨论、所�
 ## 本地验证
 
 - `pnpm check`：通过。
-- `pnpm --filter @worker-plane/web build`：通过，Vite 资源转换约 2 分半；没有修改 tree-shaking 或锁文件。
-- `pnpm --filter @worker-plane/web test`：7 项通过。
+- `pnpm --filter @willcord/web build`：通过，Vite 资源转换约 2 分半；没有修改 tree-shaking 或锁文件。
+- `pnpm --filter @willcord/web test`：7 项通过。
 - 按 CI 前置步骤构建普通 worker 和 fault-injection worker 后，`pnpm test` 全部通过：服务端 108 项、协议 3 项、前端 7 项。首次运行因缺少这两个二进制失败，补齐后未修改测试或运行逻辑。
 - `cargo test --locked --manifest-path worker/Cargo.toml`：30 项通过。
 - 5 个 Actions YAML 通过解析，`git diff --check` 通过。

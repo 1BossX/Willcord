@@ -55,5 +55,5 @@
 <g transform="translate(907 858) scale(0.5625)" style="color:#a797ff"><path d="M8 14 L19 49 L28 32 M36 32 L45 49 L56 14" fill="none" stroke="currentColor" stroke-width="7" stroke-linejoin="round" stroke-linecap="round"/><rect x="27" y="17" width="10" height="10" rx="2" fill="currentColor"/></g>
 <g transform="translate(983 858) scale(0.5625)" style="color:#ffffff"><path d="M8 14 L19 49 L28 32 M36 32 L45 49 L56 14" fill="none" stroke="currentColor" stroke-width="7" stroke-linejoin="round" stroke-linecap="round"/><rect x="27" y="17" width="10" height="10" rx="2" fill="currentColor"/></g>
 <text x="48" y="982" font-family="Arial, PingFang SC, sans-serif" font-size="18" fill="#202532" font-weight="400">主品牌建议使用 01；02 留作架构图形。颜色暂定，不代表正式定名。</text>
-<text x="48" y="1019" font-family="Arial, PingFang SC, sans-serif" font-size="13" fill="#626877" font-weight="400">CONCEPT ONLY · 商标及目标用户验证未完成 · 当前 CLI 与服务名仍沿用 WorkerPlane</text>
+<text x="48" y="1019" font-family="Arial, PingFang SC, sans-serif" font-size="13" fill="#626877" font-weight="400">CONCEPT ONLY · 商标及目标用户验证未完成</text>
 </svg>

@@ -29,7 +29,7 @@ function exchange(db: Database.Database, job: Carried) {
     if (note) answer.content = [...answer.content, { type: "text", text: note }];
     return [user, answer];
   }
-  return [user, { role: "assistant", content: [{ type: "text", text: note }], api: "worker-plane", provider: "worker-plane", model: "none", usage: ZERO_USAGE, stopReason: "stop", timestamp: user.timestamp }];
+  return [user, { role: "assistant", content: [{ type: "text", text: note }], api: "willcord", provider: "willcord", model: "none", usage: ZERO_USAGE, stopReason: "stop", timestamp: user.timestamp }];
 }
 
 /**

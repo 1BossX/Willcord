@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { acquireOwnerLock } from "../src/lock.js";
 
 test("main data directory lock fails closed for concurrent instances", () => {
-  const dir = mkdtempSync(join(tmpdir(), "worker-plane-owner-"));
+  const dir = mkdtempSync(join(tmpdir(), "willcord-owner-"));
   try {
     const release = acquireOwnerLock(dir);
     const owner = JSON.parse(

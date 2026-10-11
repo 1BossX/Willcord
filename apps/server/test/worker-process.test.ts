@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { requestHash } from "@worker-plane/protocol";
+import { requestHash } from "@willcord/protocol";
 import { Peer } from "./support/peer.js";
 import { createCertificates, startTlsEndpoint, startWorker, stopWorker, waitFor, type WorkerProcess } from "./support/worker-harness.js";
 
@@ -33,7 +33,7 @@ async function fetchAll(peer: Peer, id: { worker_id: string; connection_epoch: n
 }
 
 test("P4-A real Rust worker: process-group cancel and timeout, bounded output, log replay and disk refusal", { timeout: 180000 }, async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "worker-plane-process-"));
+  const dir = mkdtempSync(join(tmpdir(), "willcord-process-"));
   const certs = createCertificates(dir);
   const peers: Peer[] = [];
   const endpoint = await startTlsEndpoint(certs, (socket) => peers.push(new Peer(socket)));
@@ -176,7 +176,7 @@ test("P4-A real Rust worker: process-group cancel and timeout, bounded output, l
 });
 
 test("P4-A an unknown call is settled by resolve_call and never runs again", { timeout: 60000 }, async () => {
-  const dir = mkdtempSync(join(tmpdir(), "worker-plane-resolve-"));
+  const dir = mkdtempSync(join(tmpdir(), "willcord-resolve-"));
   const certs = createCertificates(dir);
   const peers: Peer[] = [];
   const endpoint = await startTlsEndpoint(certs, (socket) => peers.push(new Peer(socket)));

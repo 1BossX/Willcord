@@ -1,23 +1,23 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- /Library/LaunchDaemons/com.workerplane.worker.plist (root:wheel 0644).
+<!-- /Library/LaunchDaemons/org.willcord.worker.plist (root:wheel 0644).
      UserName is the account that owns the workspaces; commands run as it. -->
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.workerplane.worker</string>
+  <string>org.willcord.worker</string>
   <key>UserName</key>
-  <string>workerplane</string>
+  <string>willcord</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/local/bin/worker-plane-worker</string>
-    <string>/usr/local/etc/worker-plane/worker.toml</string>
+    <string>/usr/local/bin/willcord</string>
+    <string>/usr/local/etc/willcord/worker.toml</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
     <!-- Trust the main node's internal CA (Caddy's root.crt) and nothing else. -->
     <key>SSL_CERT_FILE</key>
-    <string>/usr/local/etc/worker-plane/ca.pem</string>
+    <string>/usr/local/etc/willcord/ca.pem</string>
   </dict>
   <key>RunAtLoad</key>
   <true/>
@@ -39,8 +39,8 @@
        stopping the service, moving the file and starting again, never with
        newsyslog (docs/operations.md §11). -->
   <key>StandardErrorPath</key>
-  <string>/usr/local/var/log/worker-plane/worker.log</string>
+  <string>/usr/local/var/log/willcord/worker.log</string>
   <key>StandardOutPath</key>
-  <string>/usr/local/var/log/worker-plane/worker.log</string>
+  <string>/usr/local/var/log/willcord/worker.log</string>
 </dict>
 </plist>

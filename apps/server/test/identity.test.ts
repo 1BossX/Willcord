@@ -7,7 +7,7 @@ import argon2 from "argon2";
 import { openDatabase } from "../src/storage.js";
 import { createApp } from "../src/app.js";
 test("real SQLite migration, reopen, authentication and CSRF boundaries", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "worker-plane-"));
+  const dir = mkdtempSync(join(tmpdir(), "willcord-"));
   const path = join(dir, "main.sqlite");
   let db = openDatabase(path);
   assert.equal(db.pragma("journal_mode", { simple: true }), "wal");
@@ -233,7 +233,7 @@ test("migration 001 database upgrades without discarding identity or active slot
   const { readFileSync, readdirSync, mkdirSync, writeFileSync } = await import(
     "node:fs"
   );
-  const dir = mkdtempSync(join(tmpdir(), "worker-plane-upgrade-"));
+  const dir = mkdtempSync(join(tmpdir(), "willcord-upgrade-"));
   const initial = join(dir, "initial");
   mkdirSync(initial);
   const migrations = new URL("../../../migrations/", import.meta.url);

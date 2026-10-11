@@ -150,7 +150,7 @@ test("P7-A after a restore, an unacknowledged call the backup lacks blocks the w
 });
 
 test("P7-A an upgrade keeps unsettled calls, dedupe watermarks and parent waits, and a copy of the old database", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "worker-plane-upgrade-"));
+  const dir = mkdtempSync(join(tmpdir(), "willcord-upgrade-"));
   try {
     const old = join(dir, "migrations-p6");
     mkdirSync(old);
@@ -316,7 +316,7 @@ test("P7-A the worker has no model client, model key or model setting", () => {
 });
 
 test("P7-A restore never leaves a half-written database or a stale WAL behind", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "worker-plane-restore-"));
+  const dir = mkdtempSync(join(tmpdir(), "willcord-restore-"));
   try {
     const live = join(dir, "main.sqlite");
     openDatabase(live).close();

@@ -61,7 +61,7 @@ const scripts = {
 test("P7-C release acceptance from the built artifacts", { timeout: 15 * 60_000 }, async (t) => {
   assert.ok(releaseDir && existsSync(join(releaseDir, "apps/server/dist/main.js")), "WP_RELEASE_DIR must point at a deploy/build-main.sh directory");
   assert.ok(workerBin && existsSync(workerBin), "WP_WORKER_BIN must point at the release worker binary");
-  const dir = mkdtempSync(join(tmpdir(), "worker-plane-release-"));
+  const dir = mkdtempSync(join(tmpdir(), "willcord-release-"));
   const dataDir = join(dir, "main-data");
   const workspace = join(dir, "workspace");
   mkdirSync(workspace);
@@ -80,7 +80,7 @@ test("P7-C release acceptance from the built artifacts", { timeout: 15 * 60_000 
     writeFileSync(caddyfile, readFileSync(join(releaseDir, "deploy/Caddyfile.production"), "utf8").replace("127.0.0.1:3000", `127.0.0.1:${mainPort}`));
     caddy = run(caddyBin, ["run", "--config", caddyfile, "--adapter", "caddyfile"], { env: {
       PATH: process.env.PATH ?? "", HOME: dir, XDG_DATA_HOME: join(dir, "caddy-data"), XDG_CONFIG_HOME: join(dir, "caddy-config"),
-      WORKER_PLANE_SITE: `localhost:${sitePort}`, WORKER_PLANE_ROOT: releaseDir, CADDY_ADMIN: `localhost:${await freePort()}`,
+      WILLCORD_SITE: `localhost:${sitePort}`, WILLCORD_ROOT: releaseDir, CADDY_ADMIN: `localhost:${await freePort()}`,
     } });
     ca = join(dir, "caddy-data/caddy/pki/authorities/local/root.crt");
     await waitFor(() => existsSync(ca), 30_000).catch(() => { throw new Error(`caddy did not create its CA: ${caddy!.log()}`); });
@@ -114,7 +114,7 @@ test("P7-C release acceptance from the built artifacts", { timeout: 15 * 60_000 
   };
   const tokenFile = join(dir, "worker-token");
   const workerConfig = join(dir, "worker.toml");
-  writeFileSync(workerConfig, `worker_id = "release-w"\ndata_dir = "${join(dir, "worker-data")}"\nurl = "${wss}"\ntoken_file = "${tokenFile}"\nkill_grace_secs = 2\n[[workspaces]]\nworkspace_id = "repo"\nconfig_version = 1\npath = "${workspace}"\nrepo_id = "github.com/1BossX/WorkerPlane"\nis_default = true\n`);
+  writeFileSync(workerConfig, `worker_id = "release-w"\ndata_dir = "${join(dir, "worker-data")}"\nurl = "${wss}"\ntoken_file = "${tokenFile}"\nkill_grace_secs = 2\n[[workspaces]]\nworkspace_id = "repo"\nconfig_version = 1\npath = "${workspace}"\nrepo_id = "github.com/1BossX/Willcord"\nis_default = true\n`);
   // As the systemd unit runs it: no token in the environment, only the deployment CA trusted.
   const startWorker = () => { worker = run(workerBin, [workerConfig], { env: { PATH: "/usr/bin:/bin", HOME: dir, SSL_CERT_FILE: ca } }); };
   const workerRow = async () => ((await api("GET", "/api/workers")).json as any[]).find((w) => w.worker_id === "release-w");

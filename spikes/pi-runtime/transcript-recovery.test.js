@@ -15,7 +15,7 @@ import { createPiSession, ROLE_TOOLS } from './pi-runtime.js';
 
 for (const scenario of ['sqlite-only', 'jsonl-only', 'results', 'partial', 'cancelled']) {
   test(`SIGKILL recovery: ${scenario}`, async (t) => {
-    const root = mkdtempSync(join(tmpdir(), 'worker-plane-recovery-'));
+    const root = mkdtempSync(join(tmpdir(), 'willcord-recovery-'));
     t.after(() => rmSync(root, { recursive: true, force: true }));
     const child = spawnSync(process.execPath, [fileURLToPath(new URL('./recovery-crash-fixture.js', import.meta.url)), root, scenario]);
     assert.equal(child.signal, 'SIGKILL', child.stderr.toString());
@@ -66,7 +66,7 @@ for (const scenario of ['sqlite-only', 'jsonl-only', 'results', 'partial', 'canc
 }
 
 test('durable base history is ordered, idempotent and required for legacy checkpoints', (t) => {
-  const root = mkdtempSync(join(tmpdir(), 'worker-plane-history-'));
+  const root = mkdtempSync(join(tmpdir(), 'willcord-history-'));
   const store = new SqliteCheckpointStore(join(root, 'state.sqlite'));
   t.after(() => { store.close(); rmSync(root, { recursive: true, force: true }); });
   const recover = () => recoverTranscript({ store, jobId: 'job', cwd: root, sessionDir: join(root, 'sessions') });
@@ -87,7 +87,7 @@ test('durable base history is ordered, idempotent and required for legacy checkp
 });
 
 test('corrupt result identities and assistant intents refuse recovery', (t) => {
-  const root = mkdtempSync(join(tmpdir(), 'worker-plane-integrity-'));
+  const root = mkdtempSync(join(tmpdir(), 'willcord-integrity-'));
   const store = new SqliteCheckpointStore(join(root, 'state.sqlite'));
   t.after(() => { store.close(); rmSync(root, { recursive: true, force: true }); });
   store.appendHistory('job', 'request', { role: 'user', content: 'request', timestamp: 1 });
@@ -104,7 +104,7 @@ test('corrupt result identities and assistant intents refuse recovery', (t) => {
 });
 
 test('persisted legacy or malformed assistant content fails with RecoveryBlockedError', (t) => {
-  const root = mkdtempSync(join(tmpdir(), 'worker-plane-legacy-content-'));
+  const root = mkdtempSync(join(tmpdir(), 'willcord-legacy-content-'));
   const store = new SqliteCheckpointStore(join(root, 'state.sqlite'));
   t.after(() => { store.close(); rmSync(root, { recursive: true, force: true }); });
   for (const [index, content] of ['legacy string content', null, [null], ['invalid block'], [[]]].entries()) {

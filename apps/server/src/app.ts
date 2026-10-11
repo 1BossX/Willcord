@@ -20,8 +20,8 @@ import {
   requestHash,
   stringifyFrame,
   MAX_FRAME_BYTES,
-} from "@worker-plane/protocol";
-import type { WorkerFrame } from "@worker-plane/protocol";
+} from "@willcord/protocol";
+import type { WorkerFrame } from "@willcord/protocol";
 const digest = (value: string) =>
   createHash("sha256").update(value).digest("hex");
 const secret = () => randomBytes(32).toString("base64url");

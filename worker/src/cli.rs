@@ -32,17 +32,17 @@ impl System {
     }
 }
 fn system_root() -> Result<PathBuf, Error> {
-    if let Some(p) = std::env::var_os("WORKER_PLANE_SYSTEM_ROOT") {
+    if let Some(p) = std::env::var_os("WILLCORD_SYSTEM_ROOT") {
         let path = PathBuf::from(p);
         if !path.is_absolute() || path == Path::new("/") {
-            return Err("WORKER_PLANE_SYSTEM_ROOT must be an absolute directory".into());
+            return Err("WILLCORD_SYSTEM_ROOT must be an absolute directory".into());
         }
         return Ok(path);
     }
     Ok(PathBuf::from(if cfg!(target_os = "macos") {
-        "/Library/Application Support/WorkerPlane"
+        "/Library/Application Support/Willcord"
     } else {
-        "/var/lib/worker-plane-system"
+        "/var/lib/willcord-system"
     }))
 }
 fn valid_user(name: &str) -> bool {
@@ -126,23 +126,23 @@ fn become_service_user(sys: &System) -> Result<(), Error> {
     Ok(())
 }
 pub fn root() -> Result<PathBuf, Error> {
-    if let Some(p) = std::env::var_os("WORKER_PLANE_HOME") {
+    if let Some(p) = std::env::var_os("WILLCORD_HOME") {
         let path = PathBuf::from(p);
         if !path.is_absolute()
             || path == Path::new("/")
             || std::env::var_os("HOME").is_some_and(|h| path == PathBuf::from(h))
         {
             return Err(
-                "WORKER_PLANE_HOME must be an absolute private application directory".into(),
+                "WILLCORD_HOME must be an absolute private application directory".into(),
             );
         }
         return Ok(path);
     }
     let home = PathBuf::from(std::env::var_os("HOME").ok_or("HOME required")?);
     Ok(if cfg!(target_os = "macos") {
-        home.join("Library/Application Support/WorkerPlane")
+        home.join("Library/Application Support/Willcord")
     } else {
-        home.join(".local/share/worker-plane")
+        home.join(".local/share/willcord")
     })
 }
 pub fn private_dir(p: &Path) -> Result<(), Error> {
@@ -262,7 +262,7 @@ pub async fn proof(dir: &Path, action: &str) -> Result<Value, Error> {
         .json()
         .await?;
     let payload = json!([
-        "workerplane-enrollment-v1",
+        "willcord-enrollment-v1",
         action,
         challenge["challenge"],
         public_key,
@@ -315,9 +315,9 @@ fn setup(dir: &Path, base: &str) -> Result<(), Error> {
 fn service_name(dir: &Path) -> String {
     let suffix = format!("{:x}", Sha256::digest(dir.as_os_str().as_encoded_bytes()));
     if cfg!(target_os = "macos") {
-        format!("org.workerplane.worker.{}", &suffix[..12])
+        format!("org.willcord.worker.{}", &suffix[..12])
     } else {
-        format!("worker-plane-{}", &suffix[..12])
+        format!("willcord-worker-{}", &suffix[..12])
     }
 }
 fn worker_running(dir: &Path) -> bool {
@@ -386,7 +386,7 @@ fn launchd_plist(
         .map(|(u, _)| format!("<key>UserName</key><string>{u}</string><key>ExitTimeOut</key><integer>60</integer><key>ThrottleInterval</key><integer>60</integer><key>Umask</key><integer>63</integer>"))
         .unwrap_or_default();
     format!(
-        "<?xml version=\"1.0\"?><!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\"><plist version=\"1.0\"><dict><key>Label</key><string>{name}</string>{daemon}<key>ProgramArguments</key><array><string>{}</string><string>run</string></array><key>EnvironmentVariables</key><dict><key>WORKER_PLANE_HOME</key><string>{}</string>{}</dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>StandardErrorPath</key><string>{}</string></dict></plist>",
+        "<?xml version=\"1.0\"?><!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\"><plist version=\"1.0\"><dict><key>Label</key><string>{name}</string>{daemon}<key>ProgramArguments</key><array><string>{}</string><string>run</string></array><key>EnvironmentVariables</key><dict><key>WILLCORD_HOME</key><string>{}</string>{}</dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>StandardErrorPath</key><string>{}</string></dict></plist>",
         xml(exe),
         xml(dir),
         // launchd sets no HOME for daemons; commands need the account's.
@@ -404,13 +404,13 @@ fn systemd_unit(exe: &Path, dir: &Path, ca: Option<&Path>, user: Option<&str>) -
         .unwrap_or_default();
     match user {
         None => format!(
-            "[Unit]\nDescription=WorkerPlane worker\n[Service]\nExecStart=\"{}\" run\nEnvironment=\"WORKER_PLANE_HOME={}\"\n{ca}Restart=on-failure\nRestartSec=5\n[Install]\nWantedBy=default.target\n",
+            "[Unit]\nDescription=Willcord worker\n[Service]\nExecStart=\"{}\" run\nEnvironment=\"WILLCORD_HOME={}\"\n{ca}Restart=on-failure\nRestartSec=5\n[Install]\nWantedBy=default.target\n",
             unit_quote(exe),
             unit_quote(dir)
         ),
-        // Mirrors deploy/systemd/worker-plane-worker.service.
+        // Mirrors deploy/systemd/willcord-worker.service.
         Some(u) => format!(
-            "[Unit]\nDescription=WorkerPlane worker\nAfter=network-online.target\nWants=network-online.target\nStartLimitIntervalSec=600\nStartLimitBurst=5\n[Service]\nType=simple\nUser={u}\nExecStart=\"{}\" run\nEnvironment=\"WORKER_PLANE_HOME={}\"\n{ca}KillSignal=SIGTERM\nTimeoutStopSec=60\nKillMode=control-group\nRestart=on-failure\nRestartSec=10\nUMask=0077\n[Install]\nWantedBy=multi-user.target\n",
+            "[Unit]\nDescription=Willcord worker\nAfter=network-online.target\nWants=network-online.target\nStartLimitIntervalSec=600\nStartLimitBurst=5\n[Service]\nType=simple\nUser={u}\nExecStart=\"{}\" run\nEnvironment=\"WILLCORD_HOME={}\"\n{ca}KillSignal=SIGTERM\nTimeoutStopSec=60\nKillMode=control-group\nRestart=on-failure\nRestartSec=10\nUMask=0077\n[Install]\nWantedBy=multi-user.target\n",
             unit_quote(exe),
             unit_quote(dir)
         ),
@@ -426,8 +426,8 @@ fn save_public(p: &Path, bytes: &[u8]) -> Result<(), Error> {
 fn service(dir: &Path, sys: Option<&System>, install: bool) -> Result<(), Error> {
     let name = service_name(dir);
     let exe = match sys {
-        Some(s) => s.root.join("bin/worker"),
-        None => dir.join("bin/worker"),
+        Some(s) => s.root.join("bin/willcord"),
+        None => dir.join("bin/willcord"),
     };
     let ca = match sys {
         Some(s) => s.ca.clone(),
@@ -437,7 +437,7 @@ fn service(dir: &Path, sys: Option<&System>, install: bool) -> Result<(), Error>
     if cfg!(target_os = "macos") {
         let directory = match sys {
             Some(_) => PathBuf::from("/Library/LaunchDaemons"),
-            None => std::env::var_os("WORKER_PLANE_LAUNCH_AGENT_DIR")
+            None => std::env::var_os("WILLCORD_LAUNCH_AGENT_DIR")
                 .map(PathBuf::from)
                 .map_or_else(
                     || {
@@ -632,11 +632,11 @@ fn join_summary(state: &Value, fingerprint: &str, base: &str) -> String {
         state["worker_id"].as_str().unwrap_or("unknown"),
     )
 }
-const USAGE: &str = "usage: worker install [--system --user ACCOUNT] | join URL | status [--json] | workspace add ID PATH | workspace list | run | uninstall [--delete-data]  (add --system to manage the system service)";
+const USAGE: &str = "usage: willcord install [--system --user ACCOUNT] | join URL | status [--json] | workspace add ID PATH | workspace list | run | uninstall [--delete-data]  (add --system to manage the system service)";
 /// A mistyped command is not a failure with a backtrace-style message: say so plainly and exit.
 fn usage_error(command: Option<&str>) -> ! {
     if let Some(command) = command {
-        eprintln!("worker: unknown command '{command}'");
+        eprintln!("willcord: unknown command '{command}'");
     }
     eprintln!("{USAGE}");
     std::process::exit(2)
@@ -683,7 +683,7 @@ pub async fn dispatch() -> Result<Option<PathBuf>, Error> {
         return Err("--user only applies to install --system".into());
     }
     if system && command == "run" {
-        return Err("run takes WORKER_PLANE_HOME from the service definition".into());
+        return Err("run takes WILLCORD_HOME from the service definition".into());
     }
     let sys = if !system {
         None
@@ -726,11 +726,11 @@ pub async fn dispatch() -> Result<Option<PathBuf>, Error> {
             }
             use std::os::unix::fs::PermissionsExt;
             let (target, mode) = match sys {
-                Some(s) => (s.root.join("bin/worker"), 0o755),
+                Some(s) => (s.root.join("bin/willcord"), 0o755),
                 None => {
                     copy_user_ca(&dir, std::env::var_os("SSL_CERT_FILE").map(PathBuf::from))?;
                     private_dir(&dir.join("bin"))?;
-                    (dir.join("bin/worker"), 0o700)
+                    (dir.join("bin/willcord"), 0o700)
                 }
             };
             let current = std::env::current_exe()?;
@@ -740,9 +740,9 @@ pub async fn dispatch() -> Result<Option<PathBuf>, Error> {
             }
             let marker = sys.map_or_else(|| dir.clone(), |s| s.root.clone());
             if sys.is_some() {
-                save_public(&marker.join("managed-install"), b"worker-plane-managed-v1")?;
+                save_public(&marker.join("managed-install"), b"willcord-managed-v1")?;
             } else {
-                save(&marker.join("managed-install"), b"worker-plane-managed-v1")?;
+                save(&marker.join("managed-install"), b"willcord-managed-v1")?;
             }
             service(&dir, sys, true)?;
             println!("Service: {}", service_name(&dir));
@@ -924,7 +924,7 @@ pub async fn dispatch() -> Result<Option<PathBuf>, Error> {
                 }
                 println!("Workspace added");
             } else {
-                return Err("usage: worker workspace add ID PATH|list".into());
+                return Err("usage: willcord workspace add ID PATH|list".into());
             }
         }
         "uninstall" => {
@@ -932,7 +932,7 @@ pub async fn dispatch() -> Result<Option<PathBuf>, Error> {
             if args.iter().any(|a| a == "--delete-data") {
                 // A system install is removed whole: binary, system.json and data.
                 let installed = sys.map_or_else(|| dir.clone(), |s| s.root.clone());
-                if fs::read(installed.join("managed-install"))? != b"worker-plane-managed-v1" {
+                if fs::read(installed.join("managed-install"))? != b"willcord-managed-v1" {
                     return Err("refusing to delete an unmanaged directory".into());
                 }
                 fs::remove_dir_all(&installed)?;
@@ -1053,19 +1053,19 @@ mod tests {
     #[test]
     fn user_unit_is_unchanged_and_system_unit_runs_as_the_account_at_boot() {
         let (exe, dir, ca) = (
-            Path::new("/w/bin/worker"),
+            Path::new("/w/bin/willcord"),
             Path::new("/w"),
             Path::new("/c/ca.pem"),
         );
         assert_eq!(
             systemd_unit(exe, dir, Some(ca), None),
-            "[Unit]\nDescription=WorkerPlane worker\n[Service]\nExecStart=\"/w/bin/worker\" run\nEnvironment=\"WORKER_PLANE_HOME=/w\"\nEnvironment=\"SSL_CERT_FILE=/c/ca.pem\"\nRestart=on-failure\nRestartSec=5\n[Install]\nWantedBy=default.target\n"
+            "[Unit]\nDescription=Willcord worker\n[Service]\nExecStart=\"/w/bin/willcord\" run\nEnvironment=\"WILLCORD_HOME=/w\"\nEnvironment=\"SSL_CERT_FILE=/c/ca.pem\"\nRestart=on-failure\nRestartSec=5\n[Install]\nWantedBy=default.target\n"
         );
         let unit = systemd_unit(exe, dir, Some(ca), Some("ops"));
         for line in [
             "User=ops\n",
-            "ExecStart=\"/w/bin/worker\" run\n",
-            "Environment=\"WORKER_PLANE_HOME=/w\"\n",
+            "ExecStart=\"/w/bin/willcord\" run\n",
+            "Environment=\"WILLCORD_HOME=/w\"\n",
             "Environment=\"SSL_CERT_FILE=/c/ca.pem\"\n",
             "KillMode=control-group\n",
             "TimeoutStopSec=60\n",
@@ -1104,7 +1104,7 @@ mod tests {
         for bad in ["", "-x", "a b", "a/b", "a\nUser=root"] {
             assert!(!valid_user(bad), "{bad:?}");
         }
-        assert!(valid_user("worker-plane"));
+        assert!(valid_user("willcord"));
         assert!(lookup("root").is_err());
         assert!(lookup("no-such-account-wp").is_err());
     }

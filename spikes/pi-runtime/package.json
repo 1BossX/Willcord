@@ -1,5 +1,5 @@
 {
-  "name": "worker-plane-pi-runtime-seam-harness",
+  "name": "willcord-pi-runtime-seam-harness",
   "private": true,
   "type": "module",
   "scripts": {

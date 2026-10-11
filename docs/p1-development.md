@@ -29,7 +29,7 @@ pnpm build
 export PUBLIC_BASE_URL=https://localhost:8443
 export DATA_DIR=/absolute/private/server-data
 # 在安全的本地环境中设置 INITIAL_ADMIN_PASSWORD，不在这里填写真实值。
-pnpm --filter @worker-plane/server dev
+pnpm --filter @willcord/server dev
 # 另一个终端，已安装 Caddy 时：
 caddy run --config deploy/Caddyfile
 ```

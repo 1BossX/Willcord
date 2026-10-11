@@ -1,15 +1,15 @@
 [Unit]
-Description=Worker Plane main node
+Description=Willcord main node
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=worker-plane
-Group=worker-plane
-EnvironmentFile=/etc/worker-plane/main.env
-Environment=DATA_DIR=/var/lib/worker-plane
-WorkingDirectory=/opt/worker-plane/current/apps/server
+User=willcord
+Group=willcord
+EnvironmentFile=/etc/willcord/main.env
+Environment=DATA_DIR=/var/lib/willcord
+WorkingDirectory=/opt/willcord/current/apps/server
 ExecStart=/usr/bin/env node dist/main.js
 # SIGTERM closes connections, the database and the data directory lock.
 KillSignal=SIGTERM
@@ -18,14 +18,14 @@ TimeoutStopSec=30
 # a restart would only be refused. An operator checks that no main process
 # runs, removes the lock and starts the unit (docs/operations.md).
 Restart=no
-StateDirectory=worker-plane
+StateDirectory=willcord
 StateDirectoryMode=0700
 UMask=0077
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
-ReadWritePaths=/var/lib/worker-plane
+ReadWritePaths=/var/lib/willcord
 
 [Install]
 WantedBy=multi-user.target

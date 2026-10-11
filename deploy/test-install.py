@@ -66,7 +66,7 @@ elif name=='docker':
 elif name in ['sleep','systemctl','launchctl']:pass
 else:
  if args[0]=='install':
-  target=p(os.environ['WORKER_PLANE_SYSTEM_ROOT'])/'bin/worker' if '--system' in args else p(os.environ['WORKER_PLANE_HOME'])/'bin/worker'
+  target=p(os.environ['WILLCORD_SYSTEM_ROOT'])/'bin/willcord' if '--system' in args else p(os.environ['WILLCORD_HOME'])/'bin/willcord'
   target.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(sys.argv[0],target);target.chmod(0o700)
   if '--system' not in args and 'SSL_CERT_FILE' in os.environ:
    (target.parent.parent/'ca.pem').write_bytes(p(os.environ['SSL_CERT_FILE']).read_bytes())
@@ -85,11 +85,11 @@ class InstallerTests(unittest.TestCase):
   for name in ['uname','curl','id','sudo','docker','sleep','systemctl','launchctl']:
    path=self.bin/name;path.write_text(stub);path.chmod(0o700)
   for os_name,arch in [('linux','x86_64'),('linux','aarch64'),('darwin','x86_64'),('darwin','arm64')]:
-   self.asset(f'worker-plane-worker-v1.2.3-{os_name}-{arch}',stub.encode())
-  self.asset('worker-plane-worker-v1.2.3-rc.1-linux-x86_64',stub.encode())
+   self.asset(f'willcord-v1.2.3-{os_name}-{arch}',stub.encode())
+  self.asset('willcord-v1.2.3-rc.1-linux-x86_64',stub.encode())
   self.asset('compose.yaml',COMPOSE.read_bytes())
   self.ca=self.root/"CA directory/o'ne.pem";self.ca.parent.mkdir();self.ca.write_text('CA')
-  self.env={**os.environ,'LANG':'en_US.UTF-8','LC_ALL':'en_US.UTF-8','PATH':f'{self.bin}:{os.environ["PATH"]}','TEST_ROOT':str(self.root),'WORKER_PLANE_HOME':str(self.root/"user's data"),'WORKER_PLANE_SYSTEM_ROOT':str(self.root/'system data'),'TMPDIR':str(self.root)}
+  self.env={**os.environ,'LANG':'en_US.UTF-8','LC_ALL':'en_US.UTF-8','PATH':f'{self.bin}:{os.environ["PATH"]}','TEST_ROOT':str(self.root),'WILLCORD_HOME':str(self.root/"user's data"),'WILLCORD_SYSTEM_ROOT':str(self.root/'system data'),'TMPDIR':str(self.root)}
   self.env.pop('SSL_CERT_FILE',None)
  def tearDown(self):self.temp.cleanup()
  def asset(self,name,data):
@@ -98,7 +98,7 @@ class InstallerTests(unittest.TestCase):
  def calls(self):return [json.loads(x) for x in (self.root/'calls').read_text().splitlines()]
  def run_worker(self,*extra,env=None):
   return subprocess.run([BASH,str(SCRIPT),'worker','--server','https://plane.internal:8443','--ca',str(self.ca),*extra],env={**self.env,**(env or {})},capture_output=True,text=True)
- def clean_tmp(self):self.assertFalse(list(self.root.glob('worker-plane-install.*')))
+ def clean_tmp(self):self.assertFalse(list(self.root.glob('willcord-install.*')))
  def test_four_platforms_and_literal_paths(self):
   for os_name,arch,asset_os,asset_arch in [('Linux','x86_64','linux','x86_64'),('Linux','arm64','linux','aarch64'),('Darwin','x86_64','darwin','x86_64'),('Darwin','arm64','darwin','arm64')]:
    with self.subTest(os=os_name,arch=arch):
@@ -110,19 +110,19 @@ class InstallerTests(unittest.TestCase):
  def test_latest_and_system_account(self):
   r=self.run_worker('--system','--user','ops');self.assertEqual(r.returncode,0,r.stderr)
   self.assertIn('安装版本：v1.2.3',r.stdout)
-  self.assertTrue((Path(self.env['WORKER_PLANE_SYSTEM_ROOT'])/'bin/worker').exists())
+  self.assertTrue((Path(self.env['WILLCORD_SYSTEM_ROOT'])/'bin/willcord').exists())
   self.assertTrue(any('--system' in a and 'join' in a for _,a in self.calls()))
  def test_no_release_hash_download_and_account_fail_before_install(self):
   for env,args in [({'TEST_NO_RELEASE':'1'},[]),({'TEST_PRERELEASE':'1'},['--version','v1.2.3']),({'TEST_BAD_HASH':'1'},[]),({'TEST_DOWNLOAD_FAIL':'1'},[]),({},['--system','--user','root']),({},['--system','--user','missing']),({'TEST_ARCH':'riscv64'},[])]:
    with self.subTest(env=env,args=args):
     r=self.run_worker(*args,env=env);self.assertNotEqual(r.returncode,0)
-    self.assertFalse((Path(self.env['WORKER_PLANE_HOME'])/'bin/worker').exists())
-    self.assertFalse((Path(self.env['WORKER_PLANE_SYSTEM_ROOT'])/'bin/worker').exists())
+    self.assertFalse((Path(self.env['WILLCORD_HOME'])/'bin/willcord').exists())
+    self.assertFalse((Path(self.env['WILLCORD_SYSTEM_ROOT'])/'bin/willcord').exists())
     self.clean_tmp()
  def test_prerelease_only_when_named(self):
   r=self.run_worker('--version','v1.2.3-rc.1',env={'TEST_PRERELEASE':'1'});self.assertEqual(r.returncode,0,r.stderr)
   self.assertIn('安装预发布版本：v1.2.3-rc.1',r.stdout)
-  self.assertTrue(any('worker-plane-worker-v1.2.3-rc.1-linux-x86_64' in str(a) for n,a in self.calls() if n=='curl'))
+  self.assertTrue(any('willcord-v1.2.3-rc.1-linux-x86_64' in str(a) for n,a in self.calls() if n=='curl'))
   self.clean_tmp()
   r=self.run_worker('--version','v1.2.3',env={'TEST_PRERELEASE':'1'});self.assertNotEqual(r.returncode,0)
   self.assertIn('预发布',r.stderr)
@@ -139,16 +139,16 @@ class InstallerTests(unittest.TestCase):
   r=self.run_worker('--version','v1.2.3',env={'TEST_API_LIMIT':'1'});self.assertEqual(r.returncode,0,r.stderr)
   self.assertIn('GitHub API 暂不可用',r.stderr)
   # Without the API the SHA-256 and the asset download still guard the install.
-  shutil.rmtree(self.env['WORKER_PLANE_HOME'])
+  shutil.rmtree(self.env['WILLCORD_HOME'])
   r=self.run_worker('--version','v1.2.3',env={'TEST_API_LIMIT':'1','TEST_BAD_HASH':'1'});self.assertNotEqual(r.returncode,0)
-  self.assertFalse((Path(self.env['WORKER_PLANE_HOME'])/'bin/worker').exists())
+  self.assertFalse((Path(self.env['WILLCORD_HOME'])/'bin/willcord').exists())
   self.clean_tmp()
  def test_system_trust_has_no_insecure_or_ca_parameter(self):
   r=subprocess.run([BASH,str(SCRIPT),'worker','--server','https://plane.example.com'],env=self.env,capture_output=True,text=True)
   self.assertEqual(r.returncode,0,r.stderr)
   health=[a for n,a in self.calls() if n=='curl' and any(x.endswith('/health') for x in a)]
   self.assertTrue(health);self.assertTrue(all('--insecure' not in a and '--cacert' not in a for a in health))
-  self.assertFalse((Path(self.env['WORKER_PLANE_HOME'])/'ca.pem').exists())
+  self.assertFalse((Path(self.env['WILLCORD_HOME'])/'ca.pem').exists())
  def test_fingerprint_bootstrap_and_fail_closed(self):
   import shutil
   subprocess.run(['openssl','req','-x509','-newkey','rsa:2048','-nodes','-keyout',str(self.root/'key.pem'),'-out',str(self.root/'bootstrap.pem'),'-days','1','-subj','/CN=test-ca'],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
@@ -158,19 +158,19 @@ class InstallerTests(unittest.TestCase):
   for env in [{'TEST_TLS_FAIL':'1'},{'TEST_BAD_HASH':'1'}]:
    r=subprocess.run(args,env={**self.env,**env},capture_output=True,text=True)
    self.assertNotEqual(r.returncode,0,r.stderr)
-   self.assertFalse((Path(self.env['WORKER_PLANE_HOME'])/'bin/worker').exists())
+   self.assertFalse((Path(self.env['WILLCORD_HOME'])/'bin/willcord').exists())
   r=subprocess.run(args[:-1]+['0'*64],env=self.env,capture_output=True,text=True)
   self.assertNotEqual(r.returncode,0);self.assertIn('指纹不匹配',r.stderr)
   r=subprocess.run(args,env=self.env,capture_output=True,text=True)
   self.assertEqual(r.returncode,0,r.stderr)
-  self.assertEqual((Path(self.env['WORKER_PLANE_HOME'])/'ca.pem').read_bytes(),(self.root/'bootstrap.pem').read_bytes())
+  self.assertEqual((Path(self.env['WILLCORD_HOME'])/'ca.pem').read_bytes(),(self.root/'bootstrap.pem').read_bytes())
   bootstrap_calls=[a for n,a in self.calls() if n=='curl' and any('/.well-known/willcord/ca.pem' in x for x in a)]
   self.assertTrue(all('--insecure' in a and '--location' not in a for a in bootstrap_calls))
   self.assertFalse(any('--insecure' in a for n,a in self.calls() if n=='curl' and not any('/.well-known/willcord/ca.pem' in x for x in a)))
-  shutil.rmtree(self.env['WORKER_PLANE_HOME'])
+  shutil.rmtree(self.env['WILLCORD_HOME'])
   (self.root/'bootstrap.pem').write_bytes(b'x'*65537)
   r=subprocess.run(args,env=self.env,capture_output=True,text=True)
-  self.assertNotEqual(r.returncode,0);self.assertFalse((Path(self.env['WORKER_PLANE_HOME'])/'bin/worker').exists())
+  self.assertNotEqual(r.returncode,0);self.assertFalse((Path(self.env['WILLCORD_HOME'])/'bin/willcord').exists())
   self.clean_tmp()
  def test_reinstall_preserves_identity_and_ledger(self):
   data=self.root/"user's data";data.mkdir()
@@ -217,7 +217,7 @@ class InstallerTests(unittest.TestCase):
   self.assertEqual((deploy/'.env').stat().st_mode&0o777,0o600)
   self.assertNotIn('INITIAL_ADMIN_PASSWORD',(deploy/'main.env').read_text())
   self.assertIn('MODEL_API_KEY="key$$with#special"',(deploy/'main.env').read_text())
-  self.assertIn('WORKER_PLANE_PORT="8443"',(deploy/'.env').read_text())
+  self.assertIn('WILLCORD_PORT="8443"',(deploy/'.env').read_text())
   self.assertIn('COMPOSE_PROJECT_NAME=',(deploy/'.env').read_text())
   self.assertEqual((deploy/'ca.pem').stat().st_mode&0o777,0o644)
   self.assertNotIn('long\'password',out)

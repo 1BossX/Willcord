@@ -25,7 +25,7 @@ export function createCertificates(dir: string) {
   writeFileSync(
     caConfig,
     "[req]\nprompt=no\ndistinguished_name=dn\nx509_extensions=v3_ca\n" +
-      "[dn]\nCN=Worker Plane Test CA\n" +
+      "[dn]\nCN=Willcord Test CA\n" +
       "[v3_ca]\nbasicConstraints=critical,CA:TRUE\nkeyUsage=critical,keyCertSign,cRLSign\n",
   );
   // Pin the test CA extensions instead of inheriting host OpenSSL defaults.
@@ -66,12 +66,12 @@ export function startWorker(options: { dir: string; id: string; url: string; ca:
     `worker_id = "${options.id}"\ndata_dir = "${options.dir}/${options.id}-data"\nurl = "${options.url}"\n` +
       (options.retentionSecs === undefined ? "" : `result_retention_secs = ${options.retentionSecs}\n`) +
       (options.extraConfig ?? "") +
-      `[[workspaces]]\nworkspace_id = "repo"\nconfig_version = ${options.configVersion ?? 1}\npath = "${options.workspace}"\nrepo_id = "github.com/1BossX/WorkerPlane"\nis_default = true\n`,
+      `[[workspaces]]\nworkspace_id = "repo"\nconfig_version = ${options.configVersion ?? 1}\npath = "${options.workspace}"\nrepo_id = "github.com/1BossX/Willcord"\nis_default = true\n`,
   );
   const env = { ...process.env, WORKER_TOKEN: options.token, SSL_CERT_FILE: options.ca, ...options.env };
   // rustls-native-certs prefers SSL_CERT_DIR over SSL_CERT_FILE when both are set.
   delete env.SSL_CERT_DIR;
-  const child = spawn(options.binary ?? join(repoRoot, "worker/target/debug/worker-plane-worker"), [config], {
+  const child = spawn(options.binary ?? join(repoRoot, "worker/target/debug/willcord"), [config], {
     env,
     stdio: ["ignore", "ignore", "pipe"],
   });
@@ -87,7 +87,7 @@ export function startWorker(options: { dir: string; id: string; url: string; ca:
 export function buildFaultWorker() {
   const targetDir = join(repoRoot, "worker/target/fault");
   execFileSync("cargo", ["build", "--locked", "--quiet", "--manifest-path", join(repoRoot, "worker/Cargo.toml"), "--features", "fault-injection", "--target-dir", targetDir], { stdio: "inherit" });
-  return join(targetDir, "debug/worker-plane-worker");
+  return join(targetDir, "debug/willcord");
 }
 
 /** Stop a worker; a signal it ignores fails the test instead of hanging it. */

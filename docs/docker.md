@@ -6,8 +6,8 @@
 
 | 镜像 | 内容 |
 |---|---|
-| `ghcr.io/1bossx/worker-plane-main:<版本>` | Node 主节点，以 `node` 用户（uid 1000）运行，监听容器内 3000 端口 |
-| `ghcr.io/1bossx/worker-plane-caddy:<版本>` | Caddy、内部 CA 和网页 UI |
+| `ghcr.io/1bossx/willcord-main:<版本>` | Node 主节点，以 `node` 用户（uid 1000）运行，监听容器内 3000 端口 |
+| `ghcr.io/1bossx/willcord-caddy:<版本>` | Caddy、内部 CA 和网页 UI |
 
 每个 `v*` 标签发布 linux/amd64 和 linux/arm64 两个架构，版本号去掉前缀 `v`，例如 `v0.3.0` 对应 `0.3.0`。不发布 `latest`，部署时固定版本。也可以在仓库根目录自行构建：`docker build -f deploy/docker/Dockerfile --target main .`（Caddy 用 `--target caddy`）。
 
@@ -20,14 +20,14 @@
 1. 准备目录，复制 `deploy/docker/compose.yaml`，并在同一目录写 `.env`：
 
    ```bash
-   WORKER_PLANE_VERSION=0.4.2
-   WORKER_PLANE_SITE=plane.internal:8443
-   WORKER_PLANE_PORT=8443
+   WILLCORD_VERSION=0.4.2
+   WILLCORD_SITE=plane.internal:8443
+   WILLCORD_PORT=8443
    ```
 
-   `WORKER_PLANE_SITE` 是浏览器和 worker 访问的地址，端口必须等于 `WORKER_PLANE_PORT`，宿主机上发布的也是这个端口。
+   `WILLCORD_SITE` 是浏览器和 worker 访问的地址，端口必须等于 `WILLCORD_PORT`，宿主机上发布的也是这个端口。
 
-2. 复制 `deploy/main.env.example` 为同目录的 `main.env`，权限 0600，填入值。`PUBLIC_BASE_URL` 必须是 `https://` 加 `WORKER_PLANE_SITE`；`DATA_DIR`、`HOST`、`PORT` 已由镜像设置，不要填。`INITIAL_ADMIN_PASSWORD` 只在第一次启动时需要，启动成功后删掉这一行。
+2. 复制 `deploy/main.env.example` 为同目录的 `main.env`，权限 0600，填入值。`PUBLIC_BASE_URL` 必须是 `https://` 加 `WILLCORD_SITE`；`DATA_DIR`、`HOST`、`PORT` 已由镜像设置，不要填。`INITIAL_ADMIN_PASSWORD` 只在第一次启动时需要，启动成功后删掉这一行。
 
 3. 启动并检查：
 
@@ -60,8 +60,8 @@
 
 ```bash
 docker compose ps -a main          # 确认状态是 exited，没有正在运行的 main
-docker compose run --rm --no-deps -T main cat /var/lib/worker-plane/main.lock/owner.json
-docker compose run --rm --no-deps -T main node -e "require('fs').rmSync('/var/lib/worker-plane/main.lock',{recursive:true})"
+docker compose run --rm --no-deps -T main cat /var/lib/willcord/main.lock/owner.json
+docker compose run --rm --no-deps -T main node -e "require('fs').rmSync('/var/lib/willcord/main.lock',{recursive:true})"
 docker compose start main
 ```
 
@@ -72,8 +72,8 @@ docker compose start main
 在线备份（主节点不停）：
 
 ```bash
-docker compose exec -T main node dist/admin.js backup /var/lib/worker-plane/backup-$(date +%F).sqlite
-docker compose cp main:/var/lib/worker-plane/backup-$(date +%F).sqlite ./
+docker compose exec -T main node dist/admin.js backup /var/lib/willcord/backup-$(date +%F).sqlite
+docker compose cp main:/var/lib/willcord/backup-$(date +%F).sqlite ./
 ```
 
 再把文件复制到另一台机器或对象存储。
@@ -82,8 +82,8 @@ docker compose cp main:/var/lib/worker-plane/backup-$(date +%F).sqlite ./
 
 ```bash
 docker compose stop main
-docker compose run --rm --no-deps -T main sh -c 'cat > /var/lib/worker-plane/restore.sqlite' < ./backup.sqlite
-docker compose run --rm --no-deps -T main node dist/admin.js restore /var/lib/worker-plane/restore.sqlite
+docker compose run --rm --no-deps -T main sh -c 'cat > /var/lib/willcord/restore.sqlite' < ./backup.sqlite
+docker compose run --rm --no-deps -T main node dist/admin.js restore /var/lib/willcord/restore.sqlite
 docker compose start main
 ```
 
@@ -92,7 +92,7 @@ docker compose start main
 ## 升级
 
 1. 按 [运维手册 §6](operations.md#6-升级) 暂停调度、等待任务结束并备份。
-2. 修改 `.env` 里的 `WORKER_PLANE_VERSION`，执行 `docker compose pull && docker compose up -d`。有新迁移时主节点先在数据卷里保存迁移前快照。
+2. 修改 `.env` 里的 `WILLCORD_VERSION`，执行 `docker compose pull && docker compose up -d`。有新迁移时主节点先在数据卷里保存迁移前快照。
 3. 检查 `/health`，再恢复调度。回滚时把版本改回旧值，并用旧版本镜像的 `admin.js restore` 恢复迁移前快照。
 
 ## 安全设置

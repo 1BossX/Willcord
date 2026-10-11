@@ -1,9 +1,9 @@
 worker_id = "worker-a"
-data_dir = "/tmp/worker-plane-a"
+data_dir = "/tmp/willcord-a"
 url = "wss://localhost:8443/ws/worker"
 # Token: either WORKER_TOKEN in the environment, or a file (mode 0600) that is
 # reread on every reconnect, so rotation needs no restart. Not both.
-# token_file = "/etc/worker-plane/token"
+# token_file = "/etc/willcord/token"
 # Optional limits (defaults shown).
 # kill_grace_secs = 10                # TERM -> KILL on cancel or timeout; at most 30
 # max_tool_timeout_secs = 1800        # bash timeout_secs above this is refused
@@ -13,5 +13,5 @@ url = "wss://localhost:8443/ws/worker"
 workspace_id = "project"
 config_version = 1
 path = "/absolute/project/path"
-repo_id = "github.com/1BossX/WorkerPlane"
+repo_id = "github.com/1BossX/Willcord"
 is_default = true

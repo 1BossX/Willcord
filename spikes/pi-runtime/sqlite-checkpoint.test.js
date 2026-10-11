@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { SqliteCheckpointStore, TurnConflictError } from './sqlite-checkpoint.js';
 
 function temporaryStore(t) {
-  const directory = mkdtempSync(join(tmpdir(), 'worker-plane-checkpoint-'));
+  const directory = mkdtempSync(join(tmpdir(), 'willcord-checkpoint-'));
   const filename = join(directory, 'checkpoint.sqlite');
   let store = new SqliteCheckpointStore(filename);
   t.after(() => {

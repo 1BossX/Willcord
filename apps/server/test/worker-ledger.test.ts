@@ -3,12 +3,12 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { requestHash } from "@worker-plane/protocol";
+import { requestHash } from "@willcord/protocol";
 import { Peer } from "./support/peer.js";
 import { createCertificates, startTlsEndpoint, startWorker, stopWorker, waitFor, type WorkerProcess } from "./support/worker-harness.js";
 
 test("real Rust worker ledger: lost ACKs, network loss, crash windows and tombstones never repeat side effects", { timeout: 90000 }, async () => {
-  const dir = mkdtempSync(join(tmpdir(), "worker-plane-ledger-"));
+  const dir = mkdtempSync(join(tmpdir(), "willcord-ledger-"));
   const certs = createCertificates(dir);
   const peers: Peer[] = [];
   const endpoint = await startTlsEndpoint(certs, (socket) => peers.push(new Peer(socket)));
@@ -122,7 +122,7 @@ test("real Rust worker ledger: lost ACKs, network loss, crash windows and tombst
 });
 
 test("real Rust worker exits on SIGINT that arrives while it is inside a frame handler", { timeout: 30000 }, async () => {
-  const dir = mkdtempSync(join(tmpdir(), "worker-plane-sigint-"));
+  const dir = mkdtempSync(join(tmpdir(), "willcord-sigint-"));
   const certs = createCertificates(dir);
   const peers: Peer[] = [];
   const endpoint = await startTlsEndpoint(certs, (socket) => peers.push(new Peer(socket)));

@@ -1,5 +1,5 @@
 {
-  "name": "worker-plane",
+  "name": "willcord",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.18.3",
@@ -8,8 +8,8 @@
   },
   "scripts": {
     "build": "pnpm -r build",
-    "check": "pnpm --filter @worker-plane/protocol build && pnpm -r check",
-    "test": "pnpm --filter @worker-plane/protocol build && pnpm -r test",
+    "check": "pnpm --filter @willcord/protocol build && pnpm -r check",
+    "test": "pnpm --filter @willcord/protocol build && pnpm -r test",
     "protocol:generate": "node scripts/generate-protocol.mjs"
   },
   "license": "Apache-2.0"

@@ -21,4 +21,4 @@
 
 上述服务和任务验证使用真实二进制、服务管理器、HTTPS/WSS 和脚本模型；正式 GitHub Release 下载未由本地夹具替代证明。公开交付需要合入后的 Pages 发布、四平台 Release 产物和两架构 GHCR 镜像成功，并核对匿名下载与页面展示命令。
 
-原始浏览器截图保存于本地临时验收目录，不包含在 Git 提交中。可复用实机验收入口为 `apps/server/test/support/install-worker-acceptance.ts`：默认 macOS，Linux 使用 `WORKER_PLANE_ACCEPTANCE_MODE=linux WORKER_PLANE_TEST_SSH_TARGET=<your-test-host>`，仅用于明确授权的隔离验收。
+原始浏览器截图保存于本地临时验收目录，不包含在 Git 提交中。可复用实机验收入口为 `apps/server/test/support/install-worker-acceptance.ts`：默认 macOS，Linux 使用 `WILLCORD_ACCEPTANCE_MODE=linux WILLCORD_TEST_SSH_TARGET=<your-test-host>`，仅用于明确授权的隔离验收。

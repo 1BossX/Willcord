@@ -1,0 +1,14 @@
+[Unit]
+Description=Willcord online backup of the main database
+After=willcord-main.service
+
+[Service]
+Type=oneshot
+User=willcord
+Group=willcord
+Environment=DATA_DIR=/var/lib/willcord
+WorkingDirectory=/opt/willcord/current/apps/server
+UMask=0077
+# Online: the main node keeps running. Backups older than 14 days are removed.
+ExecStart=/bin/sh -c 'node dist/admin.js backup /var/backups/willcord/main-$(date +%%Y%%m%%d-%%H%%M%%S).sqlite'
+ExecStartPost=/usr/bin/find /var/backups/willcord -name 'main-*.sqlite' -mtime +14 -delete

@@ -1,11 +1,11 @@
-# Production worker configuration: /etc/worker-plane/worker.toml (Linux) or
-# /usr/local/etc/worker-plane/worker.toml (macOS). Owned by the worker user, 0600.
+# Production worker configuration: /etc/willcord/worker.toml (Linux) or
+# /usr/local/etc/willcord/worker.toml (macOS). Owned by the worker user, 0600.
 worker_id = "worker-a"
 # Ledger, output logs and the data directory lock; keep it on persistent disk.
-data_dir = "/var/lib/worker-plane-worker"
+data_dir = "/var/lib/willcord-worker"
 url = "wss://plane.internal:8443/ws/worker"
 # The token file is reread on every reconnect, so rotation needs no restart.
-token_file = "/etc/worker-plane/token"
+token_file = "/etc/willcord/token"
 # PATH for commands; add /opt/homebrew/bin on Apple Silicon Macs.
 # command_path = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 # Optional limits (defaults shown).
@@ -19,5 +19,5 @@ token_file = "/etc/worker-plane/token"
 workspace_id = "project"
 config_version = 1
 path = "/srv/project"
-repo_id = "github.com/1BossX/WorkerPlane"
+repo_id = "github.com/1BossX/Willcord"
 is_default = true

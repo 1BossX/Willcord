@@ -77,6 +77,8 @@ class Node(http.server.BaseHTTPRequestHandler):
             self.reply(200, b'{"challenge":"c1"}', [('Content-Type', 'application/json')])
         elif self.path == '/enrollment/apply':
             self.reply(200, json.dumps({'state': self.server.state, 'worker_id': 'w1'}).encode(), [('Content-Type', 'application/json')])
+        elif self.path == '/enrollment/workspace':
+            self.reply(200, b'{}', [('Content-Type', 'application/json')])
         else:
             self.reply(404, b'{}', [('Content-Type', 'application/json')])
 
@@ -224,6 +226,30 @@ class WorkerJoinTests(unittest.TestCase):
         self.assertEqual((self.home / '.local/bin/willcord').read_bytes(), newer.read_bytes())
         self.assertEqual((self.data / 'identity.pk8').read_bytes(), identity)
         self.assertIn('已更新命令', r.stdout)
+
+    def test_upgrading_a_running_worker_trusts_the_saved_ca(self):
+        import fcntl, time
+        self.assertEqual(self.join('--ca-fingerprint', self.pin).returncode, 0)
+        newer = self.root / 'newer'
+        newer.write_bytes(BINARY.read_bytes() + b'\0newer build')
+        newer.chmod(0o755)
+        # A running worker holds worker.lock; the upgrade first asks the main node
+        # for proof over TLS, which only the saved private CA can satisfy.
+        lock = open(self.data / 'worker.lock', 'a+')
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        self.server.log.clear()
+        process = subprocess.Popen([str(newer), 'worker', 'join', self.origin], env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            deadline = time.monotonic() + 30
+            while '/enrollment/workspace' not in [p for _, p in self.server.log] and process.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertIn('/enrollment/workspace', [p for _, p in self.server.log], 'the proof request never reached the main node')
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+            lock.close()
+        out, err = process.communicate(timeout=60)
+        self.assertEqual(process.returncode, 0, err)
+        self.assertEqual((self.data / 'bin/willcord').read_bytes(), newer.read_bytes())
 
     # ------------------------------------------------------------- arguments
 

@@ -922,6 +922,11 @@ async fn join_installing(args: &[String]) -> Result<bool, Error> {
         .or_else(|| std::env::var_os("SSL_CERT_FILE").map(PathBuf::from))
         // Re-running the installer to upgrade needs no CA again: the first install kept it.
         .or_else(|| saved_ca(system));
+    // install_service asks a running worker for proof first, and that request must
+    // trust the same CA: the one given, or the one the earlier install saved.
+    if let Some(ca) = &ca_file {
+        let _ = SYSTEM_CA.set(ca.clone());
+    }
     let installed = async {
         check_main_node(&base, ca_file.as_deref()).await?;
         let (sys, dir) = if system {

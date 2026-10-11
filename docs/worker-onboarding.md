@@ -1,8 +1,8 @@
 # Worker 安装与授权
 
-包含 CA 指纹接入的版本通过可信控制台自动下载并验证根证书，详见 [安装说明](installation.md#ca-指纹自动接入)。公开 v0.2.0 仍使用下面的手动 CA 流程。
+**首次接入请按 [安装与首次使用](installation.md) 操作**，从控制台复制带 CA 指纹的一行命令即可（v0.3.0 起；细节见 [CA 指纹自动接入](installation.md#ca-指纹自动接入)）。本文覆盖手动二进制安装、系统级服务细节、工作目录、私有 CA，以及升级、撤销与卸载。
 
-新机器无需填写 TOML 或复制 token。安装 worker、申请加入、在控制台核对指纹并批准后，worker 自动领取凭据，注册并对账。默认工作目录自动创建；已有项目按需添加。主节点需要包含 migration 013，并让 Caddy 转发 `/enrollment/*`。
+新机器无需填写 TOML 或复制 token。安装 worker、申请加入、在控制台核对指纹并批准后，worker 自动领取凭据，注册并对账。默认工作目录自动创建；已有项目按需添加。
 
 ## 推荐：一行安装
 
@@ -21,7 +21,7 @@ chmod +x worker-plane-worker-<版本>-<os>-<arch>
 安装输出已安装二进制的绝对路径和服务名称。后面的 `worker` 指该二进制；默认不会改写 shell PATH。Linux 二进制位于 `~/.local/share/worker-plane/bin/worker`；macOS 位于 `~/Library/Application Support/WorkerPlane/bin/worker`。
 
 ```sh
-worker join https://plane.example.com
+worker join https://plane.internal:8443
 worker status --json
 ```
 
@@ -35,7 +35,7 @@ Linux 服务名含数据目录摘要；`worker status` 显示 `service_name`。�
 
 ```sh
 sudo ./worker-plane-worker-<版本>-<os>-<arch> install --system --user <账户>
-sudo <安装输出的路径> join --system https://plane.example.com
+sudo <安装输出的路径> join --system https://plane.internal:8443
 sudo <安装输出的路径> status --system --json
 ```
 
@@ -88,10 +88,6 @@ sudo worker uninstall --system [--delete-data]   # 系统级服务；--delete-da
 
 `WORKER_PLANE_HOME` 可指定隔离数据目录；同一目录只有一个执行进程，服务名随目录区分。保留原有 `worker config.toml` 和手动 token 方式，既有节点不自动转换。
 
-## 验收边界
+## 验收记录
 
-自动测试覆盖签名伪造、挑战重放/过期、重复加入、凭据响应丢失重领、审批与撤销、真实 HTTPS/WSS 注册、默认目录执行、忙时拒绝配置修改、账本保留和重新授权。四平台 Release 工作流构建二进制并生成校验文件；工作流配置不等于四平台已完成发布或真机验收。完整双平台故障验收记录见 P7 文档。
-
-发布矩阵的 runner 标签依据 [GitHub 官方 runner 清单](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)，工作流还检查实际 uname 架构，防止标签漂移后错误打包。
-
-本次具体执行结果与未完成项见 [安装注册验收记录](worker-onboarding-acceptance.md)。
+具体验收结果与未完成项见 [安装注册验收记录](dev/acceptance/worker-onboarding.md)。

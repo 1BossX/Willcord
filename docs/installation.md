@@ -2,7 +2,12 @@
 
 推荐路线：**部署主节点 → 信任内部 CA → 登录控制台 → 安装 worker → 核对指纹批准 → 等待可执行 → 完成只读任务**。主节点通过 Docker Compose 部署；worker 装在每台执行机器的宿主机上。
 
-安装器需要 Bash 3.2+、curl 和 shasum/sha256sum。它只使用已发布的正式 Release；没有正式版本时退出，不使用草稿、预发布或源码构建结果。省略 `--version` 时下载最新正式版本，并显示实际版本。需要固定版本可加 `--version vX.Y.Z`。预发布版本（如 `v0.1.0-rc.1`）只用于验收，必须用 `--version` 显式指定，安装器会标明“预发布”。Pages 上的 `install.sh` 是最新正式 Release 附带的那一份，与它下载的二进制和镜像同版本；需要旧版本的安装器时，从对应 Release 下载 `install.sh` 并校验 `.sha256`。
+安装器需要 Bash 3.2+、curl 和 shasum/sha256sum。
+
+- 只使用已发布的正式 Release，并校验 SHA-256；没有正式版本时退出，不使用草稿、预发布或源码构建结果。
+- 省略 `--version` 时安装最新正式版本并显示实际版本；固定版本加 `--version vX.Y.Z`。
+- 预发布版本（如 `v0.3.0-rc.1`）只用于验收，须用 `--version` 显式指定，安装器会标明“预发布”。
+- Pages 上的 `install.sh` 是最新正式 Release 附带的那一份，与它下载的二进制和镜像同版本；需要旧版本的安装器时，从对应 Release 下载 `install.sh` 并校验 `.sha256`。
 
 ## CA 指纹自动接入
 
@@ -14,7 +19,7 @@
 curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- worker --server 'https://plane.internal:8443' --ca-fingerprint '<控制台提供的64位十六进制指纹>'
 ```
 
-该命令须使用包含此能力的正式 Release；公开 v0.2.0 安装器及主节点镜像尚不包含该入口。未升级时继续使用本页的手动 CA 兼容流程。
+CA 指纹接入从 v0.3.0 起提供，主节点与 worker 须同为 v0.3.0 或更新版本。更早的版本使用[手动 CA 兼容流程](#手动-ca-兼容流程)。
 
 安装器仅在获取 `/.well-known/willcord/ca.pem` 时暂不验证证书，不携带登录凭据、不跟随重定向，并限制响应大小。核对根证书指纹后，所有 HTTPS/WSS 请求恢复完整证书链及主机名验证。错误指纹会在安装前退出。不要从同一条未经验证的连接取得并信任指纹；应从已信任的控制台或管理员渠道复制。
 
@@ -51,13 +56,15 @@ curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- main --serv
 - **浏览器机器**：macOS 将证书导入钥匙串并设为受信任的根证书；Linux 按发行版/浏览器的证书管理导入；Firefox 使用其证书设置导入。只信任自己部署导出的证书，不关闭 TLS 校验。
 - **执行机器**：默认不需要保存 `ca.pem`。从已经信任的控制台复制带 CA 指纹的安装命令；安装器下载公开根证书、核对指纹并把它保存到 worker 的私有安装目录。
 
-手动 CA 兼容流程才需要复制证书；复制后可在执行机器确认：
+**成功标志**：浏览器能安全打开控制台，worker 安装器显示“CA 指纹已核对”。保留主节点 `caddy-data` 卷；丢失此卷会生成新 CA，须从可信控制台获取新的安装命令。
+
+### 手动 CA 兼容流程
+
+仅在主节点或 worker 低于 v0.3.0，或无法从控制台取得指纹时使用。把 `ca.pem` 复制到执行机器的绝对路径，安装 worker 时用 `--ca` 指定；复制后可确认：
 
 ```sh
 curl --cacert '/absolute/ca.pem' 'https://plane.internal:8443/health'
 ```
-
-**成功标志**：浏览器能安全打开控制台，worker 安装器显示“CA 指纹已核对”。保留主节点 `caddy-data` 卷；丢失此卷会生成新 CA，须从可信控制台获取新的安装命令。
 
 ## 3. 在每台执行机器安装 worker
 
@@ -113,8 +120,8 @@ curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- worker --se
 
 - 升级前暂停主节点调度、等待任务结束并备份。worker 使用同样的安装命令，指定新的正式版本；身份、token 和账本保留，忙时安装失败。升级后验证对账和真实任务，再恢复调度。
 - 主节点向导只用于新部署；升级按 [Docker 指南](docker.md#升级) 操作，不能用新目录冒充原部署的升级。
-- 无正式 Release：等待正式版本发布。404、下载或校验失败：安装器返回非零，不运行下载的二进制。
+- 下载、校验失败或没有正式 Release：安装器返回非零，不运行下载的二进制；确认网络与版本号，必要时从 Releases 页面手动下载并校验。
 - TLS 失败：确认地址和浏览器/控制台的信任状态。根 CA 变化后，从可信控制台重新复制带新指纹的安装命令；手动 CA 模式则重新运行带新 `--ca` 的安装命令。
 - 用户级与系统级安装各有独立身份，不要克隆数据目录到第二台机器。撤销、未知执行状态和恢复见 [worker 安装与授权](worker-onboarding.md) 与 [运维手册](operations.md)。
 
-安装器与实机验收记录见 [一行安装验收](one-line-install-acceptance.md)。
+安装器与实机验收的历史记录见 [一行安装验收](dev/acceptance/one-line-install.md)。

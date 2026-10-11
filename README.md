@@ -15,17 +15,31 @@ Willcord 是面向内网与生产环境的 AI 运维控制面。模型调用、�
 
 ## 安装与开始使用
 
-流程：**部署主节点 → 信任内部 CA → 登录控制台 → 安装 worker → 核对指纹并批准 → 等待“可执行” → 完成一次只读任务**。
+流程：**安装 willcord 命令 → 启动主节点 → 信任内部 CA → 登录控制台 → 启动 worker → 核对指纹并批准 → 等待“可执行” → 完成一次只读任务**。
 
-**主节点**（Linux x86_64/arm64，需预先安装 Docker Compose v2；macOS 可用 Docker Desktop 做本机试用）：
+**第 1 步：安装命令**（每台机器都做一次，不启动任何服务）：
 
 ```sh
-curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- main
+curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash
 ```
 
-向导只问访问地址（自动列出本机探测到的内网 IP 供选择）和首次管理员密码，生成配置、启动服务并导出 `ca.pem`。模型不在安装时设置：登录控制台后在侧栏“模型连接”绑定 API key。让浏览器信任这个根证书后登录控制台。安装器下载的是同一个 `willcord` 二进制，向导结束后它已装到 `~/.local/bin`，并记住了部署目录：在任意目录运行 `willcord main status | logs | down | up | upgrade` 即可（目录不在 `PATH` 里时，向导会打印一行 `export PATH=…`，不会改你的 shell 配置）。执行机器上的命令都在 `willcord worker …` 之下。
+它只下载、校验并把 `willcord` 放到 `~/.local/bin`（目录不在 `PATH` 里时会打印一行 `export PATH=…`，不会改你的 shell 配置）；装给所有用户用 `bash -s -- --system`。再按机器角色启动：
 
-**worker**（Linux/macOS x86_64/arm64；Linux 需要 glibc 2.17 或更新）：在控制台打开“机器授权 → 添加机器”，复制生成的命令，在执行机器上以普通账户运行。命令形如：
+**第 2 步 · 主节点**（Linux x86_64/arm64，需预先安装 Docker Compose v2；macOS 可用 Docker Desktop 做本机试用）：
+
+```sh
+willcord main init
+```
+
+向导只问访问地址（自动列出本机探测到的内网 IP 供选择）和首次管理员密码，生成配置、启动服务并导出 `ca.pem`。模型不在安装时设置：登录控制台后在侧栏“模型连接”绑定 API key。让浏览器信任这个根证书后登录控制台。向导结束后会记住部署目录：在任意目录运行 `willcord main status | logs | down | up | upgrade` 即可。执行机器上的命令都在 `willcord worker …` 之下。
+
+**第 2 步 · worker**（Linux/macOS x86_64/arm64；Linux 需要 glibc 2.17 或更新）：在控制台打开“机器授权 → 添加机器”，拿到主节点地址和 CA 指纹，在执行机器上以普通账户运行：
+
+```sh
+willcord worker join 'https://plane.internal:8443' --ca-fingerprint '<控制台提供的64位指纹>'
+```
+
+控制台复制出来的是一步完成的写法（安装命令并加入），等价于上面两步，也可以直接用：
 
 ```sh
 curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- worker --server 'https://plane.internal:8443' --ca-fingerprint '<控制台提供的64位指纹>'

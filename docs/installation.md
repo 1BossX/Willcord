@@ -1,6 +1,6 @@
 # 安装与首次使用
 
-推荐路线：**部署主节点 → 信任内部 CA → 登录控制台 → 安装 worker → 核对指纹批准 → 等待可执行 → 完成只读任务**。主节点通过 Docker Compose 部署；worker 装在每台执行机器的宿主机上。
+推荐路线：**安装 willcord 命令 → 启动主节点 → 信任内部 CA → 登录控制台 → 启动 worker → 核对指纹批准 → 等待可执行 → 完成只读任务**。先装命令，再用命令启动：主节点用 `willcord main init`，执行机器用 `willcord worker join`。主节点通过 Docker Compose 部署；worker 装在每台执行机器的宿主机上。
 
 安装器需要 Bash 3.2+、curl 和 shasum/sha256sum。
 
@@ -9,11 +9,34 @@
 - 预发布版本（如 `v0.3.0-rc.1`）只用于验收，须用 `--version` 显式指定，安装器会标明“预发布”。
 - Pages 上的 `install.sh` 是最新正式 Release 附带的那一份，与它下载的二进制和镜像同版本；需要旧版本的安装器时，从对应 Release 下载 `install.sh` 并校验 `.sha256`。
 
+## 0. 安装 willcord 命令
+
+每台机器（主节点和执行机器）先装同一个 `willcord` 命令：
+
+```sh
+curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash
+```
+
+这一步只下载、校验 SHA-256，并把 `willcord` 放到 `~/.local/bin`；**不启动任何服务，不改 shell 配置**。目录不在 `PATH` 里时会打印一行 `export PATH="$HOME/.local/bin:$PATH"`，加进去即可。需要装给所有用户时加 `--system`（放到 `/usr/local/bin`，通过 sudo 完成）：
+
+```sh
+curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- --system
+```
+
+装好后按机器角色启动：
+
+| 机器 | 启动命令 | 说明 |
+|---|---|---|
+| 主节点 | `willcord main init` | 见 [1. 启动主节点](#1-在主节点机器部署) |
+| 执行机器 | `willcord worker join 'https://主节点地址' --ca-fingerprint '<指纹>'` | 见 [3. 启动 worker](#3-在每台执行机器安装-worker) |
+
+**一步完成**：`install.sh main …` 和 `install.sh worker …` 等于“安装命令后立刻执行 `willcord main init` / `willcord worker join`”，控制台“添加机器”复制出来的就是这种形式。两种写法结果相同，分开执行的好处是可以先检查再启动，也方便之后重复使用同一个命令。
+
 ## CA 指纹自动接入
 
 控制台“机器授权 → 添加机器”默认选择“自动获取 CA”。浏览器仍需先信任主节点导出的根证书；执行机器无需提前复制证书。控制台通过已信任的 HTTPS 获取公开根证书，计算证书 DER 的 SHA-256 指纹，并写入安装命令。
 
-在执行机器运行控制台复制的命令；命令形如：
+在执行机器运行控制台复制的命令（一步完成：安装命令并加入）；命令形如：
 
 ```sh
 curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- worker --server 'https://plane.internal:8443' --ca-fingerprint '<控制台提供的64位十六进制指纹>'
@@ -29,17 +52,21 @@ CA 指纹接入从 v0.3.0 起提供，主节点与 worker 须同为 v0.3.0 或�
 
 ## 1. 在主节点机器部署
 
+先按 [0. 安装 willcord 命令](#0-安装-willcord-命令) 装好命令。
+
 准备 Linux x86_64/arm64 主机、Docker 和 Docker Compose v2。macOS（Docker Desktop）同样可以运行向导，适合本机试用：Docker Desktop 退出后服务随之停止，生产环境请使用 Linux。浏览器和执行机器必须能解析并访问同一个主节点地址；仅在本机试用时可以用 `https://localhost:8443`，但 `localhost` 在其他执行机器上指向它们自己，跨机器部署须使用对方能解析的主机名或 IP。向导不安装 Docker，不改变系统权限。
 
 ```sh
-curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- main
+willcord main init
 ```
 
-安装器只下载并校验 `willcord` 二进制，随后交给它的 `willcord main init` 完成配置（下载的是同一个二进制，之后也用它管理主节点）。向导通过终端只收集两项：主节点的 HTTPS 地址，以及至少 16 字符的管理员密码（输入不回显）。地址会自动探测本机网卡，按“私有网段（192.168/16、10/8、172.16/12）→ 100.64/10（含 Tailscale）→ 其他”列出候选，已排除回环、链路本地和 Docker 等容器网卡；输入序号选择，直接回车取第 1 项，也可以输入完整的 `https://` 地址或域名。探测不到任何地址时默认 `https://plane.internal:8443`。DHCP 分配的 IP 换网络后会变，长期使用建议改用固定 IP 或域名。模型不在向导里设置，登录后在控制台绑定（见下文）。向导结束时会给出信任根证书的命令（macOS 与 Debian/Ubuntu），并把 `willcord` 命令装到 PATH（见[下文](#willcord-命令放在哪里)）。也可以预先指定地址和目录：
+`willcord main init` 完成配置（安装的是同一个二进制，之后也用它管理主节点；镜像版本取自这个二进制自身的版本）。向导通过终端只收集两项：主节点的 HTTPS 地址，以及至少 16 字符的管理员密码（输入不回显）。地址会自动探测本机网卡，按“私有网段（192.168/16、10/8、172.16/12）→ 100.64/10（含 Tailscale）→ 其他”列出候选，已排除回环、链路本地和 Docker 等容器网卡；输入序号选择，直接回车取第 1 项，也可以输入完整的 `https://` 地址或域名。探测不到任何地址时默认 `https://plane.internal:8443`。DHCP 分配的 IP 换网络后会变，长期使用建议改用固定 IP 或域名。模型不在向导里设置，登录后在控制台绑定（见下文）。向导结束时会给出信任根证书的命令（macOS 与 Debian/Ubuntu），并把 `willcord` 命令装到 PATH（见[下文](#willcord-命令放在哪里)）。也可以预先指定地址和目录：
 
 ```sh
-curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- main --server 'https://plane.internal:8443' --dir '/opt/my-plane'
+willcord main init --server 'https://plane.internal:8443' --dir '/opt/my-plane'
 ```
+
+没有先装命令时，也可以一步完成：`curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- main`（参数与上面相同）。
 
 目录默认 `./willcord`，当前账户必须可写。向导生成 `compose.yaml`、`.env` 和 `main.env`，固定镜像版本；环境文件权限 0600，不要提交到 Git。不同目录使用独立的 Compose 项目及数据卷。已有部署文件时拒绝覆盖。
 
@@ -88,7 +115,17 @@ curl --cacert '/absolute/ca.pem' 'https://plane.internal:8443/health'
 
 ## 3. 在每台执行机器安装 worker
 
-登录控制台，打开“机器授权 → 添加机器”，选择安装方式，保留“自动获取 CA”，复制生成的一行命令。它包含主节点地址和 CA 指纹，不包含模型 key、管理员密码或设备 token。
+先按 [0. 安装 willcord 命令](#0-安装-willcord-命令) 装好命令。登录控制台，打开“机器授权 → 添加机器”，选择安装方式，保留“自动获取 CA”，复制生成的命令。它包含主节点地址和 CA 指纹，不包含模型 key、管理员密码或设备 token。
+
+控制台给出的是一步完成的 `install.sh worker …`。已经装好命令时，用下面的两步写法，参数一一对应：
+
+```sh
+# 个人电脑：用户级服务，不加 sudo
+willcord worker join 'https://plane.internal:8443' --ca-fingerprint '<控制台提供的64位指纹>'
+
+# 常驻服务器：系统级服务（命令需用 --system 装到 /usr/local/bin，sudo 才找得到）
+sudo willcord worker join 'https://plane.internal:8443' --ca-fingerprint '<控制台提供的64位指纹>' --system --user 'ops'
+```
 
 ### 个人电脑：用户级服务
 
@@ -114,12 +151,12 @@ curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- worker --se
 
 ### willcord 命令放在哪里
 
-主节点向导和 worker 安装器都会把同一个 `willcord` 放到固定位置，所以先装哪一个都行：
+`install.sh`（不带角色）、主节点向导和 worker 安装器都会把同一个 `willcord` 放到固定位置，所以先装哪一个都行：
 
 | 安装方式 | 命令位置 |
 |---|---|
-| 用户级（主节点向导、个人电脑的 worker） | `~/.local/bin/willcord` |
-| 系统级 worker（`--system`） | `/usr/local/bin/willcord` |
+| 用户级（`install.sh`、主节点向导、个人电脑的 worker） | `~/.local/bin/willcord` |
+| 系统级（`install.sh --system`、系统级 worker） | `/usr/local/bin/willcord` |
 
 - 目录不在 `PATH` 里时，安装器只打印一行 `export PATH="$HOME/.local/bin:$PATH"`，不会改 `~/.zshrc` 等任何 shell 配置文件；想永久生效请自己加进去。
 - 该位置已有不是 willcord 安装的同名文件时，不覆盖，并告诉你；服务照常运行，命令则继续显示带引号的绝对路径。

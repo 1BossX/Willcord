@@ -133,7 +133,7 @@ test("P3 a run that ends with an unresolved call keeps the slot and needs attent
 });
 
 test("a run that dies on the model call records why instead of 'unknown'",async()=>{
- for(const [message,reason] of [['model_error: 401: {"message":"Missing Authentication header","code":401}',"model_auth_failed"],["model_error: 429: rate limited","model_error"],["boom",null]] as const){
+ for(const [message,reason] of [['model_error: 401: {"message":"Missing Authentication header","code":401}',"model_auth_failed"],["model_error: 429: rate limited","model_error"],["model_not_configured: no model API key","model_not_configured"],["boom",null]] as const){
   const {db,connections,one}=fixture();
   db.prepare("UPDATE worker_slots SET active_job_id=NULL").run();db.prepare("UPDATE jobs SET state='queued'").run();
   const coordinator=new ExecutionCoordinator(db,connections,Date.now,async()=>{throw new Error(message);});

@@ -9,7 +9,9 @@ import { createApp } from "../src/app.js";
 import { resolveModel } from "../src/model-settings.js";
 const hash = (s: string) => createHash("sha256").update(s).digest("hex");
 const ORIGIN = "https://localhost:8443";
-const SECRET = "sk-or-secret-1234567890abcdef";
+// Deliberately unlike a real provider key, so secret scanners stay quiet.
+const SECRET = `fixture-${"ab".repeat(12)}`;
+const REPLACEMENT = `fixture-${"cd".repeat(12)}`;
 
 async function fixture(env = { provider: "openrouter", name: "deepseek/deepseek-v4.1-flash", apiKey: "env-key-aaaaaaaa" as string | undefined }) {
   const dir = mkdtempSync(join(tmpdir(), "wp-model-"));
@@ -43,7 +45,7 @@ test("the console's model choice overrides the environment, the key is encrypted
     assert.equal(saved.statusCode, 200, saved.body);
     assert.doesNotMatch(saved.body, new RegExp(SECRET));
     assert.equal(saved.json().source, "console");
-    assert.equal(saved.json().key_hint, "…cdef");
+    assert.equal(saved.json().key_hint, "…abab");
     assert.equal(resolveModel(f.db, f.dir, f.env).apiKey, SECRET, "new jobs use the stored key");
 
     const row = f.db.prepare("SELECT * FROM model_settings").get() as any;
@@ -117,5 +119,22 @@ test("a database restored without its key file asks for the key again instead of
     const view = (await f.call("GET", "/api/settings/model")).json();
     assert.deepEqual([view.has_key, view.key_unreadable], [false, true]);
     assert.equal(resolveModel(f.db, f.dir, f.env).apiKey, undefined);
+  } finally { await f.close(); }
+});
+
+test("an unreadable stored key must be replaced: neither save nor test falls back to the environment key", async () => {
+  const f = await fixture();
+  try {
+    await f.call("PUT", "/api/settings/model", { api_key: SECRET });
+    rmSync(join(f.dir, "model-secret.key"));
+    for (const [method, url] of [["PUT", "/api/settings/model"], ["POST", "/api/settings/model/test"]] as const) {
+      const r = await f.call(method, url, { name: "anthropic/claude-fable-5" });
+      assert.deepEqual([r.statusCode, r.json().error], [400, "api_key_required"], url);
+    }
+    assert.equal(f.probed.length, 0);
+    const fixed = await f.call("PUT", "/api/settings/model", { api_key: REPLACEMENT });
+    assert.equal(fixed.statusCode, 200, fixed.body);
+    assert.equal(fixed.json().key_unreadable, false);
+    assert.equal(resolveModel(f.db, f.dir, f.env).apiKey, REPLACEMENT);
   } finally { await f.close(); }
 });

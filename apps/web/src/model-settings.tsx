@@ -36,7 +36,7 @@ export function ModelSettingsPanel() {
 
   const body = () => ({ provider, name, ...(apiKey ? { api_key: apiKey } : {}) });
   // Another provider cannot reuse the key in effect, so the field is required then.
-  const needsKey = view !== null && provider !== view.provider && !apiKey;
+  const needsKey = view !== null && (provider !== view.provider || view.key_unreadable) && !apiKey;
   const dirty = view !== null && (provider !== view.provider || name !== view.name || apiKey !== "");
   function close() { dialog.current?.close(); setOpen(false); setError(""); setResult(null); setApiKey(""); }
   async function run(action: () => Promise<void>) {
@@ -71,7 +71,7 @@ export function ModelSettingsPanel() {
         </select></label>
         <label>模型名称<input value={name} list="model-names" autoComplete="off" spellCheck={false} onChange={e => { setName(e.target.value); setResult(null); }} />
           <datalist id="model-names">{models.map(m => <option key={m} value={m} />)}</datalist></label>
-        <label>API key<input type="password" value={apiKey} autoComplete="new-password" placeholder={needsKey ? "切换 provider 后必须输入新的 key" : "留空则保持当前 key"} onChange={e => { setApiKey(e.target.value); setResult(null); }} /></label>
+        <label>API key<input type="password" value={apiKey} autoComplete="new-password" placeholder={needsKey ? (view.key_unreadable ? "已保存的 key 无法解密，请重新输入" : "切换 provider 后必须输入新的 key") : "留空则保持当前 key"} onChange={e => { setApiKey(e.target.value); setResult(null); }} /></label>
         <p>保存前可先“测试连接”：向模型发送一个很短的请求，会消耗极少量 token。</p>
         <button className="secondary-button" type="button" disabled={busy || !name.trim() || needsKey} onClick={() => void test()}>测试连接</button>{" "}
         <button className="primary-button" type="submit" disabled={busy || !name.trim() || needsKey || !dirty}>保存</button>{" "}

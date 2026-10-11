@@ -55,10 +55,17 @@ export function resolveModel(db: Database.Database, dataDir: string, env: ModelC
   return { provider: row.provider, name: row.name, apiKey };
 }
 
+/** A stored key whose key file is gone (a database restored elsewhere): nothing can use it. */
+function keyUnreadable(db: Database.Database, dataDir: string): boolean {
+  const row = stored(db);
+  if (!row?.api_key_enc) return false;
+  const key = secretKey(dataDir, false);
+  return !(key && open(key, row.api_key_enc));
+}
+
 export function modelView(db: Database.Database, dataDir: string, env: ModelConfig) {
   const row = stored(db), effective = resolveModel(db, dataDir, env);
-  const key = secretKey(dataDir, false);
-  const unreadable = Boolean(row?.api_key_enc) && !(key && open(key, row!.api_key_enc!));
+  const unreadable = keyUnreadable(db, dataDir);
   return {
     provider: effective.provider,
     name: effective.name,
@@ -100,6 +107,8 @@ export function registerModelSettings(
     if (!(ai.getProviders() as string[]).includes(provider)) return { ok: false as const, error: "unknown_provider" as const };
     if (!ai.getModel(provider as any, name as any)) return { ok: false as const, error: "unknown_model" as const };
     let apiKey: string | undefined;
+    // Saving or testing without a key would keep, or silently stand in for, a stored key nobody can read.
+    if ((b.api_key === undefined || b.api_key === "") && keyUnreadable(db, options.dataDir)) return { ok: false as const, error: "api_key_required" as const };
     if (b.api_key !== undefined && b.api_key !== "") {
       apiKey = text(b.api_key, 4096) ?? undefined;
       if (!apiKey) return { ok: false as const, error: "invalid_api_key" as const };

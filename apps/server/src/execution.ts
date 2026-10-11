@@ -636,6 +636,7 @@ export class ExecutionCoordinator {
   /** The reason a run died on its model call, so operators need not read container logs to learn the key is wrong. */
   private modelFailure(failure: unknown): string | null {
     const message = failure instanceof Error ? failure.message : "";
+    if (message.startsWith("model_not_configured:")) return "model_not_configured";
     if (!message.startsWith("model_error:")) return null;
     return /^model_error: (401)\b|invalid[ _-]?api[ _-]?key|incorrect api key|missing authentication|unauthori[sz]ed/i.test(message) ? "model_auth_failed" : "model_error";
   }
@@ -764,7 +765,7 @@ export class ExecutionCoordinator {
     const provider = fakeMode ? "openai" : configured.provider;
     const modelName = fakeMode ? "gpt-4o-mini" : configured.name;
     const apiKey = fakeMode ? "p2-scripted-provider" : configured.apiKey;
-    if (!apiKey) throw new Error("MODEL_API_KEY (or OPENROUTER_API_KEY) is required to execute jobs");
+    if (!apiKey) throw new Error("model_not_configured: no model API key; set it under \"模型连接\" or MODEL_API_KEY");
     // The first run fixes the earlier exchanges the job carries, with its user message.
     this.db.transaction(() => {
       if (this.db.prepare("SELECT 1 FROM runtime_history WHERE job_id=? AND entry_key=?").get(job.job_id, `user:${job.job_id}`)) return;
@@ -788,7 +789,7 @@ export class ExecutionCoordinator {
     const typebox = await import("typebox");
     const runtime = await pi.ModelRuntime.create({ authPath: resolve(dataDir, "pi-auth.json"), modelsPath: null, modelsStorePath: resolve(dataDir, "pi-models.json"), refreshOnCreate: false });
     await runtime.setRuntimeApiKey(provider as any, apiKey);
-    const model = ai.getModel(provider as any, modelName); if (!model) throw new Error(`unknown Pi model ${provider}/${modelName}`);
+    const model = ai.getModel(provider as any, modelName); if (!model) throw new Error(`model_not_configured: unknown Pi model ${provider}/${modelName}`);
     const sessionDir = resolve(dataDir, "pi-sessions", job.session_id);
     const cwd = main ? resolve(dataDir, "main") : job.path;
     if (main) mkdirSync(cwd, { recursive: true });

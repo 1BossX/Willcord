@@ -2,13 +2,14 @@
 # The product, repository, packages, CLI, services and paths are all named
 # willcord, and the GitHub organization is BossOptional. Fail when an old name
 # comes back, except in the historical records (the migration guide, the naming
-# decision records and the first-run walkthrough), which describe it on purpose.
+# decision records, the first-run walkthrough, proposals, recorded output and the P2 report), which describe it on purpose.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 fail=0
 
 if git grep -nEi 'worker[-_ ]?plane|workerplane' -- . \
+  ':!docs/proposals' ':!output' ':!docs/p2-development.md' \
   ':!docs/brand/naming-shortlist.md' ':!docs/brand/telekine-proposal.md' \
   ':!docs/migrating-to-willcord.md' \
   ':!docs/dev/acceptance/first-run-walkthrough.md' \

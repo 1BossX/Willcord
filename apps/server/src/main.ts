@@ -5,6 +5,8 @@ import { createApp } from "./app.js";
 import { acquireOwnerLock } from "./lock.js";
 import { loadConfig } from "./config.js";
 const config = loadConfig(process.env);
+if (!config.model.apiKey && !config.scriptFile && process.env.P2_FAKE_MODEL !== "1")
+  console.warn('no model API key yet: bind one under "模型连接" in the console (or set MODEL_API_KEY); jobs cannot run until then');
 const dir = config.dataDir;
 mkdirSync(dir, { recursive: true, mode: 0o700 });
 chmodSync(dir, 0o700);

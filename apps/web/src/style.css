@@ -780,6 +780,23 @@ summary:focus-visible {
 .error-banner .icon-button {
   margin-left: auto;
 }
+.model-banner {
+  background: #fff5ef;
+  color: #b3754f;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 20px;
+  border-bottom: 1px solid #f2dfd1;
+}
+.model-banner > .icon {
+  width: 16px;
+  height: 16px;
+}
+.model-banner .secondary-button {
+  margin-left: auto;
+}
 .attention-banner {
   margin: 20px 30px 0;
   background: #fff5ef;

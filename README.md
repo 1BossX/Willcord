@@ -23,7 +23,7 @@ Willcord 是面向内网与生产环境的 AI 运维控制面。模型调用、�
 curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- main
 ```
 
-向导收集访问地址、模型配置和首次管理员密码，检查模型 API key 是否被服务商接受，生成配置、启动服务并导出 `ca.pem`。模型连接之后可在控制台“模型连接”中修改。让浏览器信任这个根证书后登录控制台。安装器下载的是同一个 `willcord` 二进制，向导结束后它会留在部署目录里：`./willcord main status | logs | down | up | upgrade`。执行机器上的命令都在 `willcord worker …` 之下。
+向导只问访问地址（自动列出本机探测到的内网 IP 供选择）和首次管理员密码，生成配置、启动服务并导出 `ca.pem`。模型不在安装时设置：登录控制台后在侧栏“模型连接”绑定 API key。让浏览器信任这个根证书后登录控制台。安装器下载的是同一个 `willcord` 二进制，向导结束后它会留在部署目录里：`./willcord main status | logs | down | up | upgrade`。执行机器上的命令都在 `willcord worker …` 之下。
 
 **worker**（Linux/macOS x86_64/arm64；Linux 需要 glibc 2.17 或更新）：在控制台打开“机器授权 → 添加机器”，复制生成的命令，在执行机器上以普通账户运行。命令形如：
 

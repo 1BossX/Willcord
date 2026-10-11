@@ -28,8 +28,12 @@ def install_fake_docker(bin_dir: Path):
     docker.chmod(0o700)
 
 
-def answers(provider=b'\n', model=b'\n', keys=(b'key$with#special\n',), password=b"long'password$with#literal\n"):
-    return [('模型 provider'.encode(), provider), ('模型名称'.encode(), model), *[('模型 API key:'.encode(), k) for k in keys], ('管理员密码'.encode(), password)]
+SERVER = '浏览器和 worker 可访问的 HTTPS 地址'.encode()
+SERVER_CHOICE = '服务地址（输入序号'.encode()
+
+
+def answers(password=b"long'password$with#literal\n"):
+    return [('管理员密码'.encode(), password)]
 
 
 def drive(argv, env, replies, timeout=30):

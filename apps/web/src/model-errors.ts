@@ -16,3 +16,6 @@ export function explainModelFailure(raw: string): ModelFailure {
   const hit = rules.find(([pattern]) => pattern.test(detail));
   return { summary: hit ? hit[1] : "模型返回了错误，请核对 provider、模型名称和 API key。", detail };
 }
+
+/** A fresh main node has no key until one is bound in the console; jobs cannot run before then. */
+export const modelUnbound = (view: { has_key: boolean }) => !view.has_key;

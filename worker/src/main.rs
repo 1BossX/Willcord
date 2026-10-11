@@ -3,6 +3,7 @@ mod generated;
 mod ledger;
 mod logs;
 mod main_node;
+mod netaddr;
 mod process;
 mod tools;
 use base64::Engine as _;

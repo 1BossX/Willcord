@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Round-trip the model key `willcord main init` writes through real Compose containers.
+"""Round-trip the first admin password `willcord main init` writes through real Compose containers.
 
 The wizard is the real debug binary (cargo build --manifest-path worker/Cargo.toml)
 with a fake docker that fails the first pull, which leaves the generated main.env
@@ -16,6 +16,8 @@ import uuid
 
 from wizard_pty import BINARY, answers, drive, install_fake_docker
 
+# The password must be at least 16 characters, whatever the value under test is.
+PAD = 'pad-to-16-chars!'
 IMAGE = os.environ.get('COMPOSE_ENV_TEST_IMAGE', 'local/willcord-main:smoke')
 
 
@@ -29,7 +31,7 @@ class ComposeEnvironmentTests(unittest.TestCase):
             root = Path(directory)
             install_fake_docker(root / 'bin')
             env = {**os.environ, 'LANG': 'en_US.UTF-8', 'PATH': f'{root / "bin"}:{os.environ["PATH"]}',
-                   'TEST_ROOT': str(root), 'TEST_START_FAIL': '1', 'WILLCORD_TEST_KEY_STATUS': '200'}
+                   'TEST_ROOT': str(root), 'TEST_START_FAIL': '1'}
             (root / 'probe.yaml').write_text(
                 f'services:\n  probe:\n    image: {IMAGE}\n    env_file: main.env\n')
             project = 'wc-env-' + uuid.uuid4().hex[:12]
@@ -40,7 +42,7 @@ class ComposeEnvironmentTests(unittest.TestCase):
                         code, out = drive(
                             [str(BINARY), 'main', 'init', '--dir', str(deployment), '--server',
                              'https://127.0.0.1:8443', '--image-version', 'v1.2.3'],
-                            env, answers(keys=((value + '\n').encode(),)))
+                            env, answers(password=((PAD + value + '\n').encode())))
                         self.assertNotEqual(code, 0, 'the fake docker fails the first pull: ' + out)
                         main_env = deployment / 'main.env'
                         self.assertTrue(main_env.exists(), out)
@@ -48,8 +50,8 @@ class ComposeEnvironmentTests(unittest.TestCase):
                         actual = subprocess.check_output(
                             ['docker', 'compose', '-p', project, '-f', str(root / 'probe.yaml'),
                              'run', '--rm', '-T', '--no-deps', '--entrypoint', 'node',
-                             'probe', '-e', 'process.stdout.write(process.env.MODEL_API_KEY)'], text=True)
-                        self.assertEqual(actual, value)
+                             'probe', '-e', 'process.stdout.write(process.env.INITIAL_ADMIN_PASSWORD)'], text=True)
+                        self.assertEqual(actual, PAD + value)
             finally:
                 subprocess.run(['docker', 'compose', '-p', project, '-f', str(root / 'probe.yaml'),
                                 'down', '-v', '--remove-orphans'], check=True,

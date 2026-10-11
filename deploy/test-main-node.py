@@ -2,7 +2,7 @@
 """Drive `willcord main …` with a fake docker and a local HTTPS /health.
 
 Needs the debug build (cargo build --manifest-path worker/Cargo.toml): its test
-seams (WILLCORD_TEST_KEY_STATUS, WILLCORD_TEST_OS) do not exist in release builds.
+seams (WILLCORD_TEST_ADDRS, WILLCORD_TEST_OS) do not exist in release builds.
 """
 import http.server
 import json
@@ -15,7 +15,7 @@ import tempfile
 import threading
 import unittest
 
-from wizard_pty import BINARY, answers, drive, install_fake_docker
+from wizard_pty import BINARY, SERVER, SERVER_CHOICE, answers, drive, install_fake_docker
 
 TLS_CONFIG = '''[req]
 distinguished_name=dn
@@ -63,7 +63,7 @@ class MainNodeTests(unittest.TestCase):
         self.origin = f'https://127.0.0.1:{self.server.server_port}'
         self.deploy = self.root / 'deployment'
         self.env = {**os.environ, 'LANG': 'en_US.UTF-8', 'PATH': f'{self.root / "bin"}:{os.environ["PATH"]}',
-                    'TEST_ROOT': str(self.root), 'WILLCORD_TEST_KEY_STATUS': '200', 'WILLCORD_TEST_OS': 'Linux'}
+                    'TEST_ROOT': str(self.root), 'WILLCORD_TEST_ADDRS': '', 'WILLCORD_TEST_OS': 'Linux'}
         self.env.pop('SSL_CERT_FILE', None)
 
     def tearDown(self):
@@ -114,7 +114,7 @@ class MainNodeTests(unittest.TestCase):
             self.assertEqual((self.deploy / name).stat().st_mode & 0o777, 0o600, name)
         self.assertEqual((self.deploy / 'ca.pem').stat().st_mode & 0o777, 0o644)
         self.assertNotIn('INITIAL_ADMIN_PASSWORD', main_env)
-        self.assertIn('MODEL_API_KEY="key$$with#special"', main_env)
+        self.assertNotIn('MODEL_', main_env, 'the model is bound later, in the console')
         self.assertIn(f'PUBLIC_BASE_URL="{self.origin}"', main_env)
         self.assertIn(f'WILLCORD_PORT="{self.server.server_port}"', dot_env)
         self.assertIn(f'WILLCORD_SITE="127.0.0.1:{self.server.server_port}"', dot_env)
@@ -122,11 +122,11 @@ class MainNodeTests(unittest.TestCase):
         self.assertIn('COMPOSE_PROJECT_NAME="willcord-', dot_env)
         self.assertIn('WILLCORD_VERSION:?set WILLCORD_VERSION', (self.deploy / 'compose.yaml').read_text())
         self.assertNotIn('long\'password', out)
-        self.assertNotIn('key$with#special', out)
         # The first password goes and main restarts without it.
         self.assertEqual(self.compose_calls(), [['version'], ['pull'], ['up', '-d'], ['cp', 'caddy:/data/caddy/pki/authorities/local/root.crt', './ca.pem'], ['up', '-d', 'main']])
         self.assertTrue((self.deploy / 'willcord').exists(), 'a copy of the binary stays beside the deployment')
         self.assertIn('./willcord main status', out)
+        self.assertIn('“模型连接”绑定模型 API key', out)
         # Existing config is never replaced.
         before = (self.deploy / 'main.env').read_bytes()
         code, out = self.init()
@@ -162,58 +162,51 @@ class MainNodeTests(unittest.TestCase):
         self.assertIn('缺少 docker', out)
         self.assertFalse((self.deploy / 'main.env').exists())
 
-    def test_model_key_is_checked_before_anything_is_written(self):
-        keys = (b'key$with#special\n',) * 3
-        code, out = self.init(env={'WILLCORD_TEST_KEY_STATUS': '401'}, answers=self.answers(keys=keys))
-        self.assertNotEqual(code, 0, out)
-        self.assertIn('拒绝了这个 API key', out)
-        self.assertIn('还可再试 2 次', out)
-        self.assertIn('连续拒绝了 3 次', out)
-        self.assertEqual(list(self.deploy.iterdir()), [], 'a rejected key leaves no config behind')
-        self.assertEqual(self.compose_calls(), [['version']])
-        # A fixed key can reuse the same directory.
+    def test_init_asks_no_model_questions(self):
         code, out = self.init()
         self.assertEqual(code, 0, out)
-        self.assertIn('API key 检查通过', out)
+        for gone in ['模型 provider', '模型名称', '模型 API key:']:
+            self.assertNotIn(gone, out)
 
-    def test_a_rejected_key_is_asked_again_without_restarting(self):
-        code, out = self.init(env={'WILLCORD_TEST_KEY_STATUS': '401,200'}, answers=self.answers(keys=(b'first-wrong-key\n', b'second-right-key\n')))
-        self.assertEqual(code, 0, out)
-        self.assertIn('还可再试 2 次', out)
-        self.assertIn('API key 检查通过', out)
-        self.assertIn('MODEL_API_KEY="second-right-key"', (self.deploy / 'main.env').read_text())
+    # Detected addresses are offered by number; the health check still targets the
+    # local test server, so a numbered pick stops at the failing pull after the
+    # configuration is written.
+    ADDRS = {'WILLCORD_TEST_ADDRS': 'lo=127.0.0.1,docker0=172.17.0.1,utun3=10.8.0.2,en0=192.168.1.5'}
 
-    def test_unconfirmed_model_key_only_warns(self):
-        for status in ['403', '500', '000']:
-            with self.subTest(status=status):
-                shutil.rmtree(self.deploy, ignore_errors=True)
-                code, out = self.init(env={'WILLCORD_TEST_KEY_STATUS': status})
-                self.assertEqual(code, 0, out)
-                self.assertIn('无法确认模型 API key', out)
-
-    def test_provider_is_validated_and_case_insensitive(self):
-        code, out = self.init(answers=self.answers(provider=b'OpenRouter \n'))
-        self.assertEqual(code, 0, out)
-        self.assertIn('MODEL_PROVIDER="openrouter"', (self.deploy / 'main.env').read_text())
-        shutil.rmtree(self.deploy)
-        answers = [('模型 provider'.encode(), b'openrouterr\n'), ('模型 provider'.encode(), b'openrouter\n'), *self.answers()[1:]]
-        code, out = self.init(answers=answers)
-        self.assertEqual(code, 0, out)
-        self.assertIn('不支持的 provider：openrouterr', out)
-        shutil.rmtree(self.deploy)
-        code, out = self.init(answers=[('模型 provider'.encode(), b'nope\n')] * 3)
+    def test_detected_addresses_are_offered_best_first_and_a_number_picks_one(self):
+        env = {**self.ADDRS, 'TEST_START_FAIL': '1'}
+        code, out = self.init(server=False, env=env, answers=[(SERVER_CHOICE, b'2\n'), *self.answers()])
         self.assertNotEqual(code, 0, out)
-        self.assertEqual(list(self.deploy.iterdir()), [], 'an unknown provider leaves no config behind')
+        self.assertIn('1) https://10.8.0.2:8443   utun3', out)
+        self.assertIn('2) https://192.168.1.5:8443   en0', out)
+        self.assertNotIn('127.0.0.1:8443', out)
+        self.assertNotIn('172.17.0.1', out)
+        self.assertIn('DHCP', out)
+        self.assertIn('WILLCORD_SITE="192.168.1.5:8443"', (self.deploy / '.env').read_text())
+        self.assertIn('PUBLIC_BASE_URL="https://192.168.1.5:8443"', (self.deploy / 'main.env').read_text())
 
-    def test_only_openrouter_has_a_default_model(self):
-        answers = [('模型 provider'.encode(), b'groq\n'), ('模型名称'.encode(), b'\n'), ('模型名称'.encode(), b'llama-3.1-8b-instant\n'), ('模型 API key:'.encode(), b'k\n'), ('管理员密码'.encode(), b"long'password$with#literal\n")]
-        code, out = self.init(answers=answers)
+    def test_enter_takes_the_first_detected_address(self):
+        env = {**self.ADDRS, 'TEST_START_FAIL': '1'}
+        code, out = self.init(server=False, env=env, answers=[(SERVER_CHOICE, b'\n'), *self.answers()])
+        self.assertNotEqual(code, 0, out)
+        self.assertIn('WILLCORD_SITE="10.8.0.2:8443"', (self.deploy / '.env').read_text())
+
+    def test_a_typed_origin_overrides_the_detected_addresses(self):
+        code, out = self.init(server=False, env=self.ADDRS, answers=[(SERVER_CHOICE, self.origin.encode() + b'\n'), *self.answers()])
         self.assertEqual(code, 0, out)
-        self.assertIn('groq 没有默认模型', out)
-        self.assertIn('未内置 groq 的 API key 检查', out)
-        text = (self.deploy / 'main.env').read_text()
-        self.assertIn('MODEL_PROVIDER="groq"', text)
-        self.assertIn('MODEL_NAME="llama-3.1-8b-instant"', text)
+        self.assertIn(f'PUBLIC_BASE_URL="{self.origin}"', (self.deploy / 'main.env').read_text())
+
+    def test_a_number_outside_the_list_is_refused_before_anything_is_written(self):
+        code, out = self.init(server=False, env=self.ADDRS, answers=[(SERVER_CHOICE, b'9\n')])
+        self.assertNotEqual(code, 0, out)
+        self.assertIn('没有序号 9', out)
+        self.assertEqual(list(self.deploy.iterdir()), [])
+
+    def test_without_a_detected_address_the_placeholder_is_the_default(self):
+        code, out = self.init(server=False, answers=[(SERVER, b'\n'), *self.answers()], env={'TEST_START_FAIL': '1'})
+        self.assertNotEqual(code, 0, out)
+        self.assertIn('[https://plane.internal:8443]', out)
+        self.assertIn('WILLCORD_SITE="plane.internal:8443"', (self.deploy / '.env').read_text())
 
     def test_the_password_needs_sixteen_characters(self):
         answers = self.answers()[:-1] + [('管理员密码'.encode(), b'short\n')]

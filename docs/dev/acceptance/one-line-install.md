@@ -1,5 +1,7 @@
 # 一行安装验收记录
 
+> **历史验收记录（开发内部）**：记录某一时间点的验收环境与结果，其中的“尚未发布”“待验收”等结论以当时为准，不代表当前版本状态。面向用户的步骤见 [安装与首次使用](../../installation.md)。
+
 日期：2026-10-10。覆盖安装器、CA 复用、控制台生成命令和 Docker 初始化。安装不等于实际模型的业务验收；首次正式 Release 前，下载环节使用本地构建产物的校验夹具。
 
 ## 已验证
@@ -19,4 +21,4 @@
 
 上述服务和任务验证使用真实二进制、服务管理器、HTTPS/WSS 和脚本模型；正式 GitHub Release 下载未由本地夹具替代证明。公开交付需要合入后的 Pages 发布、四平台 Release 产物和两架构 GHCR 镜像成功，并核对匿名下载与页面展示命令。
 
-原始浏览器截图保存于本地临时验收目录，不包含在 Git 提交中。可复用实机验收入口为 `apps/server/test/support/install-worker-acceptance.ts`：默认 macOS，Linux 使用 `WORKER_PLANE_ACCEPTANCE_MODE=linux WORKER_PLANE_TEST_SSH_TARGET=colo`，仅用于明确授权的隔离验收。
+原始浏览器截图保存于本地临时验收目录，不包含在 Git 提交中。可复用实机验收入口为 `apps/server/test/support/install-worker-acceptance.ts`：默认 macOS，Linux 使用 `WORKER_PLANE_ACCEPTANCE_MODE=linux WORKER_PLANE_TEST_SSH_TARGET=<your-test-host>`，仅用于明确授权的隔离验收。

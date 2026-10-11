@@ -1,6 +1,6 @@
 # 运维手册
 
-适用版本：P7 起。本文给出主节点和 worker 的安装、升级、备份恢复、token 轮换和故障处理步骤。设计依据见 [架构 §13](architecture.md#13-部署与运维)，各项行为的测试证据见 [P7 开发记录](p7-development.md)。
+适用于 v0.2.0 及以上版本。本文是主节点 systemd 手动部署与日常运维手册：安装、升级、备份恢复、token 轮换和故障处理。**首次安装请先按 [安装与首次使用](installation.md) 操作。** 设计依据见 [架构 §13](architecture.md#13-部署与运维)。
 
 文中路径是建议值，和 `deploy/` 下的模板一致。改动路径时，单元文件、配置和命令要一起改。任何密钥（模型 key、管理员密码、worker token）都不要写进仓库、聊天或命令行参数。
 
@@ -49,9 +49,9 @@ sudo install -d -m 0755 /etc/worker-plane
 1. 从 GitHub Release 下载主节点产物和它的 `.sha256`，校验后解开：
 
    ```bash
-   shasum -a 256 -c worker-plane-main-v0.1.0-linux-x86_64-node24.tar.gz.sha256
-   sudo tar -C /opt/worker-plane/releases -xzf worker-plane-main-v0.1.0-linux-x86_64-node24.tar.gz
-   sudo ln -sfn /opt/worker-plane/releases/worker-plane-main-v0.1.0 /opt/worker-plane/current
+   shasum -a 256 -c worker-plane-main-<版本>-linux-x86_64-node24.tar.gz.sha256
+   sudo tar -C /opt/worker-plane/releases -xzf worker-plane-main-<版本>-linux-x86_64-node24.tar.gz
+   sudo ln -sfn /opt/worker-plane/releases/worker-plane-main-<版本> /opt/worker-plane/current
    ```
 
    也可以在同架构的 Linux 机器上从源码构建：`deploy/build-main.sh <目录>`。
@@ -70,7 +70,7 @@ sudo install -d -m 0755 /etc/worker-plane
    curl -s http://127.0.0.1:3000/health
    ```
 
-   预期返回 `{"alive":true,"scheduling_ready":true,"dispatch_paused":null,"phase":"P7"}`。启动失败时看 `journalctl -u worker-plane-main`，配置问题会一次全部列出。
+   预期 `alive` 和 `scheduling_ready` 均为 true、`dispatch_paused` 为 null。启动失败时看 `journalctl -u worker-plane-main`，配置问题会一次全部列出。
 
 4. 第一次启动成功后，从 `main.env` 删掉 `INITIAL_ADMIN_PASSWORD` 这一行。管理员密码只以 Argon2id 散列的形式存在数据库里。
 
@@ -97,7 +97,7 @@ sudo install -d -m 0755 /etc/worker-plane
 
    备份留在本机。还需要定期把 `/var/backups/worker-plane/` 复制到另一台机器或对象存储；具体方式由你决定。
 
-## 3. 签发 worker token
+## 3. 签发 worker token（手动接入）
 
 UI 里还没有签发入口，用管理员会话调用 API。下面的脚本从终端读取密码，不会留在命令历史里，签发的 token 直接写进文件：
 
@@ -118,13 +118,13 @@ rm -f "$JAR"
 - 把 `token` 的值写进该 worker 的 token 文件（0600），然后删除这个 JSON 文件。
 - `GET /api/worker-tokens` 列出所有 token 的 ID、所属 worker、是否吊销、是否正在使用，不返回 token 本身。
 
-## 4. 安装 worker
+## 4. 手动安装 worker（兼容方式）
 
 1. 下载对应平台的二进制和 `.sha256`，校验后安装：
 
    ```bash
-   shasum -a 256 -c worker-plane-worker-v0.1.0-linux-x86_64.sha256
-   sudo install -m 0755 worker-plane-worker-v0.1.0-linux-x86_64 /usr/local/bin/worker-plane-worker
+   shasum -a 256 -c worker-plane-worker-<版本>-linux-x86_64.sha256
+   sudo install -m 0755 worker-plane-worker-<版本>-linux-x86_64 /usr/local/bin/worker-plane-worker
    ```
 
    macOS 上如果文件是用浏览器下载的，要先执行 `xattr -d com.apple.quarantine <文件>`。
@@ -169,7 +169,7 @@ rm -f "$JAR"
 
 主节点：
 
-1. 暂停调度：用 §3 的方式登录后调用 `POST /api/ops/pause`，附说明，例如 `{"note":"升级到 v0.2.0"}`。UI 里只有恢复按钮，没有暂停按钮。
+1. 暂停调度：用 §3 的方式登录后调用 `POST /api/ops/pause`，附说明，例如 `{"note":"升级到 <新版本>"}`。UI 里只有恢复按钮，没有暂停按钮。
 2. 等正在运行的任务结束，或者确认可以中断它们。中断的任务在重启后会从 SQLite 恢复。
 3. 执行 `sudo systemctl start worker-plane-backup` 做一次备份。
 4. 解开新版本，然后执行 `sudo ln -sfn /opt/worker-plane/releases/<新版本> /opt/worker-plane/current`，再执行 `sudo systemctl restart worker-plane-main`。
@@ -227,7 +227,7 @@ worker：先执行 `systemctl stop`（或 `launchctl bootout`），等它停下�
 ## 11. 磁盘与保留
 
 - 主节点：
-  - 每小时运行一次维护：清理过期登录；终态任务结束超过 `MAIN_RETENTION_DAYS`（默认 30 天）后，删除它的输出分块和 Pi 会话文件。结果和对话记录保留。
+  - 每小时运行一次维护：清理过期登录；终态任务结束超过 `MAIN_RETENTION_DAYS`（默认 30 天）后，删除它的输出分块和模型会话文件。结果和对话记录保留。
   - 数据目录剩余空间低于 `MAIN_MIN_FREE_BYTES`（默认 1 GiB）时以 `disk_low` 暂停调度，空间恢复后自动继续。
   - 事件流保留最近 7 天，最多 10 万条。
   - 存储的输出总量上限由 `MAIN_LOG_CAPACITY_BYTES` 控制，默认 1 GiB。超出上限后，每个输出流只保存前 64 KiB。
@@ -249,7 +249,7 @@ worker：先执行 `systemctl stop`（或 `launchctl bootout`），等它停下�
 
 | 现象 | 原因与处理 |
 |---|---|
-| worker 日志出现 `UnknownIssuer` 或证书错误后退出 | `SSL_CERT_FILE` 没有指向 Caddy 的内部根证书，或者 CA 已重新生成。重新复制 `root.crt` 后重启 worker |
+| worker 日志出现 `UnknownIssuer` 或证书错误后退出 | `SSL_CERT_FILE` 没有指向 Caddy 的内部根证书，或者 CA 已重新生成。重新复制 `root.crt` 后重启 worker；用 CA 指纹安装的 worker，从可信控制台重新复制安装命令并重新运行 |
 | worker 收到 401 后退出 | token 已被吊销，或不属于这个 `worker_id`。按 §9 处理 |
 | worker 启动时报 `data directory already locked` | 同一个 `data_dir` 上已经有一个 worker 在运行 |
 | 主节点启动时报 `EEXIST ... main.lock` | 见 §10 |

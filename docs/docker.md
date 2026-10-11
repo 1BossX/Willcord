@@ -1,6 +1,6 @@
 # 用 Docker 部署主节点
 
-适用版本：P7 起。主节点和 Caddy 各一个容器，用 Docker Compose 管理；行为与 [运维手册](operations.md) 的 systemd 部署相同，本文只写不同之处。worker 仍装在每台被管理的机器上（[worker 安装与授权](worker-onboarding.md)），不放进容器：它要在宿主机上执行命令。
+适用于 v0.2.0 及以上版本。主节点和 Caddy 各一个容器，用 Docker Compose 管理；行为与 [运维手册](operations.md) 的 systemd 部署相同，本文只写不同之处。worker 仍装在每台被管理的机器上（[worker 安装与授权](worker-onboarding.md)），不放进容器：它要在宿主机上执行命令。
 
 ## 镜像
 
@@ -9,7 +9,7 @@
 | `ghcr.io/1bossx/worker-plane-main:<版本>` | Node 主节点，以 `node` 用户（uid 1000）运行，监听容器内 3000 端口 |
 | `ghcr.io/1bossx/worker-plane-caddy:<版本>` | Caddy、内部 CA 和网页 UI |
 
-每个 `v*` 标签发布 linux/amd64 和 linux/arm64 两个架构，版本号去掉前缀 `v`，例如 `v0.2.0` 对应 `0.2.0`。不发布 `latest`，部署时固定版本。也可以在仓库根目录自行构建：`docker build -f deploy/docker/Dockerfile --target main .`（Caddy 用 `--target caddy`）。
+每个 `v*` 标签发布 linux/amd64 和 linux/arm64 两个架构，版本号去掉前缀 `v`，例如 `v0.3.0` 对应 `0.3.0`。不发布 `latest`，部署时固定版本。也可以在仓库根目录自行构建：`docker build -f deploy/docker/Dockerfile --target main .`（Caddy 用 `--target caddy`）。
 
 ## 推荐：初始化向导
 
@@ -20,7 +20,7 @@
 1. 准备目录，复制 `deploy/docker/compose.yaml`，并在同一目录写 `.env`：
 
    ```bash
-   WORKER_PLANE_VERSION=0.2.0
+   WORKER_PLANE_VERSION=0.3.0
    WORKER_PLANE_SITE=plane.internal:8443
    WORKER_PLANE_PORT=8443
    ```
@@ -37,7 +37,7 @@
    curl --cacert ca.pem https://plane.internal:8443/health
    ```
 
-   预期返回 `{"alive":true,"scheduling_ready":true,"dispatch_paused":null,"phase":"P7"}`。启动失败看 `docker compose logs main`，配置问题会一次全部列出。
+   预期 `alive` 和 `scheduling_ready` 均为 true、`dispatch_paused` 为 null。启动失败看 `docker compose logs main`，配置问题会一次全部列出。
 
 4. 让浏览器所在机器信任 `ca.pem`。worker 默认从已信任控制台复制带 CA 指纹的安装命令；安装器会验证并保存根证书，无需先把文件交给每台 worker。手动 CA 和旧版本兼容流程仍可使用 `ca.pem`。
 

@@ -182,19 +182,20 @@ class MainNodeTests(unittest.TestCase):
         env = {**self.ADDRS, 'TEST_START_FAIL': '1'}
         code, out = self.init(server=False, env=env, answers=[(SERVER_CHOICE, b'2\n'), *self.answers()])
         self.assertNotEqual(code, 0, out)
-        self.assertIn('1) https://10.8.0.2:8443   utun3', out)
-        self.assertIn('2) https://192.168.1.5:8443   en0', out)
+        # Same private range: the real card (en0) comes before the tunnel (utun3).
+        self.assertIn('1) https://192.168.1.5:8443   en0', out)
+        self.assertIn('2) https://10.8.0.2:8443   utun3', out)
         self.assertNotIn('127.0.0.1:8443', out)
         self.assertNotIn('172.17.0.1', out)
         self.assertIn('DHCP', out)
-        self.assertIn('WILLCORD_SITE="192.168.1.5:8443"', (self.deploy / '.env').read_text())
-        self.assertIn('PUBLIC_BASE_URL="https://192.168.1.5:8443"', (self.deploy / 'main.env').read_text())
+        self.assertIn('WILLCORD_SITE="10.8.0.2:8443"', (self.deploy / '.env').read_text())
+        self.assertIn('PUBLIC_BASE_URL="https://10.8.0.2:8443"', (self.deploy / 'main.env').read_text())
 
     def test_enter_takes_the_first_detected_address(self):
         env = {**self.ADDRS, 'TEST_START_FAIL': '1'}
         code, out = self.init(server=False, env=env, answers=[(SERVER_CHOICE, b'\n'), *self.answers()])
         self.assertNotEqual(code, 0, out)
-        self.assertIn('WILLCORD_SITE="10.8.0.2:8443"', (self.deploy / '.env').read_text())
+        self.assertIn('WILLCORD_SITE="192.168.1.5:8443"', (self.deploy / '.env').read_text())
 
     def test_a_typed_origin_overrides_the_detected_addresses(self):
         code, out = self.init(server=False, env=self.ADDRS, answers=[(SERVER_CHOICE, self.origin.encode() + b'\n'), *self.answers()])

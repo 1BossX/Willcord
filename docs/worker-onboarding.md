@@ -87,7 +87,7 @@ willcord self-uninstall                   # 另外移除 PATH 上的 willcord �
 
 私钥和账本应一起保留，不能克隆给第二台机器。身份丢失时不要按相同显示名称接管旧机器；撤销旧设备、核对未完成任务，以新身份重新加入。token 文件丢失且旧凭据已确认时，先撤销设备再批准，允许安全重新签发。
 
-`WILLCORD_HOME` 可指定隔离数据目录；同一目录只有一个执行进程，服务名随目录区分。手动部署（systemd、launchd 单元，见[运维手册](operations.md)）用 `willcord worker run --config worker.toml` 启动，仍可使用 `token` 文件；既有节点不自动转换。
+`WILLCORD_HOME` 可指定隔离数据目录（路径不能太长：worker 在其中创建 `control.sock`，Unix socket 路径在 macOS 上最多 103 字节、Linux 上最多 107 字节，超过时 `install`、`join`、`run` 会直接报错并说明原因）；同一目录只有一个执行进程，服务名随目录区分。手动部署（systemd、launchd 单元，见[运维手册](operations.md)）用 `willcord worker run --config worker.toml` 启动，仍可使用 `token` 文件；既有节点不自动转换。
 
 ## 验收记录
 

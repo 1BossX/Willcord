@@ -308,6 +308,33 @@ class MainNodeTests(unittest.TestCase):
             self.assertNotEqual(r.returncode, 0)
         self.assertEqual((self.deploy / '.env').read_text(), after)
 
+    # ------------------------------------------------- worker data directory
+
+    def test_worker_refuses_a_data_directory_too_long_for_its_control_socket(self):
+        # A Unix socket path holds about 100 bytes; found in the first-run walkthrough,
+        # where the service crashed on "path must be shorter than SUN_LEN" unseen.
+        home = self.root / ('long-' * 25) / 'home'
+        env = {'WILLCORD_HOME': str(home)}
+        for command in (['worker', 'join', 'https://127.0.0.1:1'], ['worker', 'run']):
+            with self.subTest(command=command):
+                r = self.cli(*command, env=env)
+                self.assertNotEqual(r.returncode, 0)
+                self.assertIn('data directory path is too long', r.stderr)
+                self.assertIn('WILLCORD_HOME', r.stderr)
+                self.assertNotIn('SUN_LEN', r.stderr)
+                self.assertFalse(home.exists(), 'nothing is created in a directory the worker cannot use')
+        # Looking at a too-long install (status, uninstall) must keep working.
+        r = self.cli('worker', 'status', '--json', env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        # A hand-installed worker names its own data_dir.
+        workspace = self.root / 'ws'
+        workspace.mkdir()
+        config = self.root / 'worker.toml'
+        config.write_text(f'worker_id = "w"\ndata_dir = "{self.root / ("long-" * 25)}"\nurl = "wss://127.0.0.1:1/ws/worker"\n[[workspaces]]\nworkspace_id = "repo"\nconfig_version = 1\npath = "{workspace}"\nrepo_id = "local/repo"\nis_default = true\n')
+        r = self.cli('worker', 'run', '--config', str(config), env={'WORKER_TOKEN': 'x'})
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('data directory path is too long', r.stderr)
+
     # ------------------------------------------------------------ routing
 
     def test_commands_are_namespaced(self):

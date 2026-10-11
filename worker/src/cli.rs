@@ -143,6 +143,25 @@ pub fn root() -> Result<PathBuf, Error> {
         home.join(".local/share/willcord")
     })
 }
+/// The worker listens on `<data dir>/control.sock`, and a Unix socket path must
+/// fit in `sockaddr_un.sun_path` (104 bytes on macOS, 108 on Linux, one of them
+/// the terminating NUL). A longer path makes `bind` fail with "path must be
+/// shorter than SUN_LEN" only once the service is running, where nobody sees it;
+/// say so before anything is installed or created.
+pub(crate) fn check_socket_path(dir: &Path) -> Result<(), Error> {
+    let limit =
+        std::mem::size_of_val(&unsafe { std::mem::zeroed::<libc::sockaddr_un>() }.sun_path) - 1;
+    let socket = dir.join("control.sock");
+    let len = socket.as_os_str().len();
+    if len > limit {
+        return Err(format!(
+            "the data directory path is too long: the worker's control socket {} is {len} bytes, and a Unix socket path can be at most {limit} on this system. Use a shorter directory (WILLCORD_HOME=/path/to/short/dir)",
+            socket.display()
+        )
+        .into());
+    }
+    Ok(())
+}
 pub fn private_dir(p: &Path) -> Result<(), Error> {
     fs::create_dir_all(p)?;
     use std::os::unix::fs::PermissionsExt;
@@ -735,6 +754,9 @@ async fn worker(mut args: Vec<String>) -> Result<Option<PathBuf>, Error> {
     if system && command == "run" {
         return Err("run takes WILLCORD_HOME from the service definition".into());
     }
+    if system && command == "install" {
+        check_socket_path(&system_root()?.join("data"))?;
+    }
     let sys = if !system {
         None
     } else if command == "install" {
@@ -759,6 +781,9 @@ async fn worker(mut args: Vec<String>) -> Result<Option<PathBuf>, Error> {
                 return Err("install as root needs --system --user ACCOUNT; run without sudo for a per-user service".into());
             }
             let dir = root()?;
+            if ["install", "join", "run"].contains(&command) {
+                check_socket_path(&dir)?;
+            }
             private_dir(&dir)?;
             dir
         }
@@ -1120,6 +1145,40 @@ mod tests {
         assert!(daemon.contains("<key>HOME</key><string>/Users/ops</string>"));
         assert!(daemon.contains("<key>ExitTimeOut</key><integer>60</integer>"));
         assert!(daemon.contains("<key>SSL_CERT_FILE</key><string>/c/ca.pem</string>"));
+    }
+    #[test]
+    fn a_data_directory_that_cannot_hold_the_control_socket_is_refused_up_front() {
+        let limit =
+            std::mem::size_of_val(&unsafe { std::mem::zeroed::<libc::sockaddr_un>() }.sun_path) - 1;
+        assert!(
+            limit == 103 || limit == 107,
+            "macOS 104 and Linux 108 bytes, less the NUL"
+        );
+        // "/" + padding + "/control.sock" is exactly the limit, or one byte over.
+        let at = |total: usize| {
+            PathBuf::from(format!(
+                "/{}",
+                "a".repeat(total - "/control.sock".len() - 1)
+            ))
+        };
+        assert!(check_socket_path(&at(limit)).is_ok());
+        let err = check_socket_path(&at(limit + 1)).unwrap_err().to_string();
+        assert!(err.contains(&format!("is {} bytes", limit + 1)), "{err}");
+        assert!(
+            err.contains(&format!("at most {limit}")) && err.contains("WILLCORD_HOME"),
+            "{err}"
+        );
+        assert!(
+            !err.contains("SUN_LEN"),
+            "the message names the cause, not the OS error"
+        );
+        // The default per-user directories fit for an ordinary account name.
+        assert!(
+            check_socket_path(Path::new(
+                "/Users/someone/Library/Application Support/Willcord"
+            ))
+            .is_ok()
+        );
     }
     #[test]
     fn the_next_step_after_install_is_a_worker_command() {

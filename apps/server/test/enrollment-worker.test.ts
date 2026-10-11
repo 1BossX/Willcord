@@ -14,9 +14,9 @@ test("managed worker joins with a stable identity, runs in automatic workspace, 
  // rustls-native-certs prefers SSL_CERT_DIR over SSL_CERT_FILE when both are set.
  // Keep this integration fixture isolated to its freshly generated test CA.
  delete env.SSL_CERT_DIR;
- const cli=(...args:string[])=>exec(binary,args,{env,timeout:15000});
+ const cli=(...args:string[])=>exec(binary,["worker",...args],{env,timeout:15000});
  let worker:ChildProcess|undefined,errors="";
- const start=()=>{worker=spawn(binary,["run"],{env:{...env,SSL_CERT_FILE:join(dir,"ca.pem")},stdio:["ignore","ignore","pipe"]});worker.stderr!.on("data",d=>errors+=d);};
+ const start=()=>{worker=spawn(binary,["worker","run"],{env:{...env,SSL_CERT_FILE:join(dir,"ca.pem")},stdio:["ignore","ignore","pipe"]});worker.stderr!.on("data",d=>errors+=d);};
  const stop=async()=>{if(worker&&worker.exitCode===null&&worker.signalCode===null){worker.kill("SIGTERM");await waitFor(()=>worker!.exitCode!==null||worker!.signalCode!==null);}};
  try{
   const joined = await cli("join",s.proxy.url.replace("wss:","https:").replace("/ws/worker",""));

@@ -224,7 +224,7 @@ fn copy_user_ca(dir: &Path, explicit: Option<PathBuf>) -> Result<(), Error> {
     }
     Ok(())
 }
-fn shell_quote(value: &Path) -> String {
+pub(crate) fn shell_quote(value: &Path) -> String {
     format!("'{}'", value.to_string_lossy().replace('\'', "'\\''"))
 }
 async fn client() -> Result<reqwest::Client, Error> {
@@ -384,7 +384,7 @@ fn launchd_plist(
         .map(|(u, _)| format!("<key>UserName</key><string>{u}</string><key>ExitTimeOut</key><integer>60</integer><key>ThrottleInterval</key><integer>60</integer><key>Umask</key><integer>63</integer>"))
         .unwrap_or_default();
     format!(
-        "<?xml version=\"1.0\"?><!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\"><plist version=\"1.0\"><dict><key>Label</key><string>{name}</string>{daemon}<key>ProgramArguments</key><array><string>{}</string><string>run</string></array><key>EnvironmentVariables</key><dict><key>WILLCORD_HOME</key><string>{}</string>{}</dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>StandardErrorPath</key><string>{}</string></dict></plist>",
+        "<?xml version=\"1.0\"?><!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\"><plist version=\"1.0\"><dict><key>Label</key><string>{name}</string>{daemon}<key>ProgramArguments</key><array><string>{}</string><string>worker</string><string>run</string></array><key>EnvironmentVariables</key><dict><key>WILLCORD_HOME</key><string>{}</string>{}</dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>StandardErrorPath</key><string>{}</string></dict></plist>",
         xml(exe),
         xml(dir),
         // launchd sets no HOME for daemons; commands need the account's.
@@ -402,13 +402,13 @@ fn systemd_unit(exe: &Path, dir: &Path, ca: Option<&Path>, user: Option<&str>) -
         .unwrap_or_default();
     match user {
         None => format!(
-            "[Unit]\nDescription=Willcord worker\n[Service]\nExecStart=\"{}\" run\nEnvironment=\"WILLCORD_HOME={}\"\n{ca}Restart=on-failure\nRestartSec=5\n[Install]\nWantedBy=default.target\n",
+            "[Unit]\nDescription=Willcord worker\n[Service]\nExecStart=\"{}\" worker run\nEnvironment=\"WILLCORD_HOME={}\"\n{ca}Restart=on-failure\nRestartSec=5\n[Install]\nWantedBy=default.target\n",
             unit_quote(exe),
             unit_quote(dir)
         ),
         // Mirrors deploy/systemd/willcord-worker.service.
         Some(u) => format!(
-            "[Unit]\nDescription=Willcord worker\nAfter=network-online.target\nWants=network-online.target\nStartLimitIntervalSec=600\nStartLimitBurst=5\n[Service]\nType=simple\nUser={u}\nExecStart=\"{}\" run\nEnvironment=\"WILLCORD_HOME={}\"\n{ca}KillSignal=SIGTERM\nTimeoutStopSec=60\nKillMode=control-group\nRestart=on-failure\nRestartSec=10\nUMask=0077\n[Install]\nWantedBy=multi-user.target\n",
+            "[Unit]\nDescription=Willcord worker\nAfter=network-online.target\nWants=network-online.target\nStartLimitIntervalSec=600\nStartLimitBurst=5\n[Service]\nType=simple\nUser={u}\nExecStart=\"{}\" worker run\nEnvironment=\"WILLCORD_HOME={}\"\n{ca}KillSignal=SIGTERM\nTimeoutStopSec=60\nKillMode=control-group\nRestart=on-failure\nRestartSec=10\nUMask=0077\n[Install]\nWantedBy=multi-user.target\n",
             unit_quote(exe),
             unit_quote(dir)
         ),
@@ -616,6 +616,25 @@ fn normalize_device_name(host: &str, env: Option<&str>) -> String {
     }
     "worker".into()
 }
+/// What `install` tells the person to run next: the `worker join` command that
+/// lives under the `worker` namespace, with the real path to the installed binary.
+fn install_next_step(system_user: Option<&str>, binary: &Path, attempted: bool) -> String {
+    let note = if attempted {
+        " (a join was already attempted; this shows its current state)"
+    } else {
+        ""
+    };
+    match system_user {
+        Some(user) => format!(
+            "Installed as a system service running as {user}. Next: sudo {} worker join --system <server-https-origin>{note}",
+            shell_quote(binary)
+        ),
+        None => format!(
+            "Installed. Next: {} worker join <server-https-origin>{note}",
+            shell_quote(binary)
+        ),
+    }
+}
 /// What `join` tells the person: an already approved machine has nothing left to approve.
 fn join_summary(state: &Value, fingerprint: &str, base: &str) -> String {
     let authorization = state["state"].as_str().unwrap_or("unknown");
@@ -630,7 +649,11 @@ fn join_summary(state: &Value, fingerprint: &str, base: &str) -> String {
         state["worker_id"].as_str().unwrap_or("unknown"),
     )
 }
-const USAGE: &str = "usage: willcord install [--system --user ACCOUNT] | join URL | status [--json] | workspace add ID PATH | workspace list | run | uninstall [--delete-data]  (add --system to manage the system service)";
+const USAGE: &str = "usage:
+  willcord main init [--dir DIR] [--server HTTPS_ORIGIN] [--image-version vX.Y.Z]
+  willcord main up | down | status | logs [SERVICE...] | upgrade --image-version vX.Y.Z   (add --dir DIR outside the deployment directory)
+  willcord worker install [--system --user ACCOUNT] | join URL | status [--json] | workspace add ID PATH | workspace list | run [--config FILE] | uninstall [--delete-data]   (add --system to manage the system service)
+  willcord version";
 /// A mistyped command is not a failure with a backtrace-style message: say so plainly and exit.
 fn usage_error(command: Option<&str>) -> ! {
     if let Some(command) = command {
@@ -640,40 +663,69 @@ fn usage_error(command: Option<&str>) -> ! {
     std::process::exit(2)
 }
 const COMMANDS: [&str; 6] = ["install", "join", "status", "workspace", "run", "uninstall"];
-/// What the first argument means: a command, a request for help, or the legacy
-/// config-file path. Anything else is a typo, not a file to open.
+/// What the first argument means: a command, a request for help, or a typo.
 #[derive(Debug, PartialEq)]
 enum Route {
     Command,
     Help,
-    ConfigFile,
     Unknown,
 }
-fn route(first: &str, is_file: bool) -> Route {
+fn route(first: &str) -> Route {
     if COMMANDS.contains(&first) {
         Route::Command
     } else if ["-h", "--help", "help"].contains(&first) {
         Route::Help
-    } else if is_file {
-        Route::ConfigFile
     } else {
         Route::Unknown
     }
 }
+/// `willcord main …` sets up and operates the main node; `willcord worker …`
+/// is the execution machine. The worker commands run on from here.
 pub async fn dispatch() -> Result<Option<PathBuf>, Error> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
+    match args.first().map(String::as_str) {
+        None => usage_error(None),
+        Some("main") => {
+            if let Err(e) = crate::main_node::dispatch(args.split_off(1)).await {
+                eprintln!("willcord: {e}");
+                std::process::exit(1);
+            }
+            return Ok(None);
+        }
+        Some("worker") => {
+            args.remove(0);
+        }
+        Some("version" | "-V" | "--version") => {
+            println!("willcord {}", crate::main_node::version().unwrap_or("dev"));
+            return Ok(None);
+        }
+        Some("help" | "-h" | "--help") => {
+            println!("{USAGE}");
+            return Ok(None);
+        }
+        Some(other) => usage_error(Some(other)),
+    }
+    worker(args).await
+}
+async fn worker(mut args: Vec<String>) -> Result<Option<PathBuf>, Error> {
     let Some(command) = args.first().cloned() else {
         usage_error(None);
     };
     let command = command.as_str();
-    match route(command, Path::new(command).is_file()) {
+    match route(command) {
         Route::Command => {}
         Route::Help => {
             println!("{USAGE}");
             return Ok(None);
         }
-        Route::ConfigFile => return Ok(Some(PathBuf::from(command))),
         Route::Unknown => usage_error(Some(command)),
+    }
+    // A hand-installed service names its configuration file instead of
+    // enrolling: `willcord worker run --config /etc/willcord/worker.toml`.
+    if command == "run" {
+        if let Some(file) = take_value(&mut args, "--config")? {
+            return Ok(Some(PathBuf::from(file)));
+        }
     }
     let system = take_flag(&mut args, "--system");
     let account = take_value(&mut args, "--user")?;
@@ -747,27 +799,10 @@ pub async fn dispatch() -> Result<Option<PathBuf>, Error> {
             // enrollment.json is written before the request is sent, so it proves an
             // attempt, not an accepted one: always point at `join` for the real state.
             let attempted = dir.join("enrollment.json").exists();
-            match sys {
-                Some(s) => println!(
-                    "Installed as a system service running as {}. Next: sudo {} join --system <server-https-origin>{}",
-                    s.user,
-                    shell_quote(&target),
-                    if attempted {
-                        " (a join was already attempted; this shows its current state)"
-                    } else {
-                        ""
-                    }
-                ),
-                None => println!(
-                    "Installed. Next: {} join <server-https-origin>{}",
-                    shell_quote(&target),
-                    if attempted {
-                        " (a join was already attempted; this shows its current state)"
-                    } else {
-                        ""
-                    }
-                ),
-            }
+            println!(
+                "{}",
+                install_next_step(sys.map(|s| s.user.as_str()), &target, attempted)
+            );
         }
         "join" => {
             let url = reqwest::Url::parse(args.get(1).ok_or("join requires HTTPS URL")?)?;
@@ -941,12 +976,12 @@ pub async fn dispatch() -> Result<Option<PathBuf>, Error> {
     }
     Ok(None)
 }
-fn take_flag(args: &mut Vec<String>, flag: &str) -> bool {
+pub(crate) fn take_flag(args: &mut Vec<String>, flag: &str) -> bool {
     let before = args.len();
     args.retain(|a| a != flag);
     args.len() != before
 }
-fn take_value(args: &mut Vec<String>, flag: &str) -> Result<Option<String>, Error> {
+pub(crate) fn take_value(args: &mut Vec<String>, flag: &str) -> Result<Option<String>, Error> {
     let Some(i) = args.iter().position(|a| a == flag) else {
         return Ok(None);
     };
@@ -1057,12 +1092,12 @@ mod tests {
         );
         assert_eq!(
             systemd_unit(exe, dir, Some(ca), None),
-            "[Unit]\nDescription=Willcord worker\n[Service]\nExecStart=\"/w/bin/willcord\" run\nEnvironment=\"WILLCORD_HOME=/w\"\nEnvironment=\"SSL_CERT_FILE=/c/ca.pem\"\nRestart=on-failure\nRestartSec=5\n[Install]\nWantedBy=default.target\n"
+            "[Unit]\nDescription=Willcord worker\n[Service]\nExecStart=\"/w/bin/willcord\" worker run\nEnvironment=\"WILLCORD_HOME=/w\"\nEnvironment=\"SSL_CERT_FILE=/c/ca.pem\"\nRestart=on-failure\nRestartSec=5\n[Install]\nWantedBy=default.target\n"
         );
         let unit = systemd_unit(exe, dir, Some(ca), Some("ops"));
         for line in [
             "User=ops\n",
-            "ExecStart=\"/w/bin/willcord\" run\n",
+            "ExecStart=\"/w/bin/willcord\" worker run\n",
             "Environment=\"WILLCORD_HOME=/w\"\n",
             "Environment=\"SSL_CERT_FILE=/c/ca.pem\"\n",
             "KillMode=control-group\n",
@@ -1087,6 +1122,20 @@ mod tests {
         assert!(daemon.contains("<key>SSL_CERT_FILE</key><string>/c/ca.pem</string>"));
     }
     #[test]
+    fn the_next_step_after_install_is_a_worker_command() {
+        let bin = Path::new("/w/it's/bin/willcord");
+        let user = install_next_step(None, bin, false);
+        assert_eq!(
+            user,
+            "Installed. Next: '/w/it'\\''s/bin/willcord' worker join <server-https-origin>"
+        );
+        let system = install_next_step(Some("ops"), bin, true);
+        assert!(system.contains("running as ops. Next: sudo '/w/it'\\''s/bin/willcord' worker join --system <server-https-origin>"));
+        assert!(system.ends_with("already attempted; this shows its current state)"));
+        // Every command it names must route: nothing is left at the top level.
+        assert_eq!(route("worker"), Route::Unknown);
+    }
+    #[test]
     fn system_flags_and_accounts_are_validated() {
         let mut a: Vec<String> = ["install", "--system", "--user", "ops"]
             .map(String::from)
@@ -1108,12 +1157,13 @@ mod tests {
     }
     #[test]
     fn first_argument_is_a_command_help_or_an_existing_config_never_a_typo() {
-        assert_eq!(route("join", false), Route::Command);
-        assert_eq!(route("--help", false), Route::Help);
-        assert_eq!(route("help", false), Route::Help);
-        assert_eq!(route("/etc/worker.toml", true), Route::ConfigFile);
-        assert_eq!(route("statsu", false), Route::Unknown);
-        assert_eq!(route("--version", false), Route::Unknown);
+        assert_eq!(route("join"), Route::Command);
+        assert_eq!(route("--help"), Route::Help);
+        assert_eq!(route("help"), Route::Help);
+        assert_eq!(route("statsu"), Route::Unknown);
+        assert_eq!(route("--version"), Route::Unknown);
+        // The legacy `worker /path/to/worker.toml` form is gone: a path is a typo now.
+        assert_eq!(route("/etc/willcord/worker.toml"), Route::Unknown);
     }
     #[test]
     fn device_name_is_the_hostname_with_safe_fallbacks() {

@@ -11,7 +11,7 @@ Type=simple
 # The account that owns the workspaces; every command runs as this user.
 User=willcord
 Group=willcord
-ExecStart=/usr/local/bin/willcord /etc/willcord/worker.toml
+ExecStart=/usr/local/bin/willcord worker run --config /etc/willcord/worker.toml
 # Trust the main node's internal CA (Caddy's root.crt) and nothing else.
 Environment=SSL_CERT_FILE=/etc/willcord/ca.pem
 # SIGTERM stops running commands through the cancel path and records their

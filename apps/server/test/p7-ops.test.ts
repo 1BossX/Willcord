@@ -309,10 +309,20 @@ test("P7-A the Main runtime has no local execution tool; a model asking for one 
 });
 
 test("P7-A the worker has no model client, model key or model setting", () => {
-  const sources = readdirSync(join(repoRoot, "worker/src")).map((f) => readFileSync(join(repoRoot, "worker/src", f), "utf8"));
+  // `willcord main …` (main_node.rs) shares the binary and is the one place that
+  // knows model providers: it asks for the key once and writes it to main.env.
+  // The worker runtime must stay clear of both the key handling and that module.
+  const dir = join(repoRoot, "worker/src");
+  const runtime = readdirSync(dir).filter((f) => f !== "main_node.rs");
+  const sources = runtime.map((f) => readFileSync(join(dir, f), "utf8"));
   sources.push(readFileSync(join(repoRoot, "worker/Cargo.toml"), "utf8"));
   for (const text of sources)
     assert.doesNotMatch(text, /openrouter|anthropic|openai|MODEL_|API_KEY|pi-ai|pi-coding-agent/i);
+  // Only the command dispatch may reach into it.
+  for (const f of runtime.filter((f) => f !== "cli.rs" && f !== "main.rs"))
+    assert.doesNotMatch(readFileSync(join(dir, f), "utf8"), /main_node/, f);
+  const uses = readFileSync(join(dir, "cli.rs"), "utf8").match(/main_node::\w+/g) ?? [];
+  assert.deepEqual([...new Set(uses)].sort(), ["main_node::dispatch", "main_node::version"]);
 });
 
 test("P7-A restore never leaves a half-written database or a stale WAL behind", async () => {

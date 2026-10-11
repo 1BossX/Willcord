@@ -138,13 +138,13 @@ rm -f "$JAR"
    - 每个 workspace 的 `path` 必须是已存在的绝对路径，并且只能有一个默认 workspace。
    - Apple Silicon 上设置 `command_path = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"`。
 
-3. 启动服务：
+3. 启动服务。两个服务定义都执行 `willcord worker run --config <worker.toml 路径>`；`--config` 让它跳过入网流程，直接使用这份配置和 token 文件：
    - Linux：
      ```bash
      sudo cp deploy/systemd/willcord-worker.service /etc/systemd/system/
      sudo systemctl daemon-reload
-     sudo systemctl enable --now willcord
-     journalctl -u willcord -f
+     sudo systemctl enable --now willcord-worker
+     journalctl -u willcord-worker -f
      ```
    - macOS：
      ```bash

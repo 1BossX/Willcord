@@ -30,8 +30,8 @@ const ssh = (cmd: string) => exec("ssh", [remote!, cmd], { timeout: 120000, maxB
 const env = { ...process.env, WILLCORD_HOME: data, WILLCORD_LAUNCH_AGENT_DIR: join(dir, "LaunchAgents"), PATH: `${shim}:${process.env.PATH}` };
 delete env.SSL_CERT_FILE; delete env.SSL_CERT_DIR; delete env.WORKER_TOKEN;
 const remoteEnv = `WILLCORD_SYSTEM_ROOT=${quote(data)}`;
-const localCli = (...args: string[]) => exec(worker, args, { env, timeout: 90000 });
-const cli = (...args: string[]) => mode === "linux" ? ssh(`sudo -n env ${remoteEnv} ${quote(worker)} ${args.map(quote).join(" ")} --system`) : localCli(...args);
+const localCli = (...args: string[]) => exec(worker, ["worker", ...args], { env, timeout: 90000 });
+const cli = (...args: string[]) => mode === "linux" ? ssh(`sudo -n env ${remoteEnv} ${quote(worker)} worker ${args.map(quote).join(" ")} --system`) : localCli(...args);
 try {
   mkdirSync(join(s.dir,"assets"));mkdirSync(join(s.dir,"shim"));
   const sha = createHash("sha256").update(readFileSync(binary)).digest("hex");

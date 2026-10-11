@@ -74,12 +74,12 @@ async function run() {
     const remoteHash = (await ssh(`sha256sum ${shellQuote(`${remoteBinary}.installed`)}`)).split(/\s+/)[0];
     if (localHash !== remoteHash) throw new Error("colo worker binary SHA-256 does not match the local release artifact");
 
-    await ssh(`env WILLCORD_HOME=${shellQuote(workerData)} SSL_CERT_FILE=${shellQuote(remoteCa)} ${shellQuote(`${remoteBinary}.installed`)} install`);
+    await ssh(`env WILLCORD_HOME=${shellQuote(workerData)} SSL_CERT_FILE=${shellQuote(remoteCa)} ${shellQuote(`${remoteBinary}.installed`)} worker install`);
     await ssh(`rm -f ${shellQuote(remoteBinary)} ${shellQuote(`${remoteBinary}.installed`)} ${shellQuote(`${staging}/ca.pem`)}`);
     const remoteWorker = join(workerData, "bin/willcord");
     const publicUrl = `https://localhost:${reversePort}`;
     const remoteEnvironment = `WILLCORD_HOME=${shellQuote(workerData)} SSL_CERT_FILE=${shellQuote(remoteCa)}`;
-    const joined = await ssh(`env ${remoteEnvironment} ${shellQuote(remoteWorker)} join ${shellQuote(publicUrl)}`);
+    const joined = await ssh(`env ${remoteEnvironment} ${shellQuote(remoteWorker)} worker join ${shellQuote(publicUrl)}`);
     if (!/Authorization:\s*"?pending"?/.test(joined)) throw new Error(`unexpected enrollment response: ${joined}`);
 
     const pending = scenario.one("SELECT worker_id FROM enrollments WHERE name LIKE 'colo%' ORDER BY created_at DESC LIMIT 1") as { worker_id?: string } | undefined;
@@ -91,7 +91,7 @@ async function run() {
       return row?.online === 1 && row.reconciled === 1 && row.blocked === 0 && Boolean(row.ledger_id);
     }, 60_000);
 
-    const status = JSON.parse(await ssh(`env ${remoteEnvironment} ${shellQuote(remoteWorker)} status --json`));
+    const status = JSON.parse(await ssh(`env ${remoteEnvironment} ${shellQuote(remoteWorker)} worker status --json`));
     if (status.online !== 1 || status.reconciled !== 1 || status.blocked !== 0 || status.service_running !== true)
       throw new Error(`colo worker is not ready: ${JSON.stringify(status)}`);
     const ledgerBefore = (scenario.one("SELECT ledger_id FROM workers WHERE worker_id=?", workerId) as { ledger_id: string }).ledger_id;
@@ -103,11 +103,11 @@ async function run() {
     const marker = await ssh(`cat ${shellQuote(`${workerData}/workspaces/default/enrollment.txt`)}`);
     if (marker !== "colo-worker-ok") throw new Error(`unexpected marker from colo workspace: ${marker}`);
 
-    await ssh(`env ${remoteEnvironment} ${shellQuote(remoteWorker)} install`);
+    await ssh(`env ${remoteEnvironment} ${shellQuote(remoteWorker)} worker install`);
     await scenario.until(() => scenario.one("SELECT online,reconciled,ledger_id FROM workers WHERE worker_id=?", workerId)?.reconciled === 1, 60_000);
     const ledgerAfter = (scenario.one("SELECT ledger_id FROM workers WHERE worker_id=?", workerId) as { ledger_id: string }).ledger_id;
     if (ledgerBefore !== ledgerAfter) throw new Error("ledger identity changed during service upgrade");
-    const finalStatus = JSON.parse(await ssh(`env ${remoteEnvironment} ${shellQuote(remoteWorker)} status --json`));
+    const finalStatus = JSON.parse(await ssh(`env ${remoteEnvironment} ${shellQuote(remoteWorker)} worker status --json`));
     outcome = { worker_id: workerId, online: finalStatus.online, reconciled: finalStatus.reconciled, blocked: finalStatus.blocked, service_name: finalStatus.service_name, ledger_preserved: true, task_id: jobId, task_state: scenario.state(jobId), workspace_marker: marker, worker_sha256: localHash };
   } catch (error) {
     outcome = error;
@@ -117,7 +117,7 @@ async function run() {
         const remoteWorker = join(workerData, "bin/willcord");
         const isInstalled = await ssh(`test -x ${shellQuote(remoteWorker)} && echo yes || echo no`);
         if (isInstalled === "yes")
-          await ssh(`env WILLCORD_HOME=${shellQuote(workerData)} ${shellQuote(remoteWorker)} uninstall --delete-data`);
+          await ssh(`env WILLCORD_HOME=${shellQuote(workerData)} ${shellQuote(remoteWorker)} worker uninstall --delete-data`);
         else
           await ssh(`rm -f ${shellQuote(join(workerData, "ca.pem"))} && rmdir ${shellQuote(workerData)}`);
       } catch (error) {

@@ -162,13 +162,13 @@ worker_install() {
     joined=$("$installed" join "$server")
   fi
   printf '%s\n' "$joined"
-  # Re-running the installer on an approved machine has nothing left to approve.
-  if [[ "$joined" == *'Authorization: approved'* ]]; then
-    printf '\n本机此前已获授权，无需再次批准。等待控制台显示“可执行”，再创建独立会话验证只读任务。\n状态命令：'
-  else
-    printf '\n申请已提交。登录 %s，在“机器授权”核对终端指纹并批准。\n' "$server"
-    printf '批准后等待“可执行”，再创建独立会话验证只读任务。\n状态命令：'
-  fi
+  # The text follows the state join reported: approved needs nothing, denied needs a re-approval.
+  case "$joined" in
+    *'Authorization: approved'*) printf '\n本机此前已获授权，无需再次批准。等待控制台显示“可执行”，再创建独立会话验证只读任务。\n状态命令：';;
+    *'Authorization: rejected'*|*'Authorization: revoked'*) printf '\n本机的授权已被拒绝或撤销，不会自动重新申请。登录 %s，在“机器授权”核对终端指纹后重新批准。\n状态命令：' "$server";;
+    *) printf '\n申请已提交。登录 %s，在“机器授权”核对终端指纹并批准。\n' "$server"
+       printf '批准后等待“可执行”，再创建独立会话验证只读任务。\n状态命令：';;
+  esac
   [[ "$system" == false || $(id -u) == 0 ]] || printf 'sudo '
   quote "$installed"; printf ' status'; [[ "$system" == false ]] || printf ' --system'; printf ' --json\n'
 }

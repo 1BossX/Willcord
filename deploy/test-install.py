@@ -72,7 +72,7 @@ else:
    (target.parent.parent/'ca.pem').write_bytes(p(os.environ['SSL_CERT_FILE']).read_bytes())
  elif args[0]=='join':
   assert 'SSL_CERT_FILE' not in os.environ, 'CLI must reuse the saved CA after install'
-  print('Node: fixture\nFingerprint: fixture\nAuthorization: '+('approved' if os.environ.get('TEST_APPROVED')=='1' else 'pending'))
+  print('Node: fixture\nFingerprint: fixture\nAuthorization: '+os.environ.get('TEST_AUTH','pending'))
 '''
 
 class InstallerTests(unittest.TestCase):
@@ -268,8 +268,11 @@ class InstallerTests(unittest.TestCase):
  def test_worker_on_an_approved_machine_does_not_ask_for_approval_again(self):
   r=self.run_worker();self.assertEqual(r.returncode,0,r.stderr)
   self.assertIn('Authorization: pending',r.stdout);self.assertIn('申请已提交',r.stdout)
-  r=self.run_worker(env={'TEST_APPROVED':'1'});self.assertEqual(r.returncode,0,r.stderr)
+  r=self.run_worker(env={'TEST_AUTH':'approved'});self.assertEqual(r.returncode,0,r.stderr)
   self.assertIn('Authorization: approved',r.stdout);self.assertIn('无需再次批准',r.stdout);self.assertNotIn('申请已提交',r.stdout)
+  for state in ['rejected','revoked']:
+   r=self.run_worker(env={'TEST_AUTH':state});self.assertEqual(r.returncode,0,r.stderr)
+   self.assertIn('重新批准',r.stdout);self.assertNotIn('申请已提交',r.stdout);self.assertNotIn('无需再次批准',r.stdout)
  def test_unconfirmed_model_key_only_warns(self):
   for status in ['403','500','000']:
    with self.subTest(status=status):

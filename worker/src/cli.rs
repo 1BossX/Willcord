@@ -746,26 +746,27 @@ pub async fn dispatch() -> Result<Option<PathBuf>, Error> {
             }
             service(&dir, sys, true)?;
             println!("Service: {}", service_name(&dir));
-            let joined = dir.join("enrollment.json").exists();
+            // enrollment.json is written before the request is sent, so it proves an
+            // attempt, not an accepted one: always point at `join` for the real state.
+            let attempted = dir.join("enrollment.json").exists();
             match sys {
                 Some(s) => println!(
-                    "Installed as a system service running as {}.{}",
+                    "Installed as a system service running as {}. Next: sudo {} join --system <server-https-origin>{}",
                     s.user,
-                    if joined {
-                        " Already joined; no need to join again.".into()
+                    shell_quote(&target),
+                    if attempted {
+                        " (a join was already attempted; this shows its current state)"
                     } else {
-                        format!(
-                            " Next: sudo {} join --system <server-https-origin>",
-                            shell_quote(&target)
-                        )
+                        ""
                     }
                 ),
                 None => println!(
-                    "Installed.{}",
-                    if joined {
-                        " Already joined; no need to join again.".into()
+                    "Installed. Next: {} join <server-https-origin>{}",
+                    shell_quote(&target),
+                    if attempted {
+                        " (a join was already attempted; this shows its current state)"
                     } else {
-                        format!(" Next: {} join <server-https-origin>", shell_quote(&target))
+                        ""
                     }
                 ),
             }

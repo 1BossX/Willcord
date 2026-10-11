@@ -37,7 +37,7 @@ resolve_version() {
   if [[ -z "$version" ]]; then
     explicit=false
     # With no Release, GitHub redirects /releases/latest to /releases.
-    resolved=$(curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 60 -o /dev/null -w '%{url_effective}' "https://github.com/1BossX/Willcord/releases/latest") || resolved=''
+    resolved=$(curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 60 -o /dev/null -w '%{url_effective}' "https://github.com/BossOptional/Willcord/releases/latest") || resolved=''
     [[ "$resolved" == */releases/tag/* ]] || fail "没有可访问的正式 Release。请等待发布，或用 --version 指定已发布版本。"
     version=${resolved##*/}
     [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "最新 Release 不是正式版本 vX.Y.Z：${version}。"
@@ -51,7 +51,7 @@ resolve_version() {
   # the check is best effort: when the API is unavailable the install goes on,
   # and a draft's assets cannot be downloaded without authentication anyway.
   if [[ "$explicit" == true ]]; then
-    if curl --fail --silent --location --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 60 "https://api.github.com/repos/1BossX/Willcord/releases/tags/$version" -o "$tmp/release.json" 2>/dev/null; then
+    if curl --fail --silent --location --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 60 "https://api.github.com/repos/BossOptional/Willcord/releases/tags/$version" -o "$tmp/release.json" 2>/dev/null; then
       grep -Eq '"draft":[[:space:]]*false' "$tmp/release.json" || fail "版本尚未发布。"
       if [[ "$stable" == true ]]; then
         grep -Eq '"prerelease":[[:space:]]*false' "$tmp/release.json" || fail "${version} 标记为预发布，不是正式版本。"
@@ -65,7 +65,7 @@ resolve_version() {
   else
     printf '安装预发布版本：%s（仅用于验收）\n' "$version"
   fi
-  release="https://github.com/1BossX/Willcord/releases/download/$version"
+  release="https://github.com/BossOptional/Willcord/releases/download/$version"
 }
 # The binary does the rest: `willcord worker join` installs the service, saves
 # the CA (--ca, or fetched and checked against --ca-fingerprint), puts the

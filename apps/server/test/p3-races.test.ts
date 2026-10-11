@@ -16,7 +16,7 @@ import { waitFor } from "./support/worker-harness.js";
 
 const origin = "https://localhost:8443";
 const token = "p3-race-worker-token";
-const workspace = (version: number) => ({ workspace_id: "repo", config_version: version, path: `/tmp/p3-race-v${version}`, repo_id: "github.com/1BossX/Willcord", is_default: true });
+const workspace = (version: number) => ({ workspace_id: "repo", config_version: version, path: `/tmp/p3-race-v${version}`, repo_id: "github.com/BossOptional/Willcord", is_default: true });
 
 /** One worker connection; every frame received is kept in order. */
 class ScriptedWorker {

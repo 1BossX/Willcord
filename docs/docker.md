@@ -6,8 +6,8 @@
 
 | 镜像 | 内容 |
 |---|---|
-| `ghcr.io/1bossx/willcord-main:<版本>` | Node 主节点，以 `node` 用户（uid 1000）运行，监听容器内 3000 端口 |
-| `ghcr.io/1bossx/willcord-caddy:<版本>` | Caddy、内部 CA 和网页 UI |
+| `ghcr.io/bossoptional/willcord-main:<版本>` | Node 主节点，以 `node` 用户（uid 1000）运行，监听容器内 3000 端口 |
+| `ghcr.io/bossoptional/willcord-caddy:<版本>` | Caddy、内部 CA 和网页 UI |
 
 每个 `v*` 标签发布 linux/amd64 和 linux/arm64 两个架构，版本号去掉前缀 `v`，例如 `v0.3.0` 对应 `0.3.0`。不发布 `latest`，部署时固定版本。也可以在仓库根目录自行构建：`docker build -f deploy/docker/Dockerfile --target main .`（Caddy 用 `--target caddy`）。
 

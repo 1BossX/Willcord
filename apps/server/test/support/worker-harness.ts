@@ -66,7 +66,7 @@ export function startWorker(options: { dir: string; id: string; url: string; ca:
     `worker_id = "${options.id}"\ndata_dir = "${options.dir}/${options.id}-data"\nurl = "${options.url}"\n` +
       (options.retentionSecs === undefined ? "" : `result_retention_secs = ${options.retentionSecs}\n`) +
       (options.extraConfig ?? "") +
-      `[[workspaces]]\nworkspace_id = "repo"\nconfig_version = ${options.configVersion ?? 1}\npath = "${options.workspace}"\nrepo_id = "github.com/1BossX/Willcord"\nis_default = true\n`,
+      `[[workspaces]]\nworkspace_id = "repo"\nconfig_version = ${options.configVersion ?? 1}\npath = "${options.workspace}"\nrepo_id = "github.com/BossOptional/Willcord"\nis_default = true\n`,
   );
   const env = { ...process.env, WORKER_TOKEN: options.token, SSL_CERT_FILE: options.ca, ...options.env };
   // rustls-native-certs prefers SSL_CERT_DIR over SSL_CERT_FILE when both are set.

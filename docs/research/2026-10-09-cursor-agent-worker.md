@@ -1,6 +1,6 @@
 # Cursor agent worker / 自托管执行调研
 
-调研日期：2026-10-09（所有链接访问日期同此）。Cursor 的 `agent worker` 与 WorkerPlane 同构：agent loop、推理、会话在中心，worker 出站长连接只执行工具。
+调研日期：2026-10-09（所有链接访问日期同此）。Cursor 的 `agent worker` 与 Willcord 同构：agent loop、推理、会话在中心，worker 出站长连接只执行工具。
 
 本文只用 Cursor 官方文档与官方博客作为事实依据；第三方材料单列在“二手/未核实”一节，不进入结论。标记约定：**[事实]** 为一手来源所述（附链接）；**[推断]** 为我们的理解；**[未核实]** 为未找到一手来源支持。
 
@@ -35,7 +35,7 @@
 | Private Workers 页是否弃用 | **已确认**：页面标注 Deprecated，指向 [Pool](https://cursor.com/docs/cloud-agent/self-hosted/pool) |
 | token 寿命：二手材料称一小时不可刷新 | **一手来源推翻**：[Pool](https://cursor.com/docs/cloud-agent/self-hosted/pool) 称 `--auth-token-file` 在重连时重读、controller 可无重启轮换；session token 服务一次 claim，`CURSOR_AUTH_TOKEN_EXPIRES_AT`（7 天）只是兜底，并有 Create A Session Token 接口换发 |
 
-空白：所有官方材料都未说明断线时在途工具调用的重试、幂等与对账。[推断] WorkerPlane P3 的账本/epoch/fence 在这方面比公开资料更深，不应为“对齐”而简化。
+空白：所有官方材料都未说明断线时在途工具调用的重试、幂等与对账。[推断] Willcord P3 的账本/epoch/fence 在这方面比公开资料更深，不应为“对齐”而简化。
 
 ## 关键事实
 
@@ -76,7 +76,7 @@
 
 已删除旧稿条目：“长会话依赖不可刷新的短期 token”——依据是二手材料，被 Pool 文档推翻；“逆向笔记安全反例”降级为二手节中的自查灵感。
 
-## 对 WorkerPlane 的映射与建议动作
+## 对 Willcord 的映射与建议动作
 
 现状核对（2026-10-09，分支 `feat/p4-faults`）：
 

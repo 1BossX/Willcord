@@ -9,7 +9,7 @@
 
 | 项目 | 需要时间 | 要求 | 状态 |
 |---|---|---|---|
-| 远端 Git 仓库 | 推送代码前 | 私有 GitHub 仓库 `1BossX/Willcord`；当前 Git CLI 身份具备 `repo` 权限 | 已配置 |
+| 远端 Git 仓库 | 推送代码前 | 私有 GitHub 仓库 `BossOptional/Willcord`；当前 Git CLI 身份具备 `repo` 权限 | 已配置 |
 | 模型供应商和模型名 | P0 实际模型验证前 | OpenRouter + `deepseek/deepseek-v4.1-flash`；`OPENROUTER_KEY` 已在本机 `~/.zshrc` 配置，运行时映射为 `OPENROUTER_API_KEY`，不写入仓库 | 已验证真实 usage 和 Pi 端到端取消；取消请求最终费用未知 |
 | 第一台 worker | P2 联调前 | 可安装 Rust worker 的 Linux 或 macOS 机器；有管理员权限安装/启动服务 | 待准备 |
 | 主节点可访问地址 | P2 worker 联调前 | worker 能出站访问的 HTTPS/WSS 地址；开发阶段可用临时隧道或测试网络 | 待准备 |
@@ -33,7 +33,7 @@ P0 不需要真实 worker、域名或线上主机。用户已选择 OpenRouter +
 
 ## 远端仓库状态
 
-- [x] GitHub 私有仓库 `1BossX/Willcord` 已存在。
+- [x] GitHub 私有仓库 `BossOptional/Willcord` 已存在。
 - [x] 初始文档和 P0 spike 已提交到远端 `main`；最新提交见仓库历史。
 - [x] 本地仓库配置 `origin`；Git CLI 已切换到可用的 `agentx1boss` 身份，供原生 `git push` 使用。
 

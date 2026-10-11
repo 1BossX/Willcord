@@ -35,7 +35,7 @@ elif name=='sudo':
 elif name=='curl':
  url=next((a for a in args if a.startswith('https://')), '')
  if os.environ.get('TEST_NO_RELEASE')=='1': sys.exit(22)
- if url.endswith('/latest'): print('https://github.com/1BossX/Willcord/releases' if os.environ.get('TEST_NO_LATEST')=='1' else 'https://github.com/1BossX/Willcord/releases/tag/v1.2.3',end='');sys.exit()
+ if url.endswith('/latest'): print('https://github.com/BossOptional/Willcord/releases' if os.environ.get('TEST_NO_LATEST')=='1' else 'https://github.com/BossOptional/Willcord/releases/tag/v1.2.3',end='');sys.exit()
  dest=p(args[args.index('-o')+1]) if '-o' in args else None
  if '/releases/tags/' in url and os.environ.get('TEST_API_LIMIT')=='1': sys.exit(22)
  if '/releases/tags/' in url: data=json.dumps({'draft':False,'prerelease':os.environ.get('TEST_PRERELEASE')=='1'}).encode()

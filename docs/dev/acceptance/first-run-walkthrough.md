@@ -11,7 +11,7 @@
 
 ## 准备
 
-- **公开安装脚本已更新**：`curl -fsSL https://1bossx.github.io/Willcord/install.sh | cmp - deploy/install.sh` 应无差异；`gh release view <tag>` 显示非草稿、附件 16 个。
+- **公开安装脚本已更新**：`curl -fsSL https://bossoptional.github.io/Willcord/install.sh | cmp - deploy/install.sh` 应无差异；`gh release view <tag>` 显示非草稿、附件 16 个。
 - **临时凭据**：管理员密码自己生成，仅用于这次部署，不写入仓库。模型 key 需要一个**临时、可作废**的 key；没有真实 key 时，只能验证到“任务因 key 无效而失败”并检查失败提示，不能证明主路径。走查结束后让持有人在 provider 作废该 key。
 - **本机环境**：Docker Desktop（macOS）或 Docker + Compose v2（Linux）；端口 8443 空闲（先清理上一次走查的部署）。
 - **隔离目录**：部署目录放在会话临时目录，不放进工作区，以免把含密钥的 `main.env` 带进提交。
@@ -23,7 +23,7 @@
 ### 1. 部署主节点
 
 ```bash
-curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- main --server https://localhost:8443 --dir <临时目录>
+curl -fsSL https://bossoptional.github.io/Willcord/install.sh | bash -s -- main --server https://localhost:8443 --dir <临时目录>
 ```
 
 向导读 `/dev/tty`，自动化时需要伪终端（见“辅助工具”）。检查点：
@@ -48,7 +48,7 @@ curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- main --serv
 
 ```bash
 fp=$(openssl x509 -in <目录>/ca.pem -outform DER | shasum -a 256 | cut -d' ' -f1)
-curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- worker --server https://localhost:8443 --ca-fingerprint "$fp"
+curl -fsSL https://bossoptional.github.io/Willcord/install.sh | bash -s -- worker --server https://localhost:8443 --ca-fingerprint "$fp"
 ```
 
 检查点：输出里有 `Authorization: pending`、终端指纹和一行 `Status: willcord worker status --json`；`~/.local/bin/willcord` 已就位（不在 `PATH` 时输出一行 `export PATH=…`，且没有改动 shell 配置文件）；设备名是本机主机名而不是 `worker`；没有残留的占位地址（如 `https://your-server`）。
@@ -112,7 +112,7 @@ rm -rf <部署目录>                            # 含写有临时 key 的 main.
 ```python
 import os, pty, select, sys, time
 answers = [("管理员密码".encode(), os.environ["WP_ADMIN"].encode() + b"\n")]   # 带 --server 时不会问地址
-cmd = f"curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- main --server '{sys.argv[2]}' --dir '{sys.argv[1]}'"
+cmd = f"curl -fsSL https://bossoptional.github.io/Willcord/install.sh | bash -s -- main --server '{sys.argv[2]}' --dir '{sys.argv[1]}'"
 pid, fd = pty.fork()
 if pid == 0: os.execvp("bash", ["bash", "-c", cmd])
 out = b""; sent = cur = 0; end = time.monotonic() + 420

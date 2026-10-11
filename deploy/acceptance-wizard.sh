@@ -235,9 +235,9 @@ ask RELEASE_TAG "要验收的 release tag（例如 v0.1.0）："
 for k in SITE MAIN_HOST LINUX_WORKER LINUX_HOST MAC_WORKER MAC_HOST RELEASE_TAG; do write_env "$k" "${!k}"; done
 
 stage "下载并校验 release 产物"
-open_url "https://github.com/1BossX/Willcord/releases/tag/$RELEASE_TAG"
+open_url "https://github.com/BossOptional/Willcord/releases/tag/$RELEASE_TAG"
 say "确认 release 已发布（或你有权限下载 draft），然后在本机执行："
-step "mkdir -p $STATE/release && cd $STATE/release && gh release download $RELEASE_TAG --repo 1BossX/Willcord"
+step "mkdir -p $STATE/release && cd $STATE/release && gh release download $RELEASE_TAG --repo BossOptional/Willcord"
 step "for f in *.sha256; do shasum -a 256 -c \"\$f\"; done"
 pause "全部显示 OK 后按 Enter"
 result RELEASE_ARTIFACTS "产物齐全且 sha256 全部校验通过？"

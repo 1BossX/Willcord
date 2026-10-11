@@ -17,8 +17,6 @@ import unittest
 
 from wizard_pty import BINARY, SERVER, SERVER_CHOICE, answers, drive, install_fake_docker
 
-LIVE_REGISTRY = {'WILLCORD_REGISTRY': 'ghcr.io/bossoptional'}
-
 TLS_CONFIG = '''[req]
 distinguished_name=dn
 x509_extensions=v3
@@ -400,7 +398,7 @@ class MainNodeTests(unittest.TestCase):
     def test_upgrade_changes_only_the_image_version(self):
         self.deployed()
         before = (self.deploy / '.env').read_text()
-        r = self.cli('main', 'upgrade', '--image-version', 'v1.3.0', '--dir', str(self.deploy), env=LIVE_REGISTRY)
+        r = self.cli('main', 'upgrade', '--image-version', 'v1.3.0', '--dir', str(self.deploy))
         self.assertEqual(r.returncode, 0, r.stderr)
         after = (self.deploy / '.env').read_text()
         self.assertEqual(after, before.replace('WILLCORD_VERSION="1.2.3"', 'WILLCORD_VERSION="1.3.0"'))
@@ -439,13 +437,13 @@ class MainNodeTests(unittest.TestCase):
         # Comments, an unrelated key and no trailing newline must all survive the round trip.
         original = ('# kept by the operator\n' + env_file.read_text() + '\n# trailing note\nEXTRA="a b"\n\nLAST=1').encode()
         env_file.write_bytes(original)
-        r = self.cli('main', 'upgrade', '--image-version', 'v1.3.0', '--dir', str(self.deploy), env={**LIVE_REGISTRY, 'TEST_START_FAIL': '1'})
+        r = self.cli('main', 'upgrade', '--image-version', 'v1.3.0', '--dir', str(self.deploy), env={'TEST_START_FAIL': '1'})
         self.assertNotEqual(r.returncode, 0)
         self.assertIn('已恢复原样', r.stderr)
         self.assertEqual(env_file.read_bytes(), original)
         self.assertEqual(self.compose_calls(), [['pull']])
         # The same file upgrades normally once the pull works, touching only the version line.
-        r = self.cli('main', 'upgrade', '--image-version', 'v1.3.0', '--dir', str(self.deploy), env=LIVE_REGISTRY)
+        r = self.cli('main', 'upgrade', '--image-version', 'v1.3.0', '--dir', str(self.deploy))
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(env_file.read_bytes(), original.replace(b'WILLCORD_VERSION="1.2.3"', b'WILLCORD_VERSION="1.3.0"'))
 

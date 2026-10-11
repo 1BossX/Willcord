@@ -19,9 +19,12 @@ if git grep -nEi 'worker[-_ ]?plane|workerplane' -- . \
 fi
 
 # The organization was renamed from 1BossX to BossOptional. GitHub Pages and
-# GHCR paths do not redirect, so a leftover old slug breaks installs.
+# GHCR paths do not redirect, so a leftover old slug breaks installs. Besides the
+# migration docs, `willcord main upgrade` and its test name the dead path on
+# purpose: they detect it.
 if git grep -nEi '1bossx' -- . \
-  ':!docs/migrating-to-willcord.md' \
+  ':!docs/migrating-to-willcord.md' ':!docs/installation.md' \
+  ':!worker/src/main_node.rs' ':!deploy/test-main-node.py' \
   ':!deploy/check-naming.sh'; then
   echo '旧组织名 1BossX 不应再出现；请改用 BossOptional。' >&2
   fail=1

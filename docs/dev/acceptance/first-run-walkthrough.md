@@ -29,7 +29,7 @@ curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- main --serv
 向导读 `/dev/tty`，自动化时需要伪终端（见“辅助工具”）。检查点：
 
 - 向导只问两项：服务地址和管理员密码，**不再问模型**。查看 `main.env`：只有 `PUBLIC_BASE_URL`，不含 `MODEL_*`，成功后也不再有 `INITIAL_ADMIN_PASSWORD`。
-- 服务地址提示先列出本机探测到的地址（私有网段在前，真实网卡排在虚拟网卡前；没有 `127.0.0.1`、Docker/虚拟机网桥和代理的虚拟网卡），回车取第 1 项，输入序号选择，输入完整 `https://` 地址按原样使用；序号越界时报错且不写任何文件。
+- 服务地址提示先列出本机探测到的地址（私有网段在前，真实网卡在前，其次是 Tailscale / ZeroTier / NetBird 并带标注；没有 `127.0.0.1`、Docker/虚拟机网桥和代理的虚拟网卡），回车取第 1 项，输入序号选择，输入完整 `https://` 地址按原样使用；序号越界时报错且不写任何文件。
 - 登录后控制台顶部应出现“尚未绑定模型”提示；在“模型连接”保存 key 后提示消失（见第 5 步）。
 - 结尾打印信任根证书的命令（macOS / Debian-Ubuntu），并指向“机器授权 → 添加机器”。
 - `https://localhost:8443/health` 用 `--cacert <目录>/ca.pem` 访问，返回 `scheduling_ready: true`。

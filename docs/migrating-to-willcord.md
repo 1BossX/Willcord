@@ -31,7 +31,10 @@ v0.5.0 把所有仍叫 `worker-plane` / `WorkerPlane` 的名称统一为 `willco
 | 安装脚本与产品页 | `https://1bossx.github.io/Willcord/` | `https://bossoptional.github.io/Willcord/` |
 | 镜像 | `ghcr.io/1bossx/willcord-{main,caddy}` | `ghcr.io/bossoptional/willcord-{main,caddy}` |
 
-v0.5.0 和 v0.6.0 的镜像已经在新路径下可拉取，旧路径下不再可用。这两个版本的 `willcord` 二进制内置的 `compose.yaml` 默认仍指向旧镜像路径，用它们部署时在部署目录的 `.env` 里加一行 `WILLCORD_REGISTRY=ghcr.io/bossoptional`；包含本次改名的下一个版本起默认值已是新路径。
+v0.5.0 和 v0.6.0 的镜像已经在新路径下可拉取，旧路径 `ghcr.io/1bossx/*` 不再可用。这两个版本的 `willcord` 二进制内置的 `compose.yaml` 默认仍指向旧路径。
+
+- **已部署的主节点**：升级**之前**先在部署目录的 `.env` 里加一行 `WILLCORD_REGISTRY=ghcr.io/bossoptional`，否则升级会因为拉不到镜像而失败。包含本次改名的下一个版本起，默认值已是新路径。
+- **已安装的 worker**：不受影响，它们经 GitHub 的 301 重定向继续下载，无需操作。
 
 ## 主节点（Docker）
 

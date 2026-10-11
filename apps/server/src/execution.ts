@@ -633,6 +633,13 @@ export class ExecutionCoordinator {
     return true;
   }
 
+  /** The reason a run died on its model call, so operators need not read container logs to learn the key is wrong. */
+  private modelFailure(failure: unknown): string | null {
+    const message = failure instanceof Error ? failure.message : "";
+    if (!message.startsWith("model_error:")) return null;
+    return /^model_error: (401)\b|invalid[ _-]?api[ _-]?key|incorrect api key|missing authentication|unauthori[sz]ed/i.test(message) ? "model_auth_failed" : "model_error";
+  }
+
   private async execute(jobId: string) {
     const generation = this.db.transaction(() => {
       this.db.prepare("UPDATE jobs SET runtime_generation=runtime_generation+1 WHERE job_id=?").run(jobId);
@@ -655,7 +662,7 @@ export class ExecutionCoordinator {
       // Main tools run inside their commit, so a main job never has an unresolved call.
       // A run that ended without an outcome stops its children first, like a cancel.
       if (this.openChildren(jobId) && (this.db.prepare("SELECT state FROM jobs WHERE job_id=?").get(jobId) as { state: string }).state === "running") this.cancel(jobId, "run_ended");
-      this.db.prepare("UPDATE jobs SET state='failed',end_reason=COALESCE(end_reason,'run_ended') WHERE job_id=? AND state='running'").run(jobId);
+      this.db.prepare("UPDATE jobs SET state='failed',end_reason=COALESCE(end_reason,?,'run_ended') WHERE job_id=? AND state='running'").run(this.modelFailure(failure), jobId);
       if (failure) console.error("main execution failed", String(failure));
       this.finalizeCancel(jobId);
       this.advance();
@@ -663,7 +670,7 @@ export class ExecutionCoordinator {
     }
     const state = (this.db.prepare("SELECT state FROM jobs WHERE job_id=?").get(jobId) as { state: string }).state;
     if (state === "running" && unresolved.length) this.attention(job.worker_id, jobId, "run_ended_with_unresolved_calls", { calls: unresolved, error: String(failure ?? "") });
-    else if (state === "running") this.db.prepare("UPDATE jobs SET state='failed' WHERE job_id=? AND state='running'").run(jobId);
+    else if (state === "running") this.db.prepare("UPDATE jobs SET state='failed',end_reason=COALESCE(end_reason,?) WHERE job_id=? AND state='running'").run(this.modelFailure(failure), jobId);
     if (failure && state !== "cancel_requested") console.error("execution failed", String(failure));
     if (state === "cancel_requested") this.finalizeCancel(jobId);
     else this.release(job.worker_id, jobId);

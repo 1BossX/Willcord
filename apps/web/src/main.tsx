@@ -519,6 +519,8 @@ function MarkdownMessage({ value }: { value: string }) {
 const childEnd: Record<string, string> = {
   dependency_failed: "前置任务未成功，没有执行",
   verification_failed: "验证命令未通过",
+  model_auth_failed: "模型 API key 无效",
+  model_error: "模型服务调用失败",
 };
 /** The live state of a delegated child, from the parent job's view. */
 function DelegationStatus({ child }: { child: Child }) {

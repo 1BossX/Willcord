@@ -167,6 +167,7 @@ fn without_env(text: &str, key: &str) -> String {
         .filter(|line| !line.starts_with(&prefix))
         .collect()
 }
+
 /// `text` with the line setting `key` replaced; the key must already be there.
 fn with_env(text: &str, key: &str, value: &str) -> Result<String, Error> {
     let prefix = format!("{key}=");
@@ -659,30 +660,50 @@ async fn status(mut args: Vec<String>) -> Result<(), Error> {
     }
 }
 
-/// The registry that `docker compose pull` would use, when it is the path the
-/// organization rename left dead (`ghcr.io/1bossx`). Compose takes
-/// `WILLCORD_REGISTRY` from the shell first, then `.env`, then the default
-/// written into `compose.yaml`; an explicit value that is not the old path
-/// means the deployment has already been fixed.
+/// The value Compose reads for `key` from an env file: the last assignment
+/// wins, `export ` and spaces around `=` are allowed, comment lines are
+/// skipped, a quoted value ends at its closing quote and an unquoted one at
+/// ` #`.
+fn last_env_assignment(text: &str, key: &str) -> Option<String> {
+    text.lines()
+        .filter_map(|line| {
+            let line = line.trim_start();
+            let line = line.strip_prefix("export ").unwrap_or(line).trim_start();
+            if line.starts_with('#') {
+                return None;
+            }
+            let (name, value) = line.split_once('=')?;
+            if name.trim() != key {
+                return None;
+            }
+            let value = value.trim();
+            Some(match value.chars().next() {
+                Some(quote @ ('"' | '\'')) => match value[1..].find(quote) {
+                    Some(end) => value[1..=end].to_string(),
+                    None => value[1..].to_string(),
+                },
+                _ => value.split(" #").next().unwrap_or("").trim().to_string(),
+            })
+        })
+        .last()
+}
+
+/// Whether `docker compose pull` would use the path the organization rename
+/// left dead (`ghcr.io/1bossx`). Compose takes `WILLCORD_REGISTRY` from the
+/// shell first (even when empty), then the last assignment in `.env`, then the
+/// default written into `compose.yaml`. An empty value counts as unset, so the
+/// default applies; any other value that is not the old path means the
+/// deployment is already fixed.
 fn dead_registry(compose: &str, env: &str, shell: Option<&str>) -> bool {
     const DEAD: &str = "ghcr.io/1bossx";
     let dead = |text: &str| text.to_ascii_lowercase().contains(DEAD);
-    let from_env = env.lines().find_map(|line| {
-        let value = line.strip_prefix("WILLCORD_REGISTRY=")?;
-        Some(
-            value
-                .trim()
-                .trim_matches(|c| c == '"' || c == '\'')
-                .to_string(),
-        )
-    });
-    let explicit = shell
-        .map(str::to_string)
-        .filter(|v| !v.is_empty())
-        .or(from_env.filter(|v| !v.is_empty()));
-    match explicit {
+    let value = match shell {
+        Some(value) => Some(value.to_string()),
+        None => last_env_assignment(env, "WILLCORD_REGISTRY"),
+    };
+    match value.filter(|v| !v.is_empty()) {
         Some(registry) => dead(&registry),
-        None => dead(compose) || dead(env),
+        None => dead(compose),
     }
 }
 
@@ -921,5 +942,57 @@ mod tests {
         assert!(!dead_registry(old, "", Some("registry.example/willcord")));
         assert!(dead_registry(new, "", Some("ghcr.io/1bossx")));
         assert!(dead_registry(old, "WILLCORD_REGISTRY=\n", Some("")));
+    }
+
+    #[test]
+    fn the_last_assignment_in_env_is_the_one_compose_uses() {
+        let old = "image: ${WILLCORD_REGISTRY:-ghcr.io/1bossx}/willcord-main\n";
+        let (dead, good) = (
+            "WILLCORD_REGISTRY=ghcr.io/1bossx\n",
+            "WILLCORD_REGISTRY=ghcr.io/bossoptional\n",
+        );
+        assert!(!dead_registry(old, &format!("{dead}{good}"), None));
+        assert!(dead_registry(old, &format!("{good}{dead}"), None));
+        assert!(!dead_registry(
+            old,
+            &format!("{dead}X=1\n{good}Y=2\n"),
+            None
+        ));
+        // An empty last assignment unsets it, so the compose default applies.
+        assert!(dead_registry(
+            old,
+            &format!("{good}WILLCORD_REGISTRY=\n"),
+            None
+        ));
+        assert!(!dead_registry(
+            old,
+            &format!("{dead}{good}WILLCORD_REGISTRY=\n"),
+            Some("mirror.example/w")
+        ));
+        // The shell wins over .env, in either direction, even when empty.
+        assert!(dead_registry(old, good, Some("ghcr.io/1bossx")));
+        assert!(!dead_registry(old, dead, Some("ghcr.io/bossoptional")));
+        assert!(dead_registry(old, good, Some("")));
+        // Comments, other keys and syntax variants are not assignments.
+        assert!(!dead_registry(
+            old,
+            "# WILLCORD_REGISTRY=ghcr.io/1bossx\nWILLCORD_REGISTRY=ghcr.io/bossoptional\n",
+            None
+        ));
+        assert!(!dead_registry(
+            "image: ghcr.io/bossoptional/x\n",
+            "NOTE=ghcr.io/1bossx\n",
+            None
+        ));
+        assert!(!dead_registry(
+            old,
+            "export WILLCORD_REGISTRY = \"ghcr.io/bossoptional\" # new\n",
+            None
+        ));
+        assert!(dead_registry(
+            old,
+            "WILLCORD_REGISTRY=ghcr.io/1bossx # old\n",
+            None
+        ));
     }
 }

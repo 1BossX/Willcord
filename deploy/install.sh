@@ -57,8 +57,9 @@ env_line() {
   printf '%s="%s"\n' "$1" "$value"
 }
 resolve_version() {
-  local resolved stable=true
+  local resolved stable=true explicit=true
   if [[ -z "$version" ]]; then
+    explicit=false
     # With no Release, GitHub redirects /releases/latest to /releases.
     resolved=$(curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 60 -o /dev/null -w '%{url_effective}' "https://github.com/1BossX/Willcord/releases/latest") || resolved=''
     [[ "$resolved" == */releases/tag/* ]] || fail "没有可访问的正式 Release。请等待发布，或用 --version 指定已发布版本。"
@@ -68,10 +69,22 @@ resolve_version() {
   # Pre-releases (vX.Y.Z-rc.N) are installed only when named with --version.
   [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || fail "版本必须是 vX.Y.Z，或显式指定的预发布版本 vX.Y.Z-rc.N。"
   [[ "$version" != *-* ]] || stable=false
-  fetch "https://api.github.com/repos/1BossX/Willcord/releases/tags/$version" "$tmp/release.json"
-  grep -Eq '"draft":[[:space:]]*false' "$tmp/release.json" || fail "版本尚未发布。"
+  # /releases/latest only ever names a published, formal Release, so the GitHub
+  # API is consulted for an explicit --version alone. Anonymous API requests are
+  # limited to 60 per hour per IP and shared NATs and proxies exhaust that, so
+  # the check is best effort: when the API is unavailable the install goes on,
+  # and a draft's assets cannot be downloaded without authentication anyway.
+  if [[ "$explicit" == true ]]; then
+    if curl --fail --silent --location --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 60 "https://api.github.com/repos/1BossX/Willcord/releases/tags/$version" -o "$tmp/release.json" 2>/dev/null; then
+      grep -Eq '"draft":[[:space:]]*false' "$tmp/release.json" || fail "版本尚未发布。"
+      if [[ "$stable" == true ]]; then
+        grep -Eq '"prerelease":[[:space:]]*false' "$tmp/release.json" || fail "${version} 标记为预发布，不是正式版本。"
+      fi
+    else
+      printf 'GitHub API 暂不可用（可能被限流），跳过 %s 的发布状态检查；仍会校验下载文件的 SHA-256。\n' "$version" >&2
+    fi
+  fi
   if [[ "$stable" == true ]]; then
-    grep -Eq '"prerelease":[[:space:]]*false' "$tmp/release.json" || fail "${version} 标记为预发布，不是正式版本。"
     printf '安装版本：%s\n' "$version"
   else
     printf '安装预发布版本：%s（仅用于验收）\n' "$version"
@@ -153,8 +166,30 @@ worker_install() {
   [[ "$system" == false || $(id -u) == 0 ]] || printf 'sudo '
   quote "$installed"; printf ' status'; [[ "$system" == false ]] || printf ' --system'; printf ' --json\n'
 }
+# Ask the model provider whether it accepts the key. Only a definite rejection
+# (HTTP 401) stops the install: restricted keys may get 403 on the listing
+# endpoint, and an unreachable provider or an unknown one proves nothing. The
+# key goes to curl through stdin so it never appears in the process list.
+check_model_key() {
+  local provider="$1" key="$2" url status
+  local -a extra=()
+  case "$provider" in
+    openrouter) url=https://openrouter.ai/api/v1/auth/key;;
+    openai) url=https://api.openai.com/v1/models;;
+    anthropic) url=https://api.anthropic.com/v1/models; extra=('header = "anthropic-version: 2023-06-01"');;
+    *) printf '未内置 %s 的 API key 检查，已跳过；可在控制台“设置 → 模型连接”中核对。\n' "$provider"; return 0;;
+  esac
+  key=${key//\\/\\\\}; key=${key//\"/\\\"}
+  if [[ "$provider" == anthropic ]]; then extra+=("header = \"x-api-key: $key\"")
+  else extra+=("header = \"Authorization: Bearer $key\""); fi
+  status=$(printf '%s\n' "${extra[@]}" | curl --disable --silent --output /dev/null --write-out '%{http_code}' --connect-timeout 5 --max-time 15 --config - "$url" 2>/dev/null) || status=000
+  case "$status" in
+    200) printf '模型 API key 检查通过。\n';;
+    401) fail "$provider 拒绝了这个 API key（HTTP 401）。请核对 provider 与 key 后重新运行；未写入任何配置。";;
+    *) printf '无法确认模型 API key（HTTP %s），继续安装；之后可在控制台“设置 → 模型连接”中修改并测试。\n' "$status" >&2;;
+  esac
+}
 main_install() {
-  [[ "$os" == linux ]] || fail "主节点向导支持 Linux amd64/arm64。"
   [[ "$system" == false && -z "$account" && -z "$ca" && -z "$fingerprint" ]] || fail "main 不接受 --system、--user 或 CA 参数。"
   need docker; need stty
   docker compose version >/dev/null || fail "请先安装 Docker Compose v2。"
@@ -171,6 +206,7 @@ main_install() {
   prompt model '模型名称' deepseek/deepseek-v4.1-flash
   prompt api_key '模型 API key' '' secret
   [[ -n "$api_key" ]] || fail "模型 API key 不能为空。"
+  check_model_key "$provider" "$api_key"
   prompt password '首次管理员密码（至少 16 字符）' '' secret
   [[ ${#password} -ge 16 ]] || fail "管理员密码至少需要 16 字符。"
   verified compose.yaml
@@ -219,6 +255,7 @@ main_install() {
   trap - ERR
   printf '\n主节点已就绪：%s\n根证书：%s/ca.pem\n' "$server" "$directory"
   printf '请先让浏览器信任此根证书。登录控制台，在“机器授权 → 添加机器”复制安装命令。\n'
+  [[ "$os" != darwin ]] || printf '提示：macOS 上的主节点依赖 Docker Desktop，适合本机试用；Docker Desktop 退出后服务随之停止，生产环境请使用 Linux。\n'
 }
 sha256_stdin() { if command -v shasum >/dev/null 2>&1; then shasum -a 256; else sha256sum; fi; }
 main() {

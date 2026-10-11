@@ -117,7 +117,7 @@ export class ExecutionCoordinator {
     readonly connections: Map<string, Connection>,
     readonly now = Date.now,
     readonly runJob?: (job: any) => Promise<void>,
-    readonly options: { budget?: Budget; dataDir?: string; model?: ModelConfig; fakeScript?: (job: any, messages: any[]) => ScriptStep[]; toolResultTimeoutMs?: number; logCapacityBytes?: number } = {},
+    readonly options: { budget?: Budget; dataDir?: string; model?: ModelConfig | (() => ModelConfig); fakeScript?: (job: any, messages: any[]) => ScriptStep[]; toolResultTimeoutMs?: number; logCapacityBytes?: number } = {},
   ) {
     // A draft still streaming belongs to a process that is gone.
     db.prepare("UPDATE model_drafts SET state='interrupted',updated_at=? WHERE state='streaming'").run(now());
@@ -633,6 +633,14 @@ export class ExecutionCoordinator {
     return true;
   }
 
+  /** The reason a run died on its model call, so operators need not read container logs to learn the key is wrong. */
+  private modelFailure(failure: unknown): string | null {
+    const message = failure instanceof Error ? failure.message : "";
+    if (message.startsWith("model_not_configured:")) return "model_not_configured";
+    if (!message.startsWith("model_error:")) return null;
+    return /^model_error: (401)\b|invalid[ _-]?api[ _-]?key|incorrect api key|missing authentication|unauthori[sz]ed/i.test(message) ? "model_auth_failed" : "model_error";
+  }
+
   private async execute(jobId: string) {
     const generation = this.db.transaction(() => {
       this.db.prepare("UPDATE jobs SET runtime_generation=runtime_generation+1 WHERE job_id=?").run(jobId);
@@ -655,7 +663,7 @@ export class ExecutionCoordinator {
       // Main tools run inside their commit, so a main job never has an unresolved call.
       // A run that ended without an outcome stops its children first, like a cancel.
       if (this.openChildren(jobId) && (this.db.prepare("SELECT state FROM jobs WHERE job_id=?").get(jobId) as { state: string }).state === "running") this.cancel(jobId, "run_ended");
-      this.db.prepare("UPDATE jobs SET state='failed',end_reason=COALESCE(end_reason,'run_ended') WHERE job_id=? AND state='running'").run(jobId);
+      this.db.prepare("UPDATE jobs SET state='failed',end_reason=COALESCE(end_reason,?,'run_ended') WHERE job_id=? AND state='running'").run(this.modelFailure(failure), jobId);
       if (failure) console.error("main execution failed", String(failure));
       this.finalizeCancel(jobId);
       this.advance();
@@ -663,7 +671,7 @@ export class ExecutionCoordinator {
     }
     const state = (this.db.prepare("SELECT state FROM jobs WHERE job_id=?").get(jobId) as { state: string }).state;
     if (state === "running" && unresolved.length) this.attention(job.worker_id, jobId, "run_ended_with_unresolved_calls", { calls: unresolved, error: String(failure ?? "") });
-    else if (state === "running") this.db.prepare("UPDATE jobs SET state='failed' WHERE job_id=? AND state='running'").run(jobId);
+    else if (state === "running") this.db.prepare("UPDATE jobs SET state='failed',end_reason=COALESCE(end_reason,?) WHERE job_id=? AND state='running'").run(this.modelFailure(failure), jobId);
     if (failure && state !== "cancel_requested") console.error("execution failed", String(failure));
     if (state === "cancel_requested") this.finalizeCancel(jobId);
     else this.release(job.worker_id, jobId);
@@ -751,11 +759,13 @@ export class ExecutionCoordinator {
   async runPi(job: any) {
     const dataDir = this.options.dataDir ?? "./data";
     const fakeMode = Boolean(this.options.fakeScript) || process.env.P2_FAKE_MODEL === "1";
-    const configured = this.options.model ?? modelFromEnv(process.env);
+    // Read per run: a change made in the console applies to the next job, not to one already running.
+    const option = this.options.model;
+    const configured = (typeof option === "function" ? option() : option) ?? modelFromEnv(process.env);
     const provider = fakeMode ? "openai" : configured.provider;
     const modelName = fakeMode ? "gpt-4o-mini" : configured.name;
     const apiKey = fakeMode ? "p2-scripted-provider" : configured.apiKey;
-    if (!apiKey) throw new Error("MODEL_API_KEY (or OPENROUTER_API_KEY) is required to execute jobs");
+    if (!apiKey) throw new Error("model_not_configured: no model API key; set it under \"模型连接\" or MODEL_API_KEY");
     // The first run fixes the earlier exchanges the job carries, with its user message.
     this.db.transaction(() => {
       if (this.db.prepare("SELECT 1 FROM runtime_history WHERE job_id=? AND entry_key=?").get(job.job_id, `user:${job.job_id}`)) return;
@@ -779,7 +789,7 @@ export class ExecutionCoordinator {
     const typebox = await import("typebox");
     const runtime = await pi.ModelRuntime.create({ authPath: resolve(dataDir, "pi-auth.json"), modelsPath: null, modelsStorePath: resolve(dataDir, "pi-models.json"), refreshOnCreate: false });
     await runtime.setRuntimeApiKey(provider as any, apiKey);
-    const model = ai.getModel(provider as any, modelName); if (!model) throw new Error(`unknown Pi model ${provider}/${modelName}`);
+    const model = ai.getModel(provider as any, modelName); if (!model) throw new Error(`model_not_configured: unknown Pi model ${provider}/${modelName}`);
     const sessionDir = resolve(dataDir, "pi-sessions", job.session_id);
     const cwd = main ? resolve(dataDir, "main") : job.path;
     if (main) mkdirSync(cwd, { recursive: true });

@@ -132,6 +132,18 @@ test("P3 a run that ends with an unresolved call keeps the slot and needs attent
  coordinator.close();db.close();
 });
 
+test("a run that dies on the model call records why instead of 'unknown'",async()=>{
+ for(const [message,reason] of [['model_error: 401: {"message":"Missing Authentication header","code":401}',"model_auth_failed"],["model_error: 429: rate limited","model_error"],["model_not_configured: no model API key","model_not_configured"],["boom",null]] as const){
+  const {db,connections,one}=fixture();
+  db.prepare("UPDATE worker_slots SET active_job_id=NULL").run();db.prepare("UPDATE jobs SET state='queued'").run();
+  const coordinator=new ExecutionCoordinator(db,connections,Date.now,async()=>{throw new Error(message);});
+  const log=console.error;console.error=()=>{};
+  try{await coordinator.pump("venus");}finally{console.error=log;}
+  assert.deepEqual(one("SELECT state,end_reason FROM jobs"),{state:"failed",end_reason:reason},message);
+  coordinator.close();db.close();
+ }
+});
+
 test("P3 a committed request that no longer rebuilds blocks the worker without closing its connection",async()=>{
  const {db,sent,coordinator,commit,one}=fixture();
  commit("c1",1,"bash",{command:"echo once"});

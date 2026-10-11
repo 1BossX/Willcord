@@ -58,7 +58,7 @@ sudo install -d -m 0755 /etc/worker-plane
 
 2. 写环境文件：复制 `deploy/main.env.example` 到 `/etc/worker-plane/main.env`，权限设为 0600，用编辑器填入值。
    - `PUBLIC_BASE_URL` 必须和浏览器地址栏里的源完全一致（协议、主机、端口），登录和 CSRF 检查都和它比较。
-   - `MODEL_API_KEY` 缺失时主节点拒绝启动。
+   - `MODEL_API_KEY` 缺失时主节点拒绝启动。它只是默认值：之后在控制台“模型连接”保存的设置优先生效（见 [安装与首次使用](installation.md#在控制台修改模型连接)）。
    - `INITIAL_ADMIN_PASSWORD` 只在第一次启动时需要，至少 16 个字符。
 
 3. 安装并启动服务：

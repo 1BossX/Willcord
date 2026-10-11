@@ -1,0 +1,2 @@
+# The pre-fix fixture in 3cff308 is a fake key; history is not rewritten.
+3cff308fada234fc1c53ef95c2894b319e2f1512:apps/server/test/model-settings.test.ts:generic-api-key:12

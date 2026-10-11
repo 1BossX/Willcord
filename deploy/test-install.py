@@ -41,6 +41,9 @@ elif name=='curl':
  if os.environ.get('TEST_NO_RELEASE')=='1': sys.exit(22)
  if url.endswith('/latest'): print('https://github.com/1BossX/Willcord/releases' if os.environ.get('TEST_NO_LATEST')=='1' else 'https://github.com/1BossX/Willcord/releases/tag/v1.2.3',end='');sys.exit()
  dest=p(args[args.index('-o')+1]) if '-o' in args else None
+ if '/releases/tags/' in url and os.environ.get('TEST_API_LIMIT')=='1': sys.exit(22)
+ if url.startswith('https://openrouter.ai/'):
+  code=os.environ.get('TEST_KEY_STATUS','200');sys.stdout.write(code if '--write-out' in args else '');sys.exit(0)
  if '/releases/tags/' in url: data=json.dumps({'draft':False,'prerelease':os.environ.get('TEST_PRERELEASE')=='1'}).encode()
  elif url.endswith('/.well-known/willcord/ca.pem'): data=(root/'bootstrap.pem').read_bytes()
  elif url.endswith('/health') and os.environ.get('TEST_TLS_FAIL')=='1':sys.exit(60)
@@ -107,7 +110,7 @@ class InstallerTests(unittest.TestCase):
   self.assertTrue((Path(self.env['WORKER_PLANE_SYSTEM_ROOT'])/'bin/worker').exists())
   self.assertTrue(any('--system' in a and 'join' in a for _,a in self.calls()))
  def test_no_release_hash_download_and_account_fail_before_install(self):
-  for env,args in [({'TEST_NO_RELEASE':'1'},[]),({'TEST_PRERELEASE':'1'},[]),({'TEST_BAD_HASH':'1'},[]),({'TEST_DOWNLOAD_FAIL':'1'},[]),({},['--system','--user','root']),({},['--system','--user','missing']),({'TEST_ARCH':'riscv64'},[])]:
+  for env,args in [({'TEST_NO_RELEASE':'1'},[]),({'TEST_PRERELEASE':'1'},['--version','v1.2.3']),({'TEST_BAD_HASH':'1'},[]),({'TEST_DOWNLOAD_FAIL':'1'},[]),({},['--system','--user','root']),({},['--system','--user','missing']),({'TEST_ARCH':'riscv64'},[])]:
    with self.subTest(env=env,args=args):
     r=self.run_worker(*args,env=env);self.assertNotEqual(r.returncode,0)
     self.assertFalse((Path(self.env['WORKER_PLANE_HOME'])/'bin/worker').exists())
@@ -124,6 +127,18 @@ class InstallerTests(unittest.TestCase):
   self.assertIn('没有可访问的正式 Release',r.stderr)
   for bad in ['v1.2.3-','v1.2.3-rc 1','1.2.3-rc.1']:
    r=self.run_worker('--version',bad);self.assertNotEqual(r.returncode,0,bad)
+  self.clean_tmp()
+ def test_latest_install_never_calls_the_github_api(self):
+  # Anonymous API requests are rate limited per IP; /releases/latest is enough.
+  r=self.run_worker(env={'TEST_API_LIMIT':'1'});self.assertEqual(r.returncode,0,r.stderr)
+  self.assertFalse(any('api.github.com' in str(a) for n,a in self.calls() if n=='curl'))
+ def test_explicit_version_survives_an_exhausted_api_limit(self):
+  r=self.run_worker('--version','v1.2.3',env={'TEST_API_LIMIT':'1'});self.assertEqual(r.returncode,0,r.stderr)
+  self.assertIn('GitHub API 暂不可用',r.stderr)
+  # Without the API the SHA-256 and the asset download still guard the install.
+  shutil.rmtree(self.env['WORKER_PLANE_HOME'])
+  r=self.run_worker('--version','v1.2.3',env={'TEST_API_LIMIT':'1','TEST_BAD_HASH':'1'});self.assertNotEqual(r.returncode,0)
+  self.assertFalse((Path(self.env['WORKER_PLANE_HOME'])/'bin/worker').exists())
   self.clean_tmp()
  def test_system_trust_has_no_insecure_or_ca_parameter(self):
   r=subprocess.run([BASH,str(SCRIPT),'worker','--server','https://plane.example.com'],env=self.env,capture_output=True,text=True)
@@ -197,6 +212,26 @@ class InstallerTests(unittest.TestCase):
   before=(deploy/'main.env').read_bytes()
   code,out=self.main_tty();self.assertNotEqual(code,0,out)
   self.assertEqual((deploy/'main.env').read_bytes(),before)
+ def test_main_wizard_runs_on_macos_docker_desktop(self):
+  code,out=self.main_tty(env={'TEST_OS':'Darwin','TEST_ARCH':'arm64'});self.assertEqual(code,0,out)
+  self.assertIn('Docker Desktop',out)
+  self.assertTrue((self.root/'deployment/main.env').exists())
+ def test_model_key_is_checked_before_anything_is_written(self):
+  code,out=self.main_tty(env={'TEST_KEY_STATUS':'401'});self.assertNotEqual(code,0,out)
+  self.assertIn('拒绝了这个 API key',out)
+  self.assertEqual(list((self.root/'deployment').iterdir()),[],'a rejected key leaves no config behind')
+  self.assertFalse(any(n=='docker' and a[:2]==['compose','up'] for n,a in self.calls()))
+  # The key travels over stdin, never through argv.
+  self.assertFalse(any('key$with#special' in str(a) for _,a in self.calls()))
+  self.clean_tmp()
+  # A fixed key can reuse the same directory.
+  code,out=self.main_tty();self.assertEqual(code,0,out);self.assertIn('API key 检查通过',out)
+ def test_unconfirmed_model_key_only_warns(self):
+  for status in ['403','500','000']:
+   with self.subTest(status=status):
+    shutil.rmtree(self.root/'deployment',ignore_errors=True)
+    code,out=self.main_tty(env={'TEST_KEY_STATUS':status});self.assertEqual(code,0,out)
+    self.assertIn('无法确认模型 API key',out)
  def test_main_start_failure_keeps_config_and_password_for_recovery(self):
   code,out=self.main_tty(env={'TEST_START_FAIL':'1'});self.assertNotEqual(code,0,out)
   self.assertIn('docker compose logs',out)

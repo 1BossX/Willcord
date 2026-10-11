@@ -13,7 +13,7 @@
 
 ## 推荐：初始化向导
 
-新的 Linux 部署可运行一行安装向导，自动生成配置、启动服务并导出 CA；步骤与成功标志见 [安装与首次使用](installation.md)。已有部署请按本文升级章节操作。下面保留手动配置方式。
+新的 Linux 部署（或 macOS Docker Desktop 本机试用）可运行一行安装向导，自动生成配置、启动服务并导出 CA；步骤与成功标志见 [安装与首次使用](installation.md)。已有部署请按本文升级章节操作。下面保留手动配置方式。
 
 ## 安装
 
@@ -40,6 +40,10 @@
    预期 `alive` 和 `scheduling_ready` 均为 true、`dispatch_paused` 为 null。启动失败看 `docker compose logs main`，配置问题会一次全部列出。
 
 4. 让浏览器所在机器信任 `ca.pem`。worker 默认从已信任控制台复制带 CA 指纹的安装命令；安装器会验证并保存根证书，无需先把文件交给每台 worker。手动 CA 和旧版本兼容流程仍可使用 `ca.pem`。
+
+## 控制台里的模型设置
+
+在控制台“模型连接”保存的 provider、模型和 API key 存在 `main-data` 卷：设置在 `main.sqlite` 里，API key 经 AES-256-GCM 加密，密钥文件 `model-secret.key`（0600）在同一卷。在线备份只含 `main.sqlite`，不含密钥文件，所以备份本身不带明文 key；把备份恢复到另一个数据卷后，控制台会提示“已保存的 API key 无法解密”，重新输入一次即可。控制台设置优先于 `main.env`；“恢复为环境变量”回到 `main.env` 的配置。
 
 ## 必须保留的两个卷
 

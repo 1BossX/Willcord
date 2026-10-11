@@ -315,7 +315,7 @@ Worker token 高熵、独立、可撤销，数据库只存安全校验值。撤�
 | | Worker token（连接认证） | worker_tokens 只存 digest | 高 |
 | 主节点 → worker | tool_call：工具名与参数（命令、路径、写入全文） | runtime_calls.arguments_json | 高 |
 | 主节点 → 模型供应商 | 系统提示、用户输入、本会话更早已结束 job 的问答（受 `SESSION_CONTEXT_CHARS` 限制）、本 job 完整历史（含工具参数与每流至多 16 KiB 的结果视图）；模型密钥作为 API key | messages/runtime_turns/runtime_history、jobs.input_text、jobs.context_json、runtime_checkpoints；`DATA_DIR/pi-sessions/<session>` 由 Pi SessionManager 管理（是否落盘全文 待核实） | 高 |
-| | 供应商默认 openrouter（`MODEL_PROVIDER`/`MODEL_NAME`），密钥来自 `MODEL_API_KEY` 环境变量；Pi 另有 `DATA_DIR/pi-auth.json` 路径（是否写入密钥 待核实）。供应商侧留存策略 待核实 | 不入库 | 高 |
+| | 供应商默认 openrouter（`MODEL_PROVIDER`/`MODEL_NAME`），密钥默认来自 `MODEL_API_KEY` 环境变量，控制台“模型连接”保存的设置（API key 加密后存 `model_settings`，密钥文件在 `DATA_DIR/model-secret.key`）优先，对之后开始的任务生效；Pi 另有 `DATA_DIR/pi-auth.json` 路径（是否写入密钥 待核实）。供应商侧留存策略 待核实 | 不入库 | 高 |
 | 浏览器 ↔ 主节点（HTTPS/SSE） | 管理员密码（仅登录请求）、session Cookie 与 CSRF；会话、消息、工具结果、日志、事件 | administrators.password_hash（Argon2id）、auth_sessions.digest/csrf、events.content_json | 高 |
 | 磁盘：主节点 | `DATA_DIR` 下 SQLite（含 WAL）及其备份即全部上述中心数据 | 同上；备份权限与保留期见 6.1，具体策略 待核实 | 高 |
 | 磁盘：worker | 账本与 `data_dir/logs/<sha256(call_id)>/{stream}.log/.idx` | 不外流，按保留期清理 | 高 |

@@ -693,8 +693,11 @@ async fn upgrade(mut args: Vec<String>) -> Result<(), Error> {
         return Err(format!("未知参数：{extra}\n{MAIN_USAGE}").into());
     }
     let env = dir.join(".env");
-    let env_text = fs::read_to_string(&env)?;
+    let original = fs::read(&env)?;
+    let env_text = String::from_utf8(original.clone())
+        .map_err(|_| format!("{} 不是有效的 UTF-8 文本。", env.display()))?;
     let compose_text = fs::read_to_string(dir.join("compose.yaml")).unwrap_or_default();
+    // Nothing is written until the registry is known to be pullable.
     if dead_registry(
         &compose_text,
         &env_text,
@@ -711,7 +714,18 @@ async fn upgrade(mut args: Vec<String>) -> Result<(), Error> {
     let updated = with_env(&env_text, "WILLCORD_VERSION", &version)?;
     fs::write(&env, updated)?;
     println!("镜像版本：{version}");
-    compose(&dir, &["pull"])?;
+    // Nothing is running from the new images yet, so a failed pull leaves the
+    // deployment as it was: put the original bytes back.
+    if let Err(pull) = compose(&dir, &["pull"]) {
+        return Err(match fs::write(&env, &original) {
+            Ok(()) => format!("{pull}\n{} 已恢复原样，部署没有改动。", env.display()),
+            Err(restore) => format!(
+                "{pull}\n恢复 {} 失败（{restore}）：请手动把 WILLCORD_VERSION 改回升级前的值。",
+                env.display()
+            ),
+        }
+        .into());
+    }
     compose(&dir, &["up", "-d"])?;
     let server = deployment_server(&dir)?;
     if !wait_ready(&dir, &server, false).await {

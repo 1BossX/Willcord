@@ -86,7 +86,7 @@ willcord main up
 willcord main upgrade --image-version vX.Y.Z   # 改 .env 里的镜像版本，pull 并重启
 ```
 
-v0.5.0/v0.6.0 部署的 `compose.yaml` 默认仍指向已失效的旧镜像路径 `ghcr.io/1bossx`。`upgrade` 发现这种情况会在改动任何文件之前报错退出；先在 `.env` 里加一行 `WILLCORD_REGISTRY=ghcr.io/bossoptional` 再升级（见[迁移说明](migrating-to-willcord.md)）。
+v0.5.0/v0.6.0 部署的 `compose.yaml` 默认仍指向已失效的旧镜像路径 `ghcr.io/1bossx`。`upgrade` 发现这种情况会在改动任何文件之前报错退出（拉取镜像失败时也会把 `.env` 恢复成升级前的样子）；先在 `.env` 里加一行 `WILLCORD_REGISTRY=ghcr.io/bossoptional` 再升级（见[迁移说明](migrating-to-willcord.md)）。
 
 查找顺序：`--dir`，然后是 `willcord` 所在目录、当前目录，最后是上次 `main init` 记下的目录（保存在 `~/.config/willcord/main-dir`）。记下的目录不存在时会直接指出路径，而不是悄悄换一个。
 

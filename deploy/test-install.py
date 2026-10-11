@@ -199,8 +199,12 @@ class InstallerTests(unittest.TestCase):
       if found>=0:os.write(fd,reply);sent+=1;cursor=found+len(marker)
     done,status=os.waitpid(pid,os.WNOHANG)
     if done:return os.waitstatus_to_exitcode(status),output.decode()
-   done,status=os.waitpid(pid,os.WNOHANG)
-   if done:return os.waitstatus_to_exitcode(status),output.decode()
+   # The pty closes slightly before the child can be reaped (slow runners): give it a moment.
+   grace=time.monotonic()+5
+   while time.monotonic()<grace:
+    done,status=os.waitpid(pid,os.WNOHANG)
+    if done:return os.waitstatus_to_exitcode(status),output.decode()
+    time.sleep(0.05)
    os.kill(pid,9);os.waitpid(pid,0);self.fail('installer did not finish: '+output.decode())
   finally:os.close(fd)
  @staticmethod

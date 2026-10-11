@@ -1,4 +1,5 @@
 import { EnrollmentPanel } from "./enrollment";
+import { ModelSettingsPanel } from "./model-settings";
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { marked } from "marked";
@@ -1316,6 +1317,7 @@ function App() {
           </span>
         </button>
         <EnrollmentPanel />
+        <ModelSettingsPanel />
         <div className="sidebar-section-label">
           <span>机器</span>
           <span>{workers.length.toString().padStart(2, "0")}</span>

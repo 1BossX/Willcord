@@ -8,7 +8,8 @@ import argon2 from "argon2";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync, readdirSync, rmSync, statfsSync } from "node:fs";
 import { join } from "node:path";
-import type { ModelConfig } from "./config.js";
+import { modelFromEnv, type ModelConfig } from "./config.js";
+import { piProbe, registerModelSettings, resolveModel, type ModelProbe } from "./model-settings.js";
 import { DEFAULT_BUDGET, ExecutionCoordinator, workspaceCurrent, type Budget, type Resolution, type ScriptStep } from "./execution.js";
 import { mainFault } from "./fault.js";
 import { createJob, mainSession } from "./jobs.js";
@@ -36,6 +37,8 @@ export async function createApp(
     runJob?: (job:unknown)=>Promise<void>;
     dataDir?: string;
     model?: ModelConfig;
+    /** Replaces the live provider call behind the console's model connection test. */
+    modelProbe?: ModelProbe;
     fakeScript?: (job: any, messages: any[]) => ScriptStep[];
     toolResultTimeoutMs?: number;
     waitSweepMs?: number;
@@ -82,7 +85,7 @@ export async function createApp(
     }
   >();
   const budget = { ...DEFAULT_BUDGET, ...options.budget };
-  const coordinator = new ExecutionCoordinator(db, connections, now, options.runJob as ((job:any)=>Promise<void>)|undefined, { budget, dataDir: options.dataDir, model: options.model, fakeScript: options.fakeScript, toolResultTimeoutMs: options.toolResultTimeoutMs, logCapacityBytes: options.logCapacityBytes });
+  const coordinator = new ExecutionCoordinator(db, connections, now, options.runJob as ((job:any)=>Promise<void>)|undefined, { budget, dataDir: options.dataDir, model: () => resolveModel(db, options.dataDir ?? "./data", options.model ?? modelFromEnv(process.env)), fakeScript: options.fakeScript, toolResultTimeoutMs: options.toolResultTimeoutMs, logCapacityBytes: options.logCapacityBytes });
   let shuttingDown = false;
   let recovered = false;
   // Main jobs need no worker: a restart resumes them right away.
@@ -393,6 +396,14 @@ export async function createApp(
     if (workspaces.length > 1)
       return reply.code(409).send({ error: "workspace_selection_required" });
     return { workspace: workspaces[0] };
+  });
+  registerModelSettings(app, db, now, {
+    dataDir: options.dataDir ?? "./data",
+    env: options.model ?? modelFromEnv(process.env),
+    probe: async (m) => {
+      const r = await (options.modelProbe ?? piProbe)(m);
+      return { ok: r.ok, message: r.message.slice(0, 300) };
+    },
   });
   registerEnrollment(app, db, now, (id) => {
     const c = connections.get(id);

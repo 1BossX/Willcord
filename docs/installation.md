@@ -29,7 +29,7 @@ CA 指纹接入从 v0.3.0 起提供，主节点与 worker 须同为 v0.3.0 或�
 
 ## 1. 在主节点机器部署
 
-准备 Linux x86_64/arm64 主机、Docker 和 Docker Compose v2。浏览器和执行机器必须能解析并访问同一个主节点地址。安装器不安装 Docker，不改变系统权限。
+准备 Linux x86_64/arm64 主机、Docker 和 Docker Compose v2。macOS（Docker Desktop）同样可以运行向导，适合本机试用：Docker Desktop 退出后服务随之停止，生产环境请使用 Linux。浏览器和执行机器必须能解析并访问同一个主节点地址；仅在本机试用时可以用 `https://localhost:8443`，但 `localhost` 在其他执行机器上指向它们自己，跨机器部署须使用对方能解析的主机名或 IP。安装器不安装 Docker，不改变系统权限。
 
 ```sh
 curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- main
@@ -43,11 +43,17 @@ curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- main --serv
 
 目录默认 `./worker-plane`，当前账户必须可写。安装器生成 `compose.yaml`、`.env` 和 `main.env`，固定镜像版本；环境文件权限 0600，不要提交到 Git。不同目录使用独立的 Compose 项目及数据卷。已有部署文件时拒绝覆盖。
 
+向导在写入任何文件之前，会向模型服务商确认 API key（支持 openrouter、openai、anthropic）：只有被明确拒绝（HTTP 401）才会停止，请核对后用同一目录重新运行；无法确认（网络受限、其他 provider、权限受限的 key）时只给出提示并继续。
+
 **成功标志**：安装器显示“主节点已就绪”、控制台地址及 `ca.pem` 路径，HTTPS `/health` 的 `scheduling_ready` 为 true。成功后环境文件不再保留首次管理员密码；登录使用刚才输入的密码。
 
 **启动失败**：配置和数据卷会保留。在部署目录执行 `docker compose logs main caddy`，检查主机名解析、端口及模型配置；修复后 `docker compose up -d`。确认 HTTPS 就绪后从 `main.env` 删除 `INITIAL_ADMIN_PASSWORD`，再执行 `docker compose up -d main`。不要通过重跑向导覆盖既有部署。
 
 手动 Docker 部署与升级见 [Docker 指南](docker.md)，Linux systemd 部署见 [运维手册](operations.md#2-安装主节点linux)。
+
+### 在控制台修改模型连接
+
+登录后点击侧栏“模型连接”，可以更换 provider、模型和 API key，并先“测试连接”（发送一个很短的请求，消耗极少量 token）。控制台的设置优先于 `main.env` 中的 `MODEL_*`，只影响之后开始的任务；“恢复为环境变量”会删除控制台设置。API key 用数据卷中的密钥文件加密后保存，不会回显，也不会下发给 worker。任务因 API key 无效而失败时，任务详情的“结束原因”会写明“模型服务拒绝了 API key”，不必再翻容器日志。
 
 ## 2. 信任内部 CA
 

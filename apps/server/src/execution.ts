@@ -117,7 +117,7 @@ export class ExecutionCoordinator {
     readonly connections: Map<string, Connection>,
     readonly now = Date.now,
     readonly runJob?: (job: any) => Promise<void>,
-    readonly options: { budget?: Budget; dataDir?: string; model?: ModelConfig; fakeScript?: (job: any, messages: any[]) => ScriptStep[]; toolResultTimeoutMs?: number; logCapacityBytes?: number } = {},
+    readonly options: { budget?: Budget; dataDir?: string; model?: ModelConfig | (() => ModelConfig); fakeScript?: (job: any, messages: any[]) => ScriptStep[]; toolResultTimeoutMs?: number; logCapacityBytes?: number } = {},
   ) {
     // A draft still streaming belongs to a process that is gone.
     db.prepare("UPDATE model_drafts SET state='interrupted',updated_at=? WHERE state='streaming'").run(now());
@@ -758,7 +758,9 @@ export class ExecutionCoordinator {
   async runPi(job: any) {
     const dataDir = this.options.dataDir ?? "./data";
     const fakeMode = Boolean(this.options.fakeScript) || process.env.P2_FAKE_MODEL === "1";
-    const configured = this.options.model ?? modelFromEnv(process.env);
+    // Read per run: a change made in the console applies to the next job, not to one already running.
+    const option = this.options.model;
+    const configured = (typeof option === "function" ? option() : option) ?? modelFromEnv(process.env);
     const provider = fakeMode ? "openai" : configured.provider;
     const modelName = fakeMode ? "gpt-4o-mini" : configured.name;
     const apiKey = fakeMode ? "p2-scripted-provider" : configured.apiKey;

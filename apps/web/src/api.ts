@@ -17,6 +17,11 @@ const errors: Record<string, string> = {
   workers_not_reconciled: "还有机器没有完成账本核对，暂不能恢复调度。",
   disk_low: "数据目录空间不足，空间恢复后会自动继续调度。",
   note_required: "请填写说明。",
+  unknown_provider: "不支持这个 provider。",
+  unknown_model: "这个 provider 下没有该模型，请从候选列表选择。",
+  invalid_model: "请填写 provider 和模型名称。",
+  invalid_api_key: "API key 格式无效：不能为空或包含换行。",
+  api_key_required: "切换 provider 后必须输入新的 API key。",
 };
 
 export async function request<T>(

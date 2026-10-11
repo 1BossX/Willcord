@@ -17,13 +17,13 @@ Willcord 是面向内网与生产环境的 AI 运维控制面。模型调用、�
 
 流程：**部署主节点 → 信任内部 CA → 登录控制台 → 安装 worker → 核对指纹并批准 → 等待“可执行” → 完成一次只读任务**。
 
-**主节点**（Linux x86_64/arm64，需预先安装 Docker Compose v2）：
+**主节点**（Linux x86_64/arm64，需预先安装 Docker Compose v2；macOS 可用 Docker Desktop 做本机试用）：
 
 ```sh
 curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- main
 ```
 
-向导收集访问地址、模型配置和首次管理员密码，生成配置、启动服务并导出 `ca.pem`。让浏览器信任这个根证书后登录控制台。
+向导收集访问地址、模型配置和首次管理员密码，检查模型 API key 是否被服务商接受，生成配置、启动服务并导出 `ca.pem`。模型连接之后可在控制台“模型连接”中修改。让浏览器信任这个根证书后登录控制台。
 
 **worker**（Linux/macOS x86_64/arm64；Linux 需要 glibc 2.17 或更新）：在控制台打开“机器授权 → 添加机器”，复制生成的命令，在执行机器上以普通账户运行。命令形如：
 

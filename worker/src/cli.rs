@@ -876,6 +876,11 @@ async fn join_installing(args: &[String]) -> Result<bool, Error> {
     if ca.is_none() && fingerprint.is_none() && !install_needed(system)? {
         return Ok(false);
     }
+    check_socket_path(&if system {
+        system_root()?.join("data")
+    } else {
+        root()?
+    })?;
     if probe.len() != 2 {
         return Err("usage: willcord worker join URL [--ca FILE | --ca-fingerprint SHA256] [--system --user ACCOUNT]".into());
     }

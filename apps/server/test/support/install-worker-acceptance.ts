@@ -27,13 +27,14 @@ const shim = join(dir, "shim"), assets = join(dir, "assets");
 const worker = join(data, "bin/willcord");
 let tunnel: ChildProcess | undefined, installed = false, cleanupFailed = false;
 const ssh = (cmd: string) => exec("ssh", [remote!, cmd], { timeout: 120000, maxBuffer: 1024 * 1024 });
-const env = { ...process.env, WILLCORD_HOME: data, WILLCORD_LAUNCH_AGENT_DIR: join(dir, "LaunchAgents"), PATH: `${shim}:${process.env.PATH}` };
+// The installer also puts `willcord` on PATH under HOME; keep that inside the fixture directory.
+const env = { ...process.env, HOME: join(dir, "home"), WILLCORD_HOME: data, WILLCORD_LAUNCH_AGENT_DIR: join(dir, "LaunchAgents"), PATH: `${shim}:${process.env.PATH}` };
 delete env.SSL_CERT_FILE; delete env.SSL_CERT_DIR; delete env.WORKER_TOKEN;
 const remoteEnv = `WILLCORD_SYSTEM_ROOT=${quote(data)}`;
 const localCli = (...args: string[]) => exec(worker, ["worker", ...args], { env, timeout: 90000 });
 const cli = (...args: string[]) => mode === "linux" ? ssh(`sudo -n env ${remoteEnv} ${quote(worker)} worker ${args.map(quote).join(" ")} --system`) : localCli(...args);
 try {
-  mkdirSync(join(s.dir,"assets"));mkdirSync(join(s.dir,"shim"));
+  mkdirSync(join(s.dir,"assets"));mkdirSync(join(s.dir,"shim"));if (mode === "macos") mkdirSync(join(dir,"home"));
   const sha = createHash("sha256").update(readFileSync(binary)).digest("hex");
   copyFileSync(binary,join(s.dir,"assets",assetName));
   writeFileSync(join(s.dir,"assets",assetName+".sha256"),`${sha}  ${assetName}\n`);

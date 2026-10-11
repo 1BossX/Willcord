@@ -53,16 +53,15 @@ elif name=='curl':
  else:sys.stdout.buffer.write(data)
 elif name in ['sleep','systemctl','launchctl']:pass
 else:
- if args[:2]==['worker','install']:
-  target=p(os.environ['WILLCORD_SYSTEM_ROOT'])/'bin/willcord' if '--system' in args else p(os.environ['WILLCORD_HOME'])/'bin/willcord'
-  target.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(sys.argv[0],target);target.chmod(0o700)
-  if '--system' not in args and 'SSL_CERT_FILE' in os.environ:
-   (target.parent.parent/'ca.pem').write_bytes(p(os.environ['SSL_CERT_FILE']).read_bytes())
- elif args[:2]==['main','init']:
+ if args[:2]==['main','init']:
   if os.environ.get('TEST_MAIN_FAIL')=='1':sys.exit(3)
  elif args[:2]==['worker','join']:
-  assert 'SSL_CERT_FILE' not in os.environ, 'CLI must reuse the saved CA after install'
-  print('Node: fixture\nFingerprint: fixture\nAuthorization: '+os.environ.get('TEST_AUTH','pending'))
+  # The real binary installs the service, saves the CA and files the request.
+  if os.environ.get('TEST_JOIN_FAIL')=='1':sys.exit(3)
+  target=p(os.environ['WILLCORD_SYSTEM_ROOT'])/'bin/willcord' if '--system' in args else p(os.environ['WILLCORD_HOME'])/'bin/willcord'
+  target.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(sys.argv[0],target);target.chmod(0o700)
+  if '--ca' in args:(target.parent.parent/'ca.pem').write_bytes(p(args[args.index('--ca')+1]).read_bytes())
+  print('Node: fixture\nAuthorization: pending')
 '''
 
 class InstallerTests(unittest.TestCase):
@@ -94,7 +93,8 @@ class InstallerTests(unittest.TestCase):
     r=self.run_worker('--version','v1.2.3',env={'TEST_OS':os_name,'TEST_ARCH':arch})
     self.assertEqual(r.returncode,0,r.stderr)
     self.assertTrue(any(asset_os+'-'+asset_arch in str(a) for n,a in self.calls() if n=='curl'))
-    self.assertIn("'\\''",r.stdout)
+    self.assertEqual(self.handed_over()[-1],['worker','join','https://plane.internal:8443','--ca',str(self.ca)])
+    (self.root/'calls').unlink()
     self.clean_tmp()
  def test_latest_and_system_account(self):
   r=self.run_worker('--system','--user','ops');self.assertEqual(r.returncode,0,r.stderr)
@@ -132,35 +132,27 @@ class InstallerTests(unittest.TestCase):
   r=self.run_worker('--version','v1.2.3',env={'TEST_API_LIMIT':'1','TEST_BAD_HASH':'1'});self.assertNotEqual(r.returncode,0)
   self.assertFalse((Path(self.env['WILLCORD_HOME'])/'bin/willcord').exists())
   self.clean_tmp()
- def test_system_trust_has_no_insecure_or_ca_parameter(self):
+ def test_without_a_ca_the_binary_is_told_to_trust_the_system_store(self):
   r=subprocess.run([BASH,str(SCRIPT),'worker','--server','https://plane.example.com'],env=self.env,capture_output=True,text=True)
   self.assertEqual(r.returncode,0,r.stderr)
-  health=[a for n,a in self.calls() if n=='curl' and any(x.endswith('/health') for x in a)]
-  self.assertTrue(health);self.assertTrue(all('--insecure' not in a and '--cacert' not in a for a in health))
+  self.assertEqual(self.handed_over(),[['worker','join','https://plane.example.com']])
+  # The script itself no longer talks to the main node: the binary checks it.
+  self.assertFalse(any(x.endswith('/health') or '/.well-known/' in x for n,a in self.calls() if n=='curl' for x in a))
   self.assertFalse((Path(self.env['WILLCORD_HOME'])/'ca.pem').exists())
- def test_fingerprint_bootstrap_and_fail_closed(self):
-  import shutil
-  subprocess.run(['openssl','req','-x509','-newkey','rsa:2048','-nodes','-keyout',str(self.root/'key.pem'),'-out',str(self.root/'bootstrap.pem'),'-days','1','-subj','/CN=test-ca'],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-  der=subprocess.check_output(['openssl','x509','-in',str(self.root/'bootstrap.pem'),'-outform','DER'])
-  pin=hashlib.sha256(der).hexdigest()
-  args=[BASH,str(SCRIPT),'worker','--server','https://plane.internal:8443','--ca-fingerprint',pin]
-  for env in [{'TEST_TLS_FAIL':'1'},{'TEST_BAD_HASH':'1'}]:
-   r=subprocess.run(args,env={**self.env,**env},capture_output=True,text=True)
-   self.assertNotEqual(r.returncode,0,r.stderr)
-   self.assertFalse((Path(self.env['WILLCORD_HOME'])/'bin/willcord').exists())
-  r=subprocess.run(args[:-1]+['0'*64],env=self.env,capture_output=True,text=True)
-  self.assertNotEqual(r.returncode,0);self.assertIn('指纹不匹配',r.stderr)
-  r=subprocess.run(args,env=self.env,capture_output=True,text=True)
+ def test_a_fingerprint_is_passed_to_the_binary_which_pins_the_certificate(self):
+  # Fetching the root certificate and checking it against the pin is the
+  # binary's job (deploy/test-worker-join.py); the script validates the shape.
+  pin='ab'*32
+  r=subprocess.run([BASH,str(SCRIPT),'worker','--server','https://plane.internal:8443','--ca-fingerprint',pin],env=self.env,capture_output=True,text=True)
   self.assertEqual(r.returncode,0,r.stderr)
-  self.assertEqual((Path(self.env['WILLCORD_HOME'])/'ca.pem').read_bytes(),(self.root/'bootstrap.pem').read_bytes())
-  bootstrap_calls=[a for n,a in self.calls() if n=='curl' and any('/.well-known/willcord/ca.pem' in x for x in a)]
-  self.assertTrue(all('--insecure' in a and '--location' not in a for a in bootstrap_calls))
-  self.assertFalse(any('--insecure' in a for n,a in self.calls() if n=='curl' and not any('/.well-known/willcord/ca.pem' in x for x in a)))
-  shutil.rmtree(self.env['WILLCORD_HOME'])
-  (self.root/'bootstrap.pem').write_bytes(b'x'*65537)
-  r=subprocess.run(args,env=self.env,capture_output=True,text=True)
-  self.assertNotEqual(r.returncode,0);self.assertFalse((Path(self.env['WILLCORD_HOME'])/'bin/willcord').exists())
-  self.clean_tmp()
+  self.assertEqual(self.handed_over(),[['worker','join','https://plane.internal:8443','--ca-fingerprint',pin]])
+  self.assertFalse(any('--insecure' in a for n,a in self.calls() if n=='curl'))
+  (self.root/'calls').unlink()
+  for bad in ['0'*63,'z'*64,'']:
+   r=subprocess.run([BASH,str(SCRIPT),'worker','--server','https://plane.internal:8443','--ca-fingerprint',bad],env=self.env,capture_output=True,text=True)
+   self.assertNotEqual(r.returncode,0,bad)
+  r=self.run_worker('--ca-fingerprint',pin);self.assertNotEqual(r.returncode,0);self.assertIn('不能同时使用',r.stderr)
+  self.assertEqual(self.handed_over(),[]);self.clean_tmp()
  def test_reinstall_preserves_identity_and_ledger(self):
   data=self.root/"user's data";data.mkdir()
   for name in ['identity.pk8','ledger.sqlite']:(data/name).write_text('keep')
@@ -197,12 +189,10 @@ class InstallerTests(unittest.TestCase):
    with self.subTest(extra=extra):
     r=self.run_main(*extra);self.assertNotEqual(r.returncode,0);self.assertIn('main 不接受',r.stderr)
     self.assertEqual(self.handed_over(),[])
- def test_worker_on_an_approved_machine_does_not_ask_for_approval_again(self):
-  r=self.run_worker();self.assertEqual(r.returncode,0,r.stderr)
-  self.assertIn('Authorization: pending',r.stdout);self.assertIn('申请已提交',r.stdout)
-  r=self.run_worker(env={'TEST_AUTH':'approved'});self.assertEqual(r.returncode,0,r.stderr)
-  self.assertIn('Authorization: approved',r.stdout);self.assertIn('无需再次批准',r.stdout);self.assertNotIn('申请已提交',r.stdout)
-  for state in ['rejected','revoked']:
-   r=self.run_worker(env={'TEST_AUTH':state});self.assertEqual(r.returncode,0,r.stderr)
-   self.assertIn('重新批准',r.stdout);self.assertNotIn('申请已提交',r.stdout);self.assertNotIn('无需再次批准',r.stdout)
+ def test_the_join_exit_status_is_kept_and_a_system_join_is_one_sudo(self):
+  r=self.run_worker(env={'TEST_JOIN_FAIL':'1'});self.assertEqual(r.returncode,3)
+  (self.root/'calls').unlink()
+  r=self.run_worker('--system','--user','ops');self.assertEqual(r.returncode,0,r.stderr)
+  self.assertEqual(len([1 for n,a in self.calls() if n=='sudo']),1)
+  self.assertEqual(self.handed_over(),[['worker','join','https://plane.internal:8443','--ca',str(self.ca),'--system','--user','ops']])
 if __name__=='__main__':unittest.main()

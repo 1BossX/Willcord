@@ -10,53 +10,53 @@
 
 | 部件 | 运行在 | 产物 | 由谁管理 |
 |---|---|---|---|
-| 主节点（Node 24） | 一台常驻 Linux 主机 | `worker-plane-main-<版本>-linux-<arch>-node24.tar.gz` | systemd：`worker-plane-main.service` |
+| 主节点（Node 24） | 一台常驻 Linux 主机 | `willcord-main-<版本>-linux-<arch>-node24.tar.gz` | systemd：`willcord-main.service` |
 | Caddy（TLS、WSS、SSE、静态 UI） | 同一台主机 | 系统包 | Caddy 自己的 systemd 单元 |
-| worker（Rust 单文件） | 每台 Linux/macOS 机器 | `worker-plane-worker-<版本>-<os>-<arch>` | Linux：systemd；macOS：launchd |
-| 每日备份 | 主节点主机 | 主节点产物里的 `admin.js` | `worker-plane-backup.timer` |
+| worker（Rust 单文件） | 每台 Linux/macOS 机器 | `willcord-<版本>-<os>-<arch>` | Linux：systemd；macOS：launchd |
+| 每日备份 | 主节点主机 | 主节点产物里的 `admin.js` | `willcord-backup.timer` |
 
 主节点主机上的目录：
 
 | 路径 | 内容 | 权限 |
 |---|---|---|
-| `/opt/worker-plane/releases/<版本>/` | 解开的主节点产物 | root，只读 |
-| `/opt/worker-plane/current` | 指向当前版本的符号链接 | root |
-| `/etc/worker-plane/main.env` | 环境变量和密钥 | root:root 0600 |
-| `/var/lib/worker-plane/` | `DATA_DIR`：`main.sqlite`（WAL）、`main.lock`、`pi-sessions/`、迁移前快照 | worker-plane 0700 |
-| `/var/backups/worker-plane/` | 备份 | worker-plane 0700 |
+| `/opt/willcord/releases/<版本>/` | 解开的主节点产物 | root，只读 |
+| `/opt/willcord/current` | 指向当前版本的符号链接 | root |
+| `/etc/willcord/main.env` | 环境变量和密钥 | root:root 0600 |
+| `/var/lib/willcord/` | `DATA_DIR`：`main.sqlite`（WAL）、`main.lock`、`pi-sessions/`、迁移前快照 | willcord 0700 |
+| `/var/backups/willcord/` | 备份 | willcord 0700 |
 
-worker 机器上的目录（macOS 用 `/usr/local/etc/worker-plane/` 代替 `/etc/worker-plane/`）：
+worker 机器上的目录（macOS 用 `/usr/local/etc/willcord/` 代替 `/etc/willcord/`）：
 
 | 路径 | 内容 | 权限 |
 |---|---|---|
-| `/usr/local/bin/worker-plane-worker` | 二进制 | root，0755 |
-| `/etc/worker-plane/worker.toml` | 配置 | worker 用户，0600 |
-| `/etc/worker-plane/token` | worker token | worker 用户，0600 |
-| `/etc/worker-plane/ca.pem` | 主节点内部 CA 根证书 | 0644 |
-| `data_dir`（例如 `/var/lib/worker-plane-worker`） | 账本、输出日志、数据目录锁 | worker 用户，0700 |
+| `/usr/local/bin/willcord` | 二进制 | root，0755 |
+| `/etc/willcord/worker.toml` | 配置 | worker 用户，0600 |
+| `/etc/willcord/token` | worker token | worker 用户，0600 |
+| `/etc/willcord/ca.pem` | 主节点内部 CA 根证书 | 0644 |
+| `data_dir`（例如 `/var/lib/willcord-worker`） | 账本、输出日志、数据目录锁 | worker 用户，0700 |
 
 ## 2. 安装主节点（Linux）
 
 前提：Node 24（`node --version` 显示 v24.x）、Caddy 2、`curl`。产物里的原生模块按 Node 24 和 runner 的架构构建，主机必须是同一架构。
 
 ```bash
-sudo useradd --system --home /var/lib/worker-plane --shell /usr/sbin/nologin worker-plane
-sudo install -d -m 0755 /opt/worker-plane/releases
-sudo install -d -o worker-plane -g worker-plane -m 0700 /var/backups/worker-plane
-sudo install -d -m 0755 /etc/worker-plane
+sudo useradd --system --home /var/lib/willcord --shell /usr/sbin/nologin willcord
+sudo install -d -m 0755 /opt/willcord/releases
+sudo install -d -o willcord -g willcord -m 0700 /var/backups/willcord
+sudo install -d -m 0755 /etc/willcord
 ```
 
 1. 从 GitHub Release 下载主节点产物和它的 `.sha256`，校验后解开：
 
    ```bash
-   shasum -a 256 -c worker-plane-main-<版本>-linux-x86_64-node24.tar.gz.sha256
-   sudo tar -C /opt/worker-plane/releases -xzf worker-plane-main-<版本>-linux-x86_64-node24.tar.gz
-   sudo ln -sfn /opt/worker-plane/releases/worker-plane-main-<版本> /opt/worker-plane/current
+   shasum -a 256 -c willcord-main-<版本>-linux-x86_64-node24.tar.gz.sha256
+   sudo tar -C /opt/willcord/releases -xzf willcord-main-<版本>-linux-x86_64-node24.tar.gz
+   sudo ln -sfn /opt/willcord/releases/willcord-main-<版本> /opt/willcord/current
    ```
 
    也可以在同架构的 Linux 机器上从源码构建：`deploy/build-main.sh <目录>`。
 
-2. 写环境文件：复制 `deploy/main.env.example` 到 `/etc/worker-plane/main.env`，权限设为 0600，用编辑器填入值。
+2. 写环境文件：复制 `deploy/main.env.example` 到 `/etc/willcord/main.env`，权限设为 0600，用编辑器填入值。
    - `PUBLIC_BASE_URL` 必须和浏览器地址栏里的源完全一致（协议、主机、端口），登录和 CSRF 检查都和它比较。
    - `MODEL_API_KEY` 缺失时主节点拒绝启动。它只是默认值：之后在控制台“模型连接”保存的设置优先生效（见 [安装与首次使用](installation.md#在控制台修改模型连接)）。
    - `INITIAL_ADMIN_PASSWORD` 只在第一次启动时需要，至少 16 个字符。
@@ -64,23 +64,23 @@ sudo install -d -m 0755 /etc/worker-plane
 3. 安装并启动服务：
 
    ```bash
-   sudo cp /opt/worker-plane/current/deploy/systemd/worker-plane-main.service /etc/systemd/system/
+   sudo cp /opt/willcord/current/deploy/systemd/willcord-main.service /etc/systemd/system/
    sudo systemctl daemon-reload
-   sudo systemctl enable --now worker-plane-main
+   sudo systemctl enable --now willcord-main
    curl -s http://127.0.0.1:3000/health
    ```
 
-   预期 `alive` 和 `scheduling_ready` 均为 true、`dispatch_paused` 为 null。启动失败时看 `journalctl -u worker-plane-main`，配置问题会一次全部列出。
+   预期 `alive` 和 `scheduling_ready` 均为 true、`dispatch_paused` 为 null。启动失败时看 `journalctl -u willcord-main`，配置问题会一次全部列出。
 
 4. 第一次启动成功后，从 `main.env` 删掉 `INITIAL_ADMIN_PASSWORD` 这一行。管理员密码只以 Argon2id 散列的形式存在数据库里。
 
 5. 配置 Caddy：
    - 把 `deploy/Caddyfile.production` 的内容放进 `/etc/caddy/Caddyfile`。
    - 用 `sudo systemctl edit caddy` 加两行环境变量：
-     - `Environment=WORKER_PLANE_SITE=plane.internal:8443`
-     - `Environment=WORKER_PLANE_ROOT=/opt/worker-plane/current`
+     - `Environment=WILLCORD_SITE=plane.internal:8443`
+     - `Environment=WILLCORD_ROOT=/opt/willcord/current`
    - 执行 `sudo systemctl restart caddy`。
-   - `WORKER_PLANE_SITE` 可以是主机名或 IP，worker 和浏览器都用这个地址访问。
+   - `WILLCORD_SITE` 可以是主机名或 IP，worker 和浏览器都用这个地址访问。
 
 6. 配置内部 CA 信任：Caddy 第一次签发证书后，根证书在它的数据目录里。用系统包安装时一般是 `/var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt`。
    - 浏览器所在的机器要信任这个根证书，否则无法安全登录。
@@ -90,12 +90,12 @@ sudo install -d -m 0755 /etc/worker-plane
 7. 启用每日备份：
 
    ```bash
-   sudo cp /opt/worker-plane/current/deploy/systemd/worker-plane-backup.{service,timer} /etc/systemd/system/
+   sudo cp /opt/willcord/current/deploy/systemd/willcord-backup.{service,timer} /etc/systemd/system/
    sudo systemctl daemon-reload
-   sudo systemctl enable --now worker-plane-backup.timer
+   sudo systemctl enable --now willcord-backup.timer
    ```
 
-   备份留在本机。还需要定期把 `/var/backups/worker-plane/` 复制到另一台机器或对象存储；具体方式由你决定。
+   备份留在本机。还需要定期把 `/var/backups/willcord/` 复制到另一台机器或对象存储；具体方式由你决定。
 
 ## 3. 签发 worker token（手动接入）
 
@@ -123,15 +123,15 @@ rm -f "$JAR"
 1. 下载对应平台的二进制和 `.sha256`，校验后安装：
 
    ```bash
-   shasum -a 256 -c worker-plane-worker-<版本>-linux-x86_64.sha256
-   sudo install -m 0755 worker-plane-worker-<版本>-linux-x86_64 /usr/local/bin/worker-plane-worker
+   shasum -a 256 -c willcord-<版本>-linux-x86_64.sha256
+   sudo install -m 0755 willcord-<版本>-linux-x86_64 /usr/local/bin/willcord
    ```
 
    macOS 上如果文件是用浏览器下载的，要先执行 `xattr -d com.apple.quarantine <文件>`。
 
 2. 准备运行账号和目录。worker 以这个账号执行所有命令，所以它应该拥有 workspace，并且只拥有完成工作所需的权限。
-   - Linux 用户名：`worker-plane`。
-   - macOS 用户名：`workerplane`。
+   - Linux 用户名：`willcord`。
+   - macOS 用户名：`willcord`。
 
    创建 `data_dir`（0700），写入 `worker.toml`（从 `deploy/worker.config.toml` 修改）、`token`（0600）和 `ca.pem`。
    - `worker_id` 必须和签发 token 时用的一致。
@@ -141,17 +141,17 @@ rm -f "$JAR"
 3. 启动服务：
    - Linux：
      ```bash
-     sudo cp deploy/systemd/worker-plane-worker.service /etc/systemd/system/
+     sudo cp deploy/systemd/willcord-worker.service /etc/systemd/system/
      sudo systemctl daemon-reload
-     sudo systemctl enable --now worker-plane-worker
-     journalctl -u worker-plane-worker -f
+     sudo systemctl enable --now willcord
+     journalctl -u willcord -f
      ```
    - macOS：
      ```bash
-     sudo install -d -o workerplane -m 0700 /usr/local/var/log/worker-plane
-     sudo cp deploy/launchd/com.workerplane.worker.plist /Library/LaunchDaemons/
-     sudo launchctl bootstrap system /Library/LaunchDaemons/com.workerplane.worker.plist
-     tail -f /usr/local/var/log/worker-plane/worker.log
+     sudo install -d -o willcord -m 0700 /usr/local/var/log/willcord
+     sudo cp deploy/launchd/org.willcord.worker.plist /Library/LaunchDaemons/
+     sudo launchctl bootstrap system /Library/LaunchDaemons/org.willcord.worker.plist
+     tail -f /usr/local/var/log/willcord/worker.log
      ```
 
 4. 在 UI 的机器列表里，这台机器应该显示"在线"和"可执行"。第一次注册时会自动建立这台机器和它的 workspace。
@@ -171,8 +171,8 @@ rm -f "$JAR"
 
 1. 暂停调度：用 §3 的方式登录后调用 `POST /api/ops/pause`，附说明，例如 `{"note":"升级到 <新版本>"}`。UI 里只有恢复按钮，没有暂停按钮。
 2. 等正在运行的任务结束，或者确认可以中断它们。中断的任务在重启后会从 SQLite 恢复。
-3. 执行 `sudo systemctl start worker-plane-backup` 做一次备份。
-4. 解开新版本，然后执行 `sudo ln -sfn /opt/worker-plane/releases/<新版本> /opt/worker-plane/current`，再执行 `sudo systemctl restart worker-plane-main`。
+3. 执行 `sudo systemctl start willcord-backup` 做一次备份。
+4. 解开新版本，然后执行 `sudo ln -sfn /opt/willcord/releases/<新版本> /opt/willcord/current`，再执行 `sudo systemctl restart willcord-main`。
    - 有新的迁移时，主节点会先把旧库复制成 `DATA_DIR/pre-migrate-<旧版本>-<时间>.sqlite`，再执行迁移。
    - 未结清的调用、去重水位和父子等待在升级后都保留。
 5. 检查 `/health`，然后 `POST /api/ops/resume` 并附说明。升级前的暂停在重启后仍然有效，必须手动恢复。
@@ -183,7 +183,7 @@ worker：先执行 `systemctl stop`（或 `launchctl bootout`），等它停下�
 
 ## 7. 备份
 
-- 在线备份：`cd /opt/worker-plane/current/apps/server && DATA_DIR=/var/lib/worker-plane node dist/admin.js backup <目标文件>`。
+- 在线备份：`cd /opt/willcord/current/apps/server && DATA_DIR=/var/lib/willcord node dist/admin.js backup <目标文件>`。
   - 使用 SQLite backup API，主节点不需要停。
   - 备份后会做完整性检查，并输出计数：未结清调用、调用序号水位、队列水位、等待中的父任务、未结束的子任务。
 - 检查任意一份备份：`node dist/admin.js verify <文件>`。
@@ -192,8 +192,8 @@ worker：先执行 `systemctl stop`（或 `launchctl bootout`），等它停下�
 
 ## 8. 从备份恢复
 
-1. 停止主节点：`sudo systemctl stop worker-plane-main`。`main.lock` 存在时恢复会被拒绝。
-2. 恢复：`cd /opt/worker-plane/current/apps/server && sudo -u worker-plane DATA_DIR=/var/lib/worker-plane node dist/admin.js restore <备份文件>`。
+1. 停止主节点：`sudo systemctl stop willcord-main`。`main.lock` 存在时恢复会被拒绝。
+2. 恢复：`cd /opt/willcord/current/apps/server && sudo -u willcord DATA_DIR=/var/lib/willcord node dist/admin.js restore <备份文件>`。
    - 恢复后的库先在旁边生成并迁移，成功后才替换现有库。
    - 现有库和它的 `-wal`、`-shm` 改名为 `main.sqlite.replaced-<时间>`，不会被删除。
    - 恢复后调度处于暂停状态，原因是 `restored`。
@@ -217,10 +217,10 @@ worker：先执行 `systemctl stop`（或 `launchctl bootout`），等它停下�
 
 处理步骤：
 
-1. 执行 `systemctl status worker-plane-main` 和 `pgrep -af 'dist/main.js'`，确认没有主节点进程。
+1. 执行 `systemctl status willcord-main` 和 `pgrep -af 'dist/main.js'`，确认没有主节点进程。
 2. 查看 `main.lock/owner.json` 里的 pid 和启动时间，确认对应的进程已经退出。
-3. 删除锁目录：`sudo rm -r /var/lib/worker-plane/main.lock`。
-4. 执行 `sudo systemctl start worker-plane-main`。启动时会从 SQLite 恢复：worker 重连并对账后，执行中的任务继续；无法证明执行结果的调用会进入"需要核对"，不会自动重跑。
+3. 删除锁目录：`sudo rm -r /var/lib/willcord/main.lock`。
+4. 执行 `sudo systemctl start willcord-main`。启动时会从 SQLite 恢复：worker 重连并对账后，执行中的任务继续；无法证明执行结果的调用会进入"需要核对"，不会自动重跑。
 
 所以主节点的单元设置了 `Restart=no`，自动重启只会被锁拒绝。
 
@@ -236,13 +236,13 @@ worker：先执行 `systemctl stop`（或 `launchctl bootout`），等它停下�
   - 已确认的结果保留 `result_retention_secs`（默认 7 天），之后只留下用于去重的 tombstone。
 - 进程日志：
   - 主节点和 Linux worker 的日志由 journald 收集。
-  - macOS worker 的日志写到 `/usr/local/var/log/worker-plane/worker.log`。worker 只在连接变化和出错时写日志，增长很慢。
+  - macOS worker 的日志写到 `/usr/local/var/log/willcord/worker.log`。worker 只在连接变化和出错时写日志，增长很慢。
   - 这个文件由 launchd 打开并一直持有，newsyslog 改名或压缩后 worker 仍会写进旧文件，所以不要用 newsyslog 轮转它。需要清理时，先停止服务（正在运行的命令会正常停止），移走文件，再启动：
 
     ```bash
-    sudo launchctl bootout system/com.workerplane.worker
-    sudo mv /usr/local/var/log/worker-plane/worker.log /usr/local/var/log/worker-plane/worker.log.1
-    sudo launchctl bootstrap system /Library/LaunchDaemons/com.workerplane.worker.plist
+    sudo launchctl bootout system/org.willcord.worker
+    sudo mv /usr/local/var/log/willcord/worker.log /usr/local/var/log/willcord/worker.log.1
+    sudo launchctl bootstrap system /Library/LaunchDaemons/org.willcord.worker.plist
     ```
 
 ## 12. 故障排查
@@ -260,4 +260,4 @@ worker：先执行 `systemctl stop`（或 `launchctl bootout`），等它停下�
 
 ## 13. 验收向导
 
-在真实环境做第一次完整验收时，可以在运维人员的电脑上运行 `deploy/acceptance-wizard.sh`。它按本手册的顺序，带你完成安装、注册、执行、超时、取消、重启、长连接、token 轮换、真实模型委派、备份和恢复，能自动检查的项目会自动检查，结果记在 `~/.worker-plane-acceptance/results.env`。中途退出后可以重新运行，已填写的值会作为默认值。
+在真实环境做第一次完整验收时，可以在运维人员的电脑上运行 `deploy/acceptance-wizard.sh`。它按本手册的顺序，带你完成安装、注册、执行、超时、取消、重启、长连接、token 轮换、真实模型委派、备份和恢复，能自动检查的项目会自动检查，结果记在 `~/.willcord-acceptance/results.env`。中途退出后可以重新运行，已填写的值会作为默认值。

@@ -2,7 +2,7 @@
 # Start the main node with compose from locally built images and check, through
 # Caddy's TLS with its internal CA: it becomes ready, an online backup verifies,
 # docker stop (SIGTERM) exits 0 and releases main.lock, and it starts again.
-#   deploy/docker/smoke.sh            build local/worker-plane-*:smoke, then test
+#   deploy/docker/smoke.sh            build local/willcord-*:smoke, then test
 #   SKIP_BUILD=1 deploy/docker/smoke.sh   test images already tagged
 set -euo pipefail
 
@@ -13,8 +13,8 @@ port=${SMOKE_PORT:-38443}
 # An emulated architecture (QEMU) starts much slower.
 ready_secs=${SMOKE_READY_SECS:-90}
 if [ "${SKIP_BUILD:-}" != 1 ]; then
-  docker build -f "$here/Dockerfile" --target main -t "local/worker-plane-main:$tag" "$root"
-  docker build -f "$here/Dockerfile" --target caddy -t "local/worker-plane-caddy:$tag" "$root"
+  docker build -f "$here/Dockerfile" --target main -t "local/willcord-main:$tag" "$root"
+  docker build -f "$here/Dockerfile" --target caddy -t "local/willcord-caddy:$tag" "$root"
 fi
 
 work=$(mktemp -d)
@@ -24,9 +24,9 @@ PUBLIC_BASE_URL=https://localhost:$port
 MODEL_API_KEY=smoke-placeholder
 INITIAL_ADMIN_PASSWORD=smoke-$(date +%s)-password
 ENV
-export WORKER_PLANE_REGISTRY=local WORKER_PLANE_VERSION="$tag" \
-  WORKER_PLANE_SITE="localhost:$port" WORKER_PLANE_PORT="$port" \
-  WORKER_PLANE_ENV_FILE="$work/main.env"
+export WILLCORD_REGISTRY=local WILLCORD_VERSION="$tag" \
+  WILLCORD_SITE="localhost:$port" WILLCORD_PORT="$port" \
+  WILLCORD_ENV_FILE="$work/main.env"
 dc() { docker compose -p "$project" -f "$here/compose.yaml" "$@"; }
 passed=""
 cleanup() {
@@ -52,7 +52,7 @@ dc up -d
 ready
 case "$health" in *'"dispatch_paused":null'*) ;; *) echo "dispatch should not be paused" >&2; exit 1 ;; esac
 
-dc exec -T main node dist/admin.js backup /var/lib/worker-plane/smoke-backup.sqlite > "$work/backup.json"
+dc exec -T main node dist/admin.js backup /var/lib/willcord/smoke-backup.sqlite > "$work/backup.json"
 grep -q '"integrity": "ok"' "$work/backup.json" || { cat "$work/backup.json" >&2; exit 1; }
 echo "backup: ok"
 
@@ -60,7 +60,7 @@ dc stop main
 code=$(docker inspect -f '{{.State.ExitCode}}' "$(dc ps -aq main)")
 [ "$code" = 0 ] || { echo "main exited $code after SIGTERM" >&2; exit 1; }
 dc run --rm --no-deps -T main node -e \
-  "process.exit(require('fs').existsSync('/var/lib/worker-plane/main.lock') ? 1 : 0)" \
+  "process.exit(require('fs').existsSync('/var/lib/willcord/main.lock') ? 1 : 0)" \
   || { echo "main.lock left after docker stop" >&2; exit 1; }
 echo "stop: exit 0, lock released"
 

@@ -1,5 +1,5 @@
 name: Docker
-# Main node images on GHCR: ghcr.io/1bossx/worker-plane-main and -caddy.
+# Main node images on GHCR: ghcr.io/1bossx/willcord-main and -caddy.
 # Each architecture builds natively on its own runner (native modules compile
 # in the image) and passes deploy/docker/smoke.sh before anything is pushed.
 # A v* tag pushes by digest per architecture, then one job joins them into
@@ -51,7 +51,7 @@ jobs:
               -f deploy/docker/Dockerfile --target "$target" \
               --cache-from type=gha,scope=${{ matrix.arch }} \
               --cache-to type=gha,mode=max,scope=${{ matrix.arch }} \
-              -t "local/worker-plane-$target:smoke" .
+              -t "local/willcord-$target:smoke" .
           done
       - run: SKIP_BUILD=1 deploy/docker/smoke.sh
       - run: python3 deploy/test-compose-env.py
@@ -71,7 +71,7 @@ jobs:
               --cache-from type=gha,scope=${{ matrix.arch }} \
               --label org.opencontainers.image.source=https://github.com/${{ github.repository }} \
               --label org.opencontainers.image.revision=${{ github.sha }} \
-              --output "type=image,name=$REGISTRY/worker-plane-$target,push-by-digest=true,name-canonical=true,push=true" \
+              --output "type=image,name=$REGISTRY/willcord-$target,push-by-digest=true,name-canonical=true,push=true" \
               --metadata-file "$RUNNER_TEMP/meta-$target.json" .
             jq -r '."containerimage.digest"' "$RUNNER_TEMP/meta-$target.json" > "$RUNNER_TEMP/digests/$target-${{ matrix.arch }}"
           done
@@ -104,7 +104,7 @@ jobs:
         run: |
           version=${GITHUB_REF_NAME#v}
           for target in main caddy; do
-            image="$REGISTRY/worker-plane-$target"
+            image="$REGISTRY/willcord-$target"
             docker buildx imagetools create -t "$image:$version" \
               "$image@$(cat digests/$target-amd64)" "$image@$(cat digests/$target-arm64)"
             docker buildx imagetools inspect "$image:$version"

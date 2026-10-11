@@ -183,12 +183,12 @@ finish() {
 # ──────────────────────────────────────────────────────────────────────────
 # STAGES: P7-C real-environment acceptance (docs/operations.md, docs/p7-development.md).
 # Runs on the operator's machine. Results and public values go to
-# ~/.worker-plane-acceptance/results.env; tokens to 0600 files beside it.
+# ~/.willcord-acceptance/results.env; tokens to 0600 files beside it.
 # Secrets are typed on the hosts themselves or with hidden input here, never stored.
 # ──────────────────────────────────────────────────────────────────────────
 
 TOTAL_STAGES=16
-STATE="${HOME:?}/.worker-plane-acceptance"
+STATE="${HOME:?}/.willcord-acceptance"
 mkdir -p "$STATE"; chmod 700 "$STATE"
 ENV_FILE="$STATE/results.env"
 JAR="$STATE/session.cookies"
@@ -219,7 +219,7 @@ issue_token() {
 }
 forget_token() { rm -f -- "${STATE:?}/${1:?}.token"; }
 
-banner "Worker Plane P7 真实环境验收"
+banner "Willcord P7 真实环境验收"
 
 stage "准备：机器、地址与版本"
 say "需要：一台常驻 Linux 主节点主机，一台 Linux worker，一台 macOS worker。"
@@ -235,27 +235,27 @@ ask RELEASE_TAG "要验收的 release tag（例如 v0.1.0）："
 for k in SITE MAIN_HOST LINUX_WORKER LINUX_HOST MAC_WORKER MAC_HOST RELEASE_TAG; do write_env "$k" "${!k}"; done
 
 stage "下载并校验 release 产物"
-open_url "https://github.com/1BossX/WorkerPlane/releases/tag/$RELEASE_TAG"
+open_url "https://github.com/1BossX/Willcord/releases/tag/$RELEASE_TAG"
 say "确认 release 已发布（或你有权限下载 draft），然后在本机执行："
-step "mkdir -p $STATE/release && cd $STATE/release && gh release download $RELEASE_TAG --repo 1BossX/WorkerPlane"
+step "mkdir -p $STATE/release && cd $STATE/release && gh release download $RELEASE_TAG --repo 1BossX/Willcord"
 step "for f in *.sha256; do shasum -a 256 -c \"\$f\"; done"
 pause "全部显示 OK 后按 Enter"
 result RELEASE_ARTIFACTS "产物齐全且 sha256 全部校验通过？"
 
 stage "安装主节点（运维手册 §2 第 1–4 步）"
 say "在 $MAIN_HOST 上按 docs/operations.md §2 完成："
-step "建用户和目录 → 解开 worker-plane-main-$RELEASE_TAG-linux-*-node24.tar.gz → current 链接"
-step "复制 deploy/main.env.example 为 /etc/worker-plane/main.env（0600），在主机上用编辑器填写"
+step "建用户和目录 → 解开 willcord-main-$RELEASE_TAG-linux-*-node24.tar.gz → current 链接"
+step "复制 deploy/main.env.example 为 /etc/willcord/main.env（0600），在主机上用编辑器填写"
 note "MODEL_API_KEY 和 INITIAL_ADMIN_PASSWORD 只在主机上输入，不经过本机，也不要发给任何人。"
 note "PUBLIC_BASE_URL 必须是 https://$SITE"
-step "安装并启动 worker-plane-main.service，在主机上执行：curl -s http://127.0.0.1:3000/health"
+step "安装并启动 willcord-main.service，在主机上执行：curl -s http://127.0.0.1:3000/health"
 pause "完成后按 Enter"
 result MAIN_INSTALL "health 返回 alive:true、scheduling_ready:true、dispatch_paused:null、phase:P7？"
 say "首次启动成功后，从 main.env 删除 INITIAL_ADMIN_PASSWORD 这一行并重启服务。"
 pause "已删除并重启后按 Enter"
 
 stage "Caddy 与内部 CA（运维手册 §2 第 5–6 步）"
-say "在 $MAIN_HOST 上配置 Caddy（WORKER_PLANE_SITE=$SITE），然后把根证书取回本机："
+say "在 $MAIN_HOST 上配置 Caddy（WILLCORD_SITE=$SITE），然后把根证书取回本机："
 step "scp $MAIN_HOST:/var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt $STATE/ca.pem"
 note "需要 sudo 才能读时，先在主机上 sudo cp 到家目录再 scp。"
 pause "ca.pem 已在本机后按 Enter"
@@ -288,11 +288,11 @@ pause
 
 stage "安装 Linux worker（运维手册 §4）"
 say "把这些文件放到 $LINUX_HOST 上（权限见手册）："
-step "worker-plane-worker-$RELEASE_TAG-linux-* → /usr/local/bin/worker-plane-worker"
-step "$STATE/$LINUX_WORKER.token → /etc/worker-plane/token（0600，属 worker 用户）"
-step "$STATE/ca.pem → /etc/worker-plane/ca.pem"
-step "deploy/worker.config.toml 改好 worker_id=$LINUX_WORKER、url=wss://$SITE/ws/worker、workspace → /etc/worker-plane/worker.toml"
-step "安装 deploy/systemd/worker-plane-worker.service 并 enable --now"
+step "willcord-$RELEASE_TAG-linux-* → /usr/local/bin/willcord"
+step "$STATE/$LINUX_WORKER.token → /etc/willcord/token（0600，属 worker 用户）"
+step "$STATE/ca.pem → /etc/willcord/ca.pem"
+step "deploy/worker.config.toml 改好 worker_id=$LINUX_WORKER、url=wss://$SITE/ws/worker、workspace → /etc/willcord/worker.toml"
+step "安装 deploy/systemd/willcord-worker.service 并 enable --now"
 pause "启动后按 Enter，开始检查"
 state=$(worker_field "$LINUX_WORKER" schedulable || true)
 say "主节点看到的 $LINUX_WORKER 可执行状态：$state"
@@ -302,11 +302,11 @@ pause
 
 stage "安装 macOS worker（运维手册 §4）"
 say "把这些文件放到 $MAC_HOST 上："
-step "worker-plane-worker-$RELEASE_TAG-darwin-* → /usr/local/bin/worker-plane-worker（浏览器下载的要先去掉 quarantine）"
-step "$STATE/$MAC_WORKER.token → /usr/local/etc/worker-plane/token（0600）"
-step "$STATE/ca.pem → /usr/local/etc/worker-plane/ca.pem"
+step "willcord-$RELEASE_TAG-darwin-* → /usr/local/bin/willcord（浏览器下载的要先去掉 quarantine）"
+step "$STATE/$MAC_WORKER.token → /usr/local/etc/willcord/token（0600）"
+step "$STATE/ca.pem → /usr/local/etc/willcord/ca.pem"
 step "worker.toml：worker_id=$MAC_WORKER；Apple Silicon 加 command_path（含 /opt/homebrew/bin）"
-step "建日志目录，安装 com.workerplane.worker.plist，然后 launchctl bootstrap system ..."
+step "建日志目录，安装 org.willcord.worker.plist，然后 launchctl bootstrap system ..."
 pause "启动后按 Enter，开始检查"
 state=$(worker_field "$MAC_WORKER" schedulable || true)
 say "主节点看到的 $MAC_WORKER 可执行状态：$state"
@@ -316,7 +316,7 @@ pause
 
 for platform in LINUX MAC; do
   id_var="${platform}_WORKER"; host_var="${platform}_HOST"; id="${!id_var}"; host="${!host_var}"
-  if [[ "$platform" == LINUX ]]; then restart_cmd="sudo systemctl restart worker-plane-worker"; else restart_cmd="sudo launchctl kickstart -k system/com.workerplane.worker"; fi
+  if [[ "$platform" == LINUX ]]; then restart_cmd="sudo systemctl restart willcord"; else restart_cmd="sudo launchctl kickstart -k system/org.willcord.worker"; fi
   stage "$id：执行、超时、取消与重启（真实模型）"
   open_url "https://$SITE"
   say "在 UI 里为 $id 新建会话（默认 workspace），依次发送并观察："
@@ -332,7 +332,7 @@ done
 
 stage "主节点重启恢复"
 say "在一个 worker 会话里发送：『用 bash 运行 sleep 30; echo main-restart-ok』"
-step "命令开始后，在 $MAIN_HOST 上执行：sudo systemctl restart worker-plane-main"
+step "命令开始后，在 $MAIN_HOST 上执行：sudo systemctl restart willcord-main"
 step "等 UI 自动重连"
 result MAIN_RESTART "重启后任务继续并成功结束，命令没有执行第二次（输出里只有一行 main-restart-ok）？"
 
@@ -348,7 +348,7 @@ result LONG_SSE "这 10 分钟里 UI 没有出现『实时连接已断开』提�
 
 stage "token 轮换（运维手册 §9）"
 NEW_ID=$(issue_token "$LINUX_WORKER")
-say "新 token 已写入 $STATE/$LINUX_WORKER.token。把它的内容写进 $LINUX_HOST 的 /etc/worker-plane/token（覆盖旧内容）。"
+say "新 token 已写入 $STATE/$LINUX_WORKER.token。把它的内容写进 $LINUX_HOST 的 /etc/willcord/token（覆盖旧内容）。"
 pause "写好后按 Enter；接下来按 ID 吊销旧 token $LINUX_TOKEN_ID"
 if confirm "现在吊销旧 token？"; then
   api POST /api/worker-tokens/revoke "{\"token_id\":\"$LINUX_TOKEN_ID\"}" >/dev/null
@@ -370,7 +370,7 @@ result DELEGATE_VERIFY "第一个子任务带了 verify 命令，并且通过后
 result DELEGATE_RESULT "Main 最终回答包含两台机器的信息，没有显示『N 个子任务未成功』？"
 
 stage "备份与恢复演练（运维手册 §7–8）"
-step "在 $MAIN_HOST 上：sudo systemctl start worker-plane-backup，然后用 admin.js verify 检查最新备份"
+step "在 $MAIN_HOST 上：sudo systemctl start willcord-backup，然后用 admin.js verify 检查最新备份"
 result BACKUP "备份生成且 verify 显示 integrity ok？"
 if confirm "是否做一次恢复演练（会短暂停机，恢复到刚才的备份）？"; then
   step "按手册 §8：停止主节点 → admin.js restore <备份> → 启动"

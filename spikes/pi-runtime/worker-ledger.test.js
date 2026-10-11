@@ -11,7 +11,7 @@ import { SqliteWorkerLedger, WorkerReconciler, requestHash } from './worker-ledg
 import { recoverTranscript, RecoveryBlockedError } from './transcript-recovery.js';
 
 function fixture(t) {
-  const root = mkdtempSync(join(tmpdir(), 'worker-plane-ledger-'));
+  const root = mkdtempSync(join(tmpdir(), 'willcord-ledger-'));
   const host = new SqliteCheckpointStore(join(root, 'host.sqlite'));
   const worker = new SqliteWorkerLedger(join(root, 'worker.sqlite'), { workerId: 'worker', bootId: 'first-boot' });
   t.after(() => { if (host.db.open) host.close(); if (worker.db.open) worker.close(); rmSync(root, { recursive: true, force: true }); });

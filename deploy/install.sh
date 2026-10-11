@@ -136,28 +136,28 @@ worker_install() {
   local tls_args=()
   [[ -z "$ca" ]] || tls_args=(--cacert "$ca")
   curl --disable --fail --silent --show-error ${tls_args[@]+"${tls_args[@]}"} --connect-timeout 5 --max-time 15 "$server/health" -o "$tmp/worker-health.json" || fail "无法通过 CA 验证主节点 HTTPS，请检查证书、地址与网络。"
-  local name="worker-plane-worker-$version-$os-$arch" installed joined
+  local name="willcord-$version-$os-$arch" installed joined
   verified "$name"
   chmod 700 "$tmp/$name"
   if [[ "$system" == true ]]; then
-    local system_root="${WORKER_PLANE_SYSTEM_ROOT:-}"
+    local system_root="${WILLCORD_SYSTEM_ROOT:-}"
     if [[ -z "$system_root" ]]; then
-      if [[ "$os" == darwin ]]; then system_root='/Library/Application Support/WorkerPlane'; else system_root=/var/lib/worker-plane-system; fi
+      if [[ "$os" == darwin ]]; then system_root='/Library/Application Support/Willcord'; else system_root=/var/lib/willcord-system; fi
     fi
-    installed="$system_root/bin/worker"
+    installed="$system_root/bin/willcord"
     if [[ $(id -u) == 0 ]]; then
       if [[ -n "$ca" ]]; then SSL_CERT_FILE="$ca" "$tmp/$name" install --system --user "$account"; else "$tmp/$name" install --system --user "$account"; fi
       joined=$("$installed" join --system "$server")
     else
-      local install_env=("WORKER_PLANE_SYSTEM_ROOT=$system_root")
+      local install_env=("WILLCORD_SYSTEM_ROOT=$system_root")
       [[ -z "$ca" ]] || install_env+=("SSL_CERT_FILE=$ca")
       sudo env "${install_env[@]}" "$tmp/$name" install --system --user "$account"
-      joined=$(sudo env "WORKER_PLANE_SYSTEM_ROOT=$system_root" "$installed" join --system "$server")
+      joined=$(sudo env "WILLCORD_SYSTEM_ROOT=$system_root" "$installed" join --system "$server")
     fi
   else
-    if [[ -n "${WORKER_PLANE_HOME:-}" ]]; then installed="$WORKER_PLANE_HOME/bin/worker"
-    elif [[ "$os" == darwin ]]; then installed="$HOME/Library/Application Support/WorkerPlane/bin/worker"
-    else installed="$HOME/.local/share/worker-plane/bin/worker"; fi
+    if [[ -n "${WILLCORD_HOME:-}" ]]; then installed="$WILLCORD_HOME/bin/willcord"
+    elif [[ "$os" == darwin ]]; then installed="$HOME/Library/Application Support/Willcord/bin/willcord"
+    else installed="$HOME/.local/share/willcord/bin/willcord"; fi
     if [[ -n "$ca" ]]; then SSL_CERT_FILE="$ca" "$tmp/$name" install; else "$tmp/$name" install; fi
     joined=$("$installed" join "$server")
   fi
@@ -257,10 +257,10 @@ main_install() {
   set -C
   cat "$tmp/compose.yaml" > "$directory/compose.yaml"
   {
-    env_line COMPOSE_PROJECT_NAME "worker-plane-$(printf '%s' "$directory" | sha256_stdin | cut -c1-12)"
-    env_line WORKER_PLANE_VERSION "${version#v}"
-    env_line WORKER_PLANE_SITE "$site"
-    env_line WORKER_PLANE_PORT "$port"
+    env_line COMPOSE_PROJECT_NAME "willcord-$(printf '%s' "$directory" | sha256_stdin | cut -c1-12)"
+    env_line WILLCORD_VERSION "${version#v}"
+    env_line WILLCORD_SITE "$site"
+    env_line WILLCORD_PORT "$port"
   } > "$directory/.env"
   {
     env_line PUBLIC_BASE_URL "$server"
@@ -304,7 +304,7 @@ sha256_stdin() { if command -v shasum >/dev/null 2>&1; then shasum -a 256; else 
 main() {
   local role="${1:-}"; [[ "$role" == worker || "$role" == main ]] || fail '用法：install.sh main|worker [--version vX.Y.Z] [--server HTTPS_ORIGIN] [--ca /absolute/ca.pem | --ca-fingerprint SHA256] [--system --user ACCOUNT] [--dir PATH]'
   shift
-  version=''; server=''; ca=''; fingerprint=''; system=false; account=''; directory="$PWD/worker-plane"
+  version=''; server=''; ca=''; fingerprint=''; system=false; account=''; directory="$PWD/willcord"
   while (( $# )); do
     case "$1" in
       --version|--server|--ca|--ca-fingerprint|--user|--dir)
@@ -321,7 +321,7 @@ main() {
   case "$os" in Linux) os=linux;; Darwin) os=darwin;; *) fail "不支持的平台：$os";; esac
   case "$arch" in x86_64|amd64) arch=x86_64;; arm64|aarch64) if [[ "$os" == darwin ]]; then arch=arm64; else arch=aarch64; fi;; *) fail "不支持的架构：$arch";; esac
   umask 077
-  tmp=$(mktemp -d "${TMPDIR:-/tmp}/worker-plane-install.XXXXXX")
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/willcord-install.XXXXXX")
   tty_state=''
   trap '[[ -z "$tty_state" ]] || stty "$tty_state" </dev/tty; rm -rf "$tmp"' EXIT
   resolve_version

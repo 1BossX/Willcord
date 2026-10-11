@@ -183,7 +183,7 @@ fn atomic_write_workspace_file(
     if expected_hash != actual {
         return Err("expected_hash_mismatch".into());
     }
-    let tmp = std::ffi::CString::new(format!(".worker-plane-{}.tmp", Uuid::new_v4()))?;
+    let tmp = std::ffi::CString::new(format!(".willcord-{}.tmp", Uuid::new_v4()))?;
     let fd = unsafe {
         libc::openat(
             dir.as_raw_fd(),
@@ -230,7 +230,7 @@ mod tests {
     #[test]
     fn workspace_files_reject_symlink_escape_and_replace_atomically() {
         use std::os::unix::fs::symlink;
-        let temp = std::env::temp_dir().join(format!("worker-plane-path-test-{}", Uuid::new_v4()));
+        let temp = std::env::temp_dir().join(format!("willcord-path-test-{}", Uuid::new_v4()));
         let root = temp.join("workspace");
         let outside = temp.join("outside");
         fs::create_dir_all(&root).unwrap();

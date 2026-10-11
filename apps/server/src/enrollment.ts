@@ -21,7 +21,7 @@ export function registerEnrollment(app: FastifyInstance, db: Database.Database, 
         const raw = Buffer.from(b.public_key, "base64");
         const key = createPublicKey({ key: raw, type: "spki", format: "der" });
         if (key.asymmetricKeyType !== "ed25519" || !raw.equals(key.export({type:"spki",format:"der"}) as Buffer) || raw.toString("base64") !== b.public_key) throw Error();
-        const payload = JSON.stringify(["workerplane-enrollment-v1", action, b.challenge, b.public_key, action === "apply" ? b.name : null, action === "apply" ? b.os : null, action === "apply" ? b.arch : null]);
+        const payload = JSON.stringify(["willcord-enrollment-v1", action, b.challenge, b.public_key, action === "apply" ? b.name : null, action === "apply" ? b.os : null, action === "apply" ? b.arch : null]);
         if (!verify(null, Buffer.from(payload), key, Buffer.from(b.signature, "base64"))) throw Error();
         id = hash(raw);
       } catch { return reply.code(401).send({ error: "invalid_proof" }); }

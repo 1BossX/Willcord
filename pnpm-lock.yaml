@@ -25,7 +25,7 @@ importers:
       '@fastify/websocket':
         specifier: 11.2.0
         version: 11.2.0
-      '@worker-plane/protocol':
+      '@willcord/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
       argon2:

@@ -1,5 +1,5 @@
-# Worker Plane main node behind Caddy with Caddy's internal CA (container).
-#   WORKER_PLANE_SITE  address browsers and workers use, e.g. plane.internal:8443;
+# Willcord main node behind Caddy with Caddy's internal CA (container).
+#   WILLCORD_SITE  address browsers and workers use, e.g. plane.internal:8443;
 #                      PUBLIC_BASE_URL must be https://<this>
 # The internal CA lives in /data: keep that volume, or every worker's CA file
 # stops matching. Workers can fetch root.crt using a trusted CA fingerprint.
@@ -7,12 +7,12 @@
 	skip_install_trust
 	pki {
 		ca local {
-			name "Worker Plane"
+			name "Willcord"
 		}
 	}
 }
 
-{$WORKER_PLANE_SITE} {
+{$WILLCORD_SITE} {
 	tls internal
 
 	# Public certificate only; never expose the CA directory or admin API.
@@ -21,7 +21,7 @@
 		path /.well-known/willcord/ca.pem
 	}
 	handle @bootstrap {
-		root * {$WORKER_PLANE_CA_ROOT:/data/caddy/pki/authorities/local}
+		root * {$WILLCORD_CA_ROOT:/data/caddy/pki/authorities/local}
 		rewrite * /root.crt
 		header Content-Type application/x-pem-file
 		header Cache-Control "no-store"
@@ -30,7 +30,7 @@
 
 	@server path /enrollment/* /api/* /auth/* /ws/worker /health
 	handle @server {
-		reverse_proxy {$WORKER_PLANE_UPSTREAM:main:3000} {
+		reverse_proxy {$WILLCORD_UPSTREAM:main:3000} {
 			flush_interval -1
 			stream_close_delay 5m
 		}

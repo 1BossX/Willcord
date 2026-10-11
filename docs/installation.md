@@ -41,7 +41,7 @@ curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- main
 curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- main --server 'https://plane.internal:8443' --dir '/opt/my-plane'
 ```
 
-目录默认 `./worker-plane`，当前账户必须可写。安装器生成 `compose.yaml`、`.env` 和 `main.env`，固定镜像版本；环境文件权限 0600，不要提交到 Git。不同目录使用独立的 Compose 项目及数据卷。已有部署文件时拒绝覆盖。
+目录默认 `./willcord`，当前账户必须可写。安装器生成 `compose.yaml`、`.env` 和 `main.env`，固定镜像版本；环境文件权限 0600，不要提交到 Git。不同目录使用独立的 Compose 项目及数据卷。已有部署文件时拒绝覆盖。
 
 向导在写入任何文件之前，会向模型服务商确认 API key（支持 openrouter、openai、anthropic）：只有被明确拒绝（HTTP 401）才会要求重新输入（最多 3 次，第 3 次仍被拒绝才退出，此时未写入任何配置）；无法确认（网络受限、其他 provider、权限受限的 key）时只给出提示并继续。
 

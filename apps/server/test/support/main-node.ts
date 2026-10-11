@@ -26,7 +26,7 @@ export async function startScenario(options: {
   /** Worker identities; the first is "w" by default and owns `workspace`. */
   workers?: string[];
 }) {
-  const dir = mkdtempSync(join(tmpdir(), "worker-plane-p3c-"));
+  const dir = mkdtempSync(join(tmpdir(), "willcord-p3c-"));
   const certs = createCertificates(dir);
   const dbPath = join(dir, "main.sqlite");
   const workspace = join(dir, "workspace");

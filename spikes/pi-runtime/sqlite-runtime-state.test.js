@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { RuntimeStateError, SqliteRuntimeStateStore } from './sqlite-runtime-state.js';
 
 function temporaryStore(t) {
-  const directory = mkdtempSync(join(tmpdir(), 'worker-plane-runtime-state-'));
+  const directory = mkdtempSync(join(tmpdir(), 'willcord-runtime-state-'));
   const filename = join(directory, 'runtime.sqlite');
   let store = new SqliteRuntimeStateStore(filename);
   t.after(() => {

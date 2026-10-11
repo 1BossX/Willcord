@@ -27,7 +27,7 @@ done
 
 mkdir -p "$out/apps/web"
 out=$(cd "$out" && pwd)
-pnpm --filter @worker-plane/server deploy --prod --legacy "$out/apps/server"
+pnpm --filter @willcord/server deploy --prod --legacy "$out/apps/server"
 cp -R apps/web/dist "$out/apps/web/dist"
 cp -R migrations "$out/migrations"
 mkdir -p "$out/deploy"

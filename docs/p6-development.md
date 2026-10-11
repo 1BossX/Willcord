@@ -181,7 +181,7 @@ P6 阶段整体验收以 P6-C 的记录为准，P6-D 完成后补记多轮对话
 
 - 对同会话中更早、已结束（`succeeded`/`failed`/`cancelled`）、且真正运行过（有 `user:` 记录）的 job，各生成两条消息：
   - `user`：该 job 的 `user:` 记录，含 verify 提示。
-  - `assistant`：`final:` 记录。没有成功的 job 在回答后补一段说明，没有回答时说明单独成为一条 assistant 消息（`provider` 为 `worker-plane`，用量为 0）：`[This task did not finish: cancelled (budget_tokens).]`；验证未通过为 `[The verification command of this task failed.]`。
+  - `assistant`：`final:` 记录。没有成功的 job 在回答后补一段说明，没有回答时说明单独成为一条 assistant 消息（`provider` 为 `willcord`，用量为 0）：`[This task did not finish: cancelled (budget_tokens).]`；验证未通过为 `[The verification command of this task failed.]`。
 - 不带工具调用和工具结果。具体改动在 workspace 里，模型需要时自己读。这样避开了未结论的调用，上下文也小（工具结果每个最多 64 KiB，问答通常几 KB），也不和 Main 的 `child:` 记录冲突。
 - 排队时就被取消、从未运行的 job 跳过。
 

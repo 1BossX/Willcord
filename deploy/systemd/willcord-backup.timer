@@ -1,5 +1,5 @@
 [Unit]
-Description=Daily Worker Plane backup
+Description=Daily Willcord backup
 
 [Timer]
 OnCalendar=*-*-* 03:30:00

@@ -16,7 +16,7 @@ import { waitFor } from "./support/worker-harness.js";
 
 const origin = "https://localhost:8443";
 const token = "p3-race-worker-token";
-const workspace = (version: number) => ({ workspace_id: "repo", config_version: version, path: `/tmp/p3-race-v${version}`, repo_id: "github.com/1BossX/WorkerPlane", is_default: true });
+const workspace = (version: number) => ({ workspace_id: "repo", config_version: version, path: `/tmp/p3-race-v${version}`, repo_id: "github.com/1BossX/Willcord", is_default: true });
 
 /** One worker connection; every frame received is kept in order. */
 class ScriptedWorker {
@@ -56,7 +56,7 @@ class ScriptedWorker {
 }
 
 async function raceScenario(scripts: Record<string, ScriptStep[]>, app: Parameters<typeof createApp>[2] = {}) {
-  const dir = mkdtempSync(join(tmpdir(), "worker-plane-p3c-race-"));
+  const dir = mkdtempSync(join(tmpdir(), "willcord-p3c-race-"));
   const db = openDatabase(join(dir, "main.sqlite"));
   const main = await createApp(db, origin, { logging: false, dataDir: join(dir, "data"), fakeScript: (job) => scripts[job.input_text], ...app });
   await main.listen({ host: "127.0.0.1", port: 0 });

@@ -5,7 +5,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import argon2 from "argon2";
-import { requestHash } from "@worker-plane/protocol";
+import { requestHash } from "@willcord/protocol";
 import { openDatabase } from "../src/storage.js";
 import { createApp } from "../src/app.js";
 import type { ScriptStep } from "../src/execution.js";
@@ -24,7 +24,7 @@ const scripts: Record<string, ScriptStep[]> = {
 };
 
 test("P3 main node keeps in-flight calls across network loss, main restart and worker crash without repeating side effects", { timeout: 120000 }, async () => {
-  const dir = mkdtempSync(join(tmpdir(), "worker-plane-p3-"));
+  const dir = mkdtempSync(join(tmpdir(), "willcord-p3-"));
   const certs = createCertificates(dir);
   const dbPath = join(dir, "main.sqlite");
   const workspace = join(dir, "workspace");

@@ -1,6 +1,6 @@
 import {test} from "node:test";
 import assert from "node:assert/strict";
-import {requestHash, MAX_FRAME_BYTES} from "@worker-plane/protocol";
+import {requestHash, MAX_FRAME_BYTES} from "@willcord/protocol";
 import {openDatabase} from "../src/storage.js";
 import {ExecutionCoordinator} from "../src/execution.js";
 
@@ -39,7 +39,7 @@ test("P2 dispatch binds a persisted intent, commits a matching result, then ACKs
  assert.equal(one("SELECT state FROM tool_calls WHERE call_id='c'").state,"finished");
  assert.equal(one("SELECT status FROM runtime_calls WHERE call_id='c'").status,"completed");
  assert.equal(one("SELECT count(*) n FROM messages WHERE job_id='j'").n,1);
- const content="worker-plane-large-write/".repeat(5000),writeArgs={path:"large.txt",content,expected_hash:"missing"};
+ const content="willcord-large-write/".repeat(5000),writeArgs={path:"large.txt",content,expected_hash:"missing"};
  const writeHash=commit("w",2,"write",writeArgs);
  const large=coordinator.dispatch("j","w");
  const frames=sent.slice(2);assert.equal(frames[0].type,"tool_call");assert.equal(frames[0].arguments.transfer_bytes,Buffer.byteLength(content));

@@ -14,7 +14,7 @@
 - macOS arm64 Release 二进制（默认无 fault-injection）构建成功，安装副本 SHA-256 与产物一致；升级后浏览器任务 `30e12903-1cd1-44b0-a199-457cb4119ca2` succeeded，marker 仍仅一行。
 - macOS arm64：隔离服务配置/应用数据目录中实际安装 LaunchAgent，私有 CA 经服务环境生效；批准后 online=1、reconciled=1、blocked=0；原地 install 升级成功，机器身份保持稳定且对账不阻塞。
 - 远端 Linux x86_64：通过 loopback SSH 反向隧道连入隔离测试主节点，完成 Release 安装、签名申请、管理员批准、账本对账及默认 workspace 任务。worker `online=1, reconciled=1, blocked=0`；任务 `cf8633b0-f1f5-4f9a-bb21-734aabdc3024` succeeded，marker 已确认；升级后 ledger_id 保持不变。隐藏凭据的逐项证据见 `output/playwright/worker-enrollment/colo-linux.json`（公开版隐藏环境标识）。
-- 远端 Linux 验收结束后，systemd user service、worker 数据、暂存文件和 SSH 隧道均已清理。构建容器与镜像也已从本机移除；只保留 Linux Release 文件于 `worker/target/x86_64-unknown-linux-gnu/release/worker-plane-worker`，其 SHA-256 与远端运行的文件一致。
+- 远端 Linux 验收结束后，systemd user service、worker 数据、暂存文件和 SSH 隧道均已清理。构建容器与镜像也已从本机移除；只保留 Linux Release 文件于 `worker/target/x86_64-unknown-linux-gnu/release/willcord`，其 SHA-256 与远端运行的文件一致。
 - 浏览器：登录、待授权、拒绝、重新批准、默认 workspace 会话创建、真实任务成功、机器名称修改、撤销后离线/不可执行。任务 `5c4535c3-0167-4339-b92d-939add7af9cd` succeeded，默认目录 `acceptance.txt` 仅一行 `enrollment-ok`。
 - 卸载会等待服务退出和数据目录解锁（最多 60 秒），超时保留数据；实际 LaunchAgent 卸载已验证。
 - 发布 YAML 已解析验证，配置 Linux x86_64/arm64、macOS x86_64/arm64 四个原生构建目标，并检查实际架构及生成 SHA-256 文件。
@@ -31,4 +31,4 @@
 - macOS Intel 和 Linux arm64 的 runner 构建、启动检查仍待 CI 执行。
 - 此增强没有完成或重新证明 P7 的全部主节点部署、备份恢复、真实模型及双机发布验收。
 
-可从仓库根目录运行 Linux 实机验收脚本：`cd apps/server && WORKER_PLANE_TEST_SSH_TARGET=<your-test-host> node --import tsx test/support/colo-worker-acceptance.ts`。该脚本把 worker 和默认 workspace 放在独立目录，通过绑定测试机器 loopback 的短时 SSH 反向隧道连接隔离测试主节点；结束时卸载服务、删除该目录并关闭隧道。
+可从仓库根目录运行 Linux 实机验收脚本：`cd apps/server && WILLCORD_TEST_SSH_TARGET=<your-test-host> node --import tsx test/support/colo-worker-acceptance.ts`。该脚本把 worker 和默认 workspace 放在独立目录，通过绑定测试机器 loopback 的短时 SSH 反向隧道连接隔离测试主节点；结束时卸载服务、删除该目录并关闭隧道。

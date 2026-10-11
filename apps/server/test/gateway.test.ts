@@ -20,7 +20,7 @@ const register = {
       workspace_id: "repo",
       config_version: 1,
       path: "/tmp",
-      repo_id: "github.com/1BossX/WorkerPlane",
+      repo_id: "github.com/1BossX/Willcord",
       is_default: true,
     },
   ],

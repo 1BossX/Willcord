@@ -1,7 +1,7 @@
 // A scripted main node: the test decides every frame a real worker receives.
 import assert from "node:assert/strict";
 import type { WebSocket } from "ws";
-import { requestHash } from "@worker-plane/protocol";
+import { requestHash } from "@willcord/protocol";
 
 export class Peer {
   readonly frames: any[] = [];

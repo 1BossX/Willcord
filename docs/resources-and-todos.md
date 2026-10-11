@@ -9,7 +9,7 @@
 
 | 项目 | 需要时间 | 要求 | 状态 |
 |---|---|---|---|
-| 远端 Git 仓库 | 推送代码前 | 私有 GitHub 仓库 `1BossX/WorkerPlane`；当前 Git CLI 身份具备 `repo` 权限 | 已配置 |
+| 远端 Git 仓库 | 推送代码前 | 私有 GitHub 仓库 `1BossX/Willcord`；当前 Git CLI 身份具备 `repo` 权限 | 已配置 |
 | 模型供应商和模型名 | P0 实际模型验证前 | OpenRouter + `deepseek/deepseek-v4.1-flash`；`OPENROUTER_KEY` 已在本机 `~/.zshrc` 配置，运行时映射为 `OPENROUTER_API_KEY`，不写入仓库 | 已验证真实 usage 和 Pi 端到端取消；取消请求最终费用未知 |
 | 第一台 worker | P2 联调前 | 可安装 Rust worker 的 Linux 或 macOS 机器；有管理员权限安装/启动服务 | 待准备 |
 | 主节点可访问地址 | P2 worker 联调前 | worker 能出站访问的 HTTPS/WSS 地址；开发阶段可用临时隧道或测试网络 | 待准备 |
@@ -21,7 +21,7 @@
 
 ## 可立即开始的工作
 
-- [x] 创建本地仓库 `/workspace/worker-plane` 并初始化 `main` 分支。
+- [x] 创建本地仓库 `/workspace/willcord` 并初始化 `main` 分支。
 - [x] 纳入最终架构和开发阶段验收文档。
 - [x] P0 Pi SDK spike：固定 Pi SDK 1.0.4；faux-provider 验证工具隔离、执行前完整调用 checkpoint seam、串行调用、transcript 恢复、取消信号、预算 gate 和委派等待 seam。
 - [x] P0 SQLite checkpoint adapter：整轮/工具意图事务提交、幂等重试、调用序号、派发/结果状态约束；已从真实 Pi hook 集成测试，SQLite 重开后保留待对账调用。
@@ -33,7 +33,7 @@ P0 不需要真实 worker、域名或线上主机。用户已选择 OpenRouter +
 
 ## 远端仓库状态
 
-- [x] GitHub 私有仓库 `1BossX/WorkerPlane` 已存在。
+- [x] GitHub 私有仓库 `1BossX/Willcord` 已存在。
 - [x] 初始文档和 P0 spike 已提交到远端 `main`；最新提交见仓库历史。
 - [x] 本地仓库配置 `origin`；Git CLI 已切换到可用的 `agentx1boss` 身份，供原生 `git push` 使用。
 
@@ -41,7 +41,7 @@ Git CLI 使用系统钥匙串中的 GitHub 凭据；不要将凭据写入仓库�
 
 ## 集成配置模板（不填入秘密值）
 
-主节点（`/etc/worker-plane/main.env`，模板 `deploy/main.env.example`，由 `apps/server/src/config.ts` 校验）：
+主节点（`/etc/willcord/main.env`，模板 `deploy/main.env.example`，由 `apps/server/src/config.ts` 校验）：
 
 ```text
 PUBLIC_BASE_URL=          # 浏览器访问的源，例如 https://plane.internal:8443
@@ -50,7 +50,7 @@ MODEL_PROVIDER=openrouter
 MODEL_NAME=deepseek/deepseek-v4.1-flash
 MODEL_API_KEY=
 INITIAL_ADMIN_PASSWORD=   # 仅首次启动需要，之后删除
-# DATA_DIR 由 systemd 单元设置为 /var/lib/worker-plane
+# DATA_DIR 由 systemd 单元设置为 /var/lib/willcord
 ```
 
 Worker（TOML，模板 `deploy/worker.config.toml`）：

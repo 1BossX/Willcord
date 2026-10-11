@@ -16,7 +16,7 @@ const provider = 'openrouter';
 const model = getModel(provider, 'deepseek/deepseek-v4.1-flash');
 assert.ok(model, 'the pinned Pi model catalog must contain DeepSeek V4.1 Flash');
 
-const root = await mkdtemp(join(tmpdir(), 'worker-plane-openrouter-p0-'));
+const root = await mkdtemp(join(tmpdir(), 'willcord-openrouter-p0-'));
 let session;
 let sessionManager;
 let modelRuntime;

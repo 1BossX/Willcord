@@ -1,5 +1,5 @@
 {
-  "name": "@worker-plane/web",
+  "name": "@willcord/web",
   "private": true,
   "type": "module",
   "scripts": {

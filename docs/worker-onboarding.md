@@ -10,15 +10,15 @@
 
 ## 安装
 
-从版本 Release 下载匹配平台的 `worker-plane-worker-<版本>-<os>-<arch>` 及其 `.sha256`；Linux/macOS 各支持 x86_64 与 arm64（文件架构名由 uname 给出，arm64 为 aarch64 或 arm64）。Linux 二进制按 glibc 2.17 链接，可在 CentOS 7、Debian 10、Ubuntu 20.04 及更新的发行版上运行；发布流程会在旧发行版容器中实际运行它。Linux 需要 systemd 用户会话；macOS 需要登录图形会话。
+从版本 Release 下载匹配平台的 `willcord-<版本>-<os>-<arch>` 及其 `.sha256`；Linux/macOS 各支持 x86_64 与 arm64（文件架构名由 uname 给出，arm64 为 aarch64 或 arm64）。Linux 二进制按 glibc 2.17 链接，可在 CentOS 7、Debian 10、Ubuntu 20.04 及更新的发行版上运行；发布流程会在旧发行版容器中实际运行它。Linux 需要 systemd 用户会话；macOS 需要登录图形会话。
 
 ```sh
-shasum -a 256 -c worker-plane-worker-<版本>-<os>-<arch>.sha256
-chmod +x worker-plane-worker-<版本>-<os>-<arch>
-./worker-plane-worker-<版本>-<os>-<arch> install
+shasum -a 256 -c willcord-<版本>-<os>-<arch>.sha256
+chmod +x willcord-<版本>-<os>-<arch>
+./willcord-<版本>-<os>-<arch> install
 ```
 
-安装输出已安装二进制的绝对路径和服务名称。后面的 `worker` 指该二进制；默认不会改写 shell PATH。Linux 二进制位于 `~/.local/share/worker-plane/bin/worker`；macOS 位于 `~/Library/Application Support/WorkerPlane/bin/worker`。
+安装输出已安装二进制的绝对路径和服务名称。后面的 `willcord` 指该二进制；默认不会改写 shell PATH。Linux 二进制位于 `~/.local/share/willcord/bin/willcord`；macOS 位于 `~/Library/Application Support/Willcord/bin/willcord`。
 
 ```sh
 worker join https://plane.internal:8443
@@ -34,7 +34,7 @@ Linux 服务名含数据目录摘要；`worker status` 显示 `service_name`。�
 系统级服务开机启动、不依赖登录会话，所有命令以指定的普通账户运行。账户需事先存在、不能是 root，并对要执行的工作目录有权限：
 
 ```sh
-sudo ./worker-plane-worker-<版本>-<os>-<arch> install --system --user <账户>
+sudo ./willcord-<版本>-<os>-<arch> install --system --user <账户>
 sudo <安装输出的路径> join --system https://plane.internal:8443
 sudo <安装输出的路径> status --system --json
 ```
@@ -42,12 +42,12 @@ sudo <安装输出的路径> status --system --json
 | | Linux | macOS |
 |---|---|---|
 | 服务定义 | `/etc/systemd/system/<服务名>.service`，`WantedBy=multi-user.target` | `/Library/LaunchDaemons/<服务名>.plist` |
-| 二进制与 `system.json` | `/var/lib/worker-plane-system/`，root 所有 | `/Library/Application Support/WorkerPlane/`，root 所有 |
+| 二进制与 `system.json` | `/var/lib/willcord-system/`，root 所有 | `/Library/Application Support/Willcord/`，root 所有 |
 | 身份、账本、token、默认目录 | 上述目录下的 `data/`，服务账户所有，0700 | 同左 |
 
 二进制和 `system.json` 归 root 所有，服务账户不能替换自己运行的程序。`join`、`status`、`workspace` 加 `--system` 后先切换到服务账户再读写数据，不会生成 root 所有的文件，可以用 sudo 运行，也可以直接以服务账户运行。私有 CA 在 install 时用 `sudo SSL_CERT_FILE=/absolute/ca.pem ... install --system --user <账户>` 传入，安装器把它复制为安装根目录下的 `ca.pem`（0644，root 所有），之后的命令和服务自动使用这份副本，原文件放在 `/root` 等服务账户读不到的位置也可以。更换 CA 时带上新的 `SSL_CERT_FILE` 重新 install。macOS 的 LaunchDaemon 写入服务账户的 `HOME`；systemd 的 `User=` 会自动设置。
 
-同一台机器上的用户级安装和系统级安装是两个独立节点，各有身份和服务名。升级时用新二进制重新运行同样的 `install --system --user <账户>`；更换账户需要先卸载。`WORKER_PLANE_SYSTEM_ROOT` 可指定其他安装根目录。
+同一台机器上的用户级安装和系统级安装是两个独立节点，各有身份和服务名。升级时用新二进制重新运行同样的 `install --system --user <账户>`；更换账户需要先卸载。`WILLCORD_SYSTEM_ROOT` 可指定其他安装根目录。
 
 ## 工作目录
 
@@ -86,7 +86,7 @@ sudo worker uninstall --system [--delete-data]   # 系统级服务；--delete-da
 
 私钥和账本应一起保留，不能克隆给第二台机器。身份丢失时不要按相同显示名称接管旧机器；撤销旧设备、核对未完成任务，以新身份重新加入。token 文件丢失且旧凭据已确认时，先撤销设备再批准，允许安全重新签发。
 
-`WORKER_PLANE_HOME` 可指定隔离数据目录；同一目录只有一个执行进程，服务名随目录区分。保留原有 `worker config.toml` 和手动 token 方式，既有节点不自动转换。
+`WILLCORD_HOME` 可指定隔离数据目录；同一目录只有一个执行进程，服务名随目录区分。保留原有 `worker config.toml` 和手动 token 方式，既有节点不自动转换。
 
 ## 验收记录
 

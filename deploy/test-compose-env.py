@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Round-trip the installer's environment values through real Compose containers.
 
-Run after deploy/docker/smoke.sh builds local/worker-plane-main:smoke, or set
+Run after deploy/docker/smoke.sh builds local/willcord-main:smoke, or set
 COMPOSE_ENV_TEST_IMAGE to an already-built main-node image. No deployment volumes
 are mounted and each one-shot container is removed after checking its value.
 """
@@ -14,7 +14,7 @@ import uuid
 
 SCRIPT = Path(__file__).with_name('install.sh')
 DEFINITIONS = SCRIPT.read_text().rsplit('\nmain "$@"', 1)[0]
-IMAGE = os.environ.get('COMPOSE_ENV_TEST_IMAGE', 'local/worker-plane-main:smoke')
+IMAGE = os.environ.get('COMPOSE_ENV_TEST_IMAGE', 'local/willcord-main:smoke')
 
 class ComposeEnvironmentTests(unittest.TestCase):
     def test_single_line_values_survive_compose_and_container_environment(self):

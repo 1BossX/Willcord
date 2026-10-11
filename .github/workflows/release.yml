@@ -53,7 +53,7 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           cargo build --locked --release --manifest-path worker/Cargo.toml
-          echo "WORKER_BIN=worker/target/release/worker-plane-worker" >> "$GITHUB_ENV"
+          echo "WORKER_BIN=worker/target/release/willcord" >> "$GITHUB_ENV"
       # cargo-zigbuild 0.23.4 or newer drops the aarch64 linker flag
       # --fix-cortex-a53-843419 that zig rejects. zig's linker notes that it
       # ignores rustc's -O1; rustc reports that as linker_messages, which the
@@ -68,10 +68,10 @@ jobs:
           export PATH="$HOME/.local/bin:$PATH"
           rustup target add ${{ matrix.target }}
           cargo zigbuild --locked --release --manifest-path worker/Cargo.toml --target ${{ matrix.target }}.2.17
-          echo "WORKER_BIN=worker/target/${{ matrix.target }}/release/worker-plane-worker" >> "$GITHUB_ENV"
+          echo "WORKER_BIN=worker/target/${{ matrix.target }}/release/willcord" >> "$GITHUB_ENV"
       - run: '"$WORKER_BIN" status --json'
         env:
-          WORKER_PLANE_HOME: ${{ runner.temp }}/worker-smoke
+          WILLCORD_HOME: ${{ runner.temp }}/worker-smoke
       - name: Check the worker runs on old glibc
         if: runner.os == 'Linux'
         run: |
@@ -81,14 +81,14 @@ jobs:
           [ "$(printf '%s\n' "$need" GLIBC_2.17 | sort -V | tail -1)" = GLIBC_2.17 ] \
             || { echo "expected at most GLIBC_2.17" >&2; exit 1; }
           for image in centos:7 debian:11 ubuntu:22.04 rockylinux:9; do
-            docker run --rm -v "$PWD/$WORKER_BIN:/w:ro" -e WORKER_PLANE_HOME=/tmp/wp "$image" /w status --json > /dev/null
+            docker run --rm -v "$PWD/$WORKER_BIN:/w:ro" -e WILLCORD_HOME=/tmp/wp "$image" /w status --json > /dev/null
             echo "$image: ok"
           done
       - name: Package worker
         run: |
           os=$(uname -s | tr '[:upper:]' '[:lower:]')
           arch=$(uname -m)
-          name="worker-plane-worker-${VERSION}-${os}-${arch}"
+          name="willcord-${VERSION}-${os}-${arch}"
           mkdir -p release
           bash -n deploy/install.sh
           cp deploy/install.sh deploy/docker/compose.yaml release/
@@ -99,11 +99,11 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           arch=$(uname -m)
-          dir="$RUNNER_TEMP/worker-plane-main-${VERSION}"
+          dir="$RUNNER_TEMP/willcord-main-${VERSION}"
           rm -rf "$dir"
           deploy/build-main.sh "$dir"
           deploy/smoke-main.sh "$dir"
-          tar -C "$RUNNER_TEMP" -czf "release/worker-plane-main-${VERSION}-linux-${arch}-node24.tar.gz" "worker-plane-main-${VERSION}"
+          tar -C "$RUNNER_TEMP" -czf "release/willcord-main-${VERSION}-linux-${arch}-node24.tar.gz" "willcord-main-${VERSION}"
       - name: Checksums
         working-directory: release
         run: for f in *; do shasum -a 256 "$f" > "$f.sha256"; done

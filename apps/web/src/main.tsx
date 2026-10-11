@@ -738,7 +738,7 @@ function App() {
   const [drafts, setDrafts] = useState<Record<string, string>>(() => {
     try {
       const saved = JSON.parse(
-        localStorage.getItem("worker-plane-drafts") ?? "{}",
+        localStorage.getItem("willcord-drafts") ?? "{}",
       );
       return saved && typeof saved === "object" && !Array.isArray(saved)
         ? saved
@@ -786,7 +786,7 @@ function App() {
   const feed = useFeed(auth === "logged-in", sessionId, {
     onUnauthorized: () => setAuth("logged-out"),
     onError: (cause) => report(cause),
-    onMissingSession: () => { localStorage.removeItem("worker-plane-session"); setSessionId(null); setSelectedWorker(null); },
+    onMissingSession: () => { localStorage.removeItem("willcord-session"); setSessionId(null); setSelectedWorker(null); },
   });
   const workers = (Object.values(feed.state.workers) as Worker[]).sort((a, b) => a.worker_id.localeCompare(b.worker_id));
   const sessions = (Object.values(feed.state.sessions) as Session[]).sort((a, b) => b.created_at - a.created_at);
@@ -813,7 +813,7 @@ function App() {
     Boolean(activeWorker?.blocked);
 
   useEffect(() => {
-    localStorage.setItem("worker-plane-drafts", JSON.stringify(drafts));
+    localStorage.setItem("willcord-drafts", JSON.stringify(drafts));
   }, [drafts]);
 
   function report(cause: unknown) {
@@ -838,7 +838,7 @@ function App() {
       if (generation !== navigation.current) return;
       setSessionId(main);
       // A refresh reopens Main too.
-      localStorage.setItem("worker-plane-session", main);
+      localStorage.setItem("willcord-session", main);
     } catch (cause) {
       if (generation !== navigation.current) return;
       report(cause);
@@ -854,7 +854,7 @@ function App() {
     navigation.current++;
     setSessionId(id);
     setSelectedJobId(null);
-    localStorage.setItem("worker-plane-session", id);
+    localStorage.setItem("willcord-session", id);
   }
   function selectSession(session: Session) {
     navigation.current++;
@@ -864,7 +864,7 @@ function App() {
     setSessionId(session.session_id);
     setSelectedJobId(null);
     setNavOpen(false);
-    localStorage.setItem("worker-plane-session", session.session_id);
+    localStorage.setItem("willcord-session", session.session_id);
   }
   function selectWorker(worker: Worker) {
     navigation.current++;
@@ -910,7 +910,7 @@ function App() {
   useEffect(() => {
     if (restored.current || !feed.state.mainSessionId) return;
     restored.current = true;
-    const saved = sessions.find((session) => session.session_id === localStorage.getItem("worker-plane-session"));
+    const saved = sessions.find((session) => session.session_id === localStorage.getItem("willcord-session"));
     if (saved) {
       setSelectedWorker(saved.kind === "main" ? null : saved.worker_id);
       setSessionId(saved.session_id);

@@ -22,7 +22,7 @@ test(
   "two real Rust workers over verified WSS, directory lock, identity restart and revocation",
   { timeout: 30000 },
   async () => {
-    const dir = mkdtempSync(join(tmpdir(), "worker-plane-wss-"));
+    const dir = mkdtempSync(join(tmpdir(), "willcord-wss-"));
     const root = resolve("../..");
     const { cert, key, ca } = createCertificates(dir);
     const db = openDatabase(join(dir, "main.sqlite"));
@@ -86,13 +86,13 @@ test(
       const config = join(dir, `${id}.toml`);
       writeFileSync(
         config,
-        `worker_id = "${id}"\ndata_dir = "${dir}/${id}"\nurl = "wss://localhost:${port}/ws/worker"\n[[workspaces]]\nworkspace_id = "repo"\nconfig_version = 1\npath = "${root}"\nrepo_id = "github.com/1BossX/WorkerPlane"\nis_default = true\n`,
+        `worker_id = "${id}"\ndata_dir = "${dir}/${id}"\nurl = "wss://localhost:${port}/ws/worker"\n[[workspaces]]\nworkspace_id = "repo"\nconfig_version = 1\npath = "${root}"\nrepo_id = "github.com/1BossX/Willcord"\nis_default = true\n`,
       );
       const env = { ...process.env, WORKER_TOKEN: tokens[id], SSL_CERT_FILE: ca };
       // rustls-native-certs prefers SSL_CERT_DIR over SSL_CERT_FILE when both are set.
       delete env.SSL_CERT_DIR;
       const child = spawn(
-        join(root, "worker/target/debug/worker-plane-worker"),
+        join(root, "worker/target/debug/willcord"),
         [config],
         {
           env,

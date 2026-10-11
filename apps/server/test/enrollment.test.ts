@@ -11,7 +11,7 @@ test("device enrollment proves possession, consumes challenges, gates credential
  const keys=generateKeyPairSync("ed25519");const der=keys.publicKey.export({type:"spki",format:"der"}) as Buffer;const public_key=der.toString("base64"),id=hash(der);
  const signed=async(action:string)=>{
   const challenge=(await app.inject({method:"POST",url:"/enrollment/challenge",payload:{}})).json().challenge;
-  const payload=JSON.stringify(["workerplane-enrollment-v1",action,challenge,public_key,action==="apply"?"test-node":null,action==="apply"?"linux":null,action==="apply"?"x86_64":null]);
+  const payload=JSON.stringify(["willcord-enrollment-v1",action,challenge,public_key,action==="apply"?"test-node":null,action==="apply"?"linux":null,action==="apply"?"x86_64":null]);
   return {public_key,challenge,signature:sign(null,Buffer.from(payload),keys.privateKey).toString("base64"),name:"test-node",os:"linux",arch:"x86_64"};
  };
  const call=async(action:string)=>app.inject({method:"POST",url:`/enrollment/${action}`,payload:await signed(action)});
@@ -48,7 +48,7 @@ test("enrollment cannot silently adopt a legacy worker ID or accept alternate pu
  db.prepare("INSERT INTO worker_tokens VALUES (?,?,NULL)").run(hash("legacy-token"),id);
  const apply=async(raw:Buffer)=>{
   const public_key=raw.toString("base64"),challenge=(await app.inject({method:"POST",url:"/enrollment/challenge",payload:{}})).json().challenge;
-  const payload=JSON.stringify(["workerplane-enrollment-v1","apply",challenge,public_key,"legacy","linux","x86_64"]);
+  const payload=JSON.stringify(["willcord-enrollment-v1","apply",challenge,public_key,"legacy","linux","x86_64"]);
   return app.inject({method:"POST",url:"/enrollment/apply",payload:{public_key,challenge,signature:sign(null,Buffer.from(payload),keys.privateKey).toString("base64"),name:"legacy",os:"linux",arch:"x86_64"}});
  };
  try{

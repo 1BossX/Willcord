@@ -12,9 +12,9 @@ import { repoRoot, waitFor } from "./worker-harness.js";
 
 const exec = promisify(execFile);
 const shellQuote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
-const artifact = join(repoRoot, "worker/target/x86_64-unknown-linux-gnu/release/worker-plane-worker");
-const target = process.env.WORKER_PLANE_TEST_SSH_TARGET;
-if (!target) throw new Error("set WORKER_PLANE_TEST_SSH_TARGET to an explicitly authorized SSH alias");
+const artifact = join(repoRoot, "worker/target/x86_64-unknown-linux-gnu/release/willcord");
+const target = process.env.WILLCORD_TEST_SSH_TARGET;
+if (!target) throw new Error("set WILLCORD_TEST_SSH_TARGET to an explicitly authorized SSH alias");
 
 async function ssh(command: string) {
   const result = await exec("ssh", [target, command], { timeout: 120_000, maxBuffer: 1024 * 1024 });
@@ -36,8 +36,8 @@ async function run() {
   const localPort = Number(new URL(scenario.proxy.url).port);
   const reversePort = 41000 + (Number.parseInt(randomId.slice(0, 6), 16) % 18000);
   const remoteHome = await ssh("getent passwd \"$(id -un)\" | cut -d: -f6");
-  const workerData = join(remoteHome, ".local/share", `worker-plane-${workspaceName}`);
-  const staging = `/tmp/worker-plane-${workspaceName}`;
+  const workerData = join(remoteHome, ".local/share", `willcord-${workspaceName}`);
+  const staging = `/tmp/willcord-${workspaceName}`;
   const sshTarget = target;
   let tunnel: ChildProcess | undefined;
   let tunnelError = "";
@@ -74,11 +74,11 @@ async function run() {
     const remoteHash = (await ssh(`sha256sum ${shellQuote(`${remoteBinary}.installed`)}`)).split(/\s+/)[0];
     if (localHash !== remoteHash) throw new Error("colo worker binary SHA-256 does not match the local release artifact");
 
-    await ssh(`env WORKER_PLANE_HOME=${shellQuote(workerData)} SSL_CERT_FILE=${shellQuote(remoteCa)} ${shellQuote(`${remoteBinary}.installed`)} install`);
+    await ssh(`env WILLCORD_HOME=${shellQuote(workerData)} SSL_CERT_FILE=${shellQuote(remoteCa)} ${shellQuote(`${remoteBinary}.installed`)} install`);
     await ssh(`rm -f ${shellQuote(remoteBinary)} ${shellQuote(`${remoteBinary}.installed`)} ${shellQuote(`${staging}/ca.pem`)}`);
-    const remoteWorker = join(workerData, "bin/worker");
+    const remoteWorker = join(workerData, "bin/willcord");
     const publicUrl = `https://localhost:${reversePort}`;
-    const remoteEnvironment = `WORKER_PLANE_HOME=${shellQuote(workerData)} SSL_CERT_FILE=${shellQuote(remoteCa)}`;
+    const remoteEnvironment = `WILLCORD_HOME=${shellQuote(workerData)} SSL_CERT_FILE=${shellQuote(remoteCa)}`;
     const joined = await ssh(`env ${remoteEnvironment} ${shellQuote(remoteWorker)} join ${shellQuote(publicUrl)}`);
     if (!/Authorization:\s*"?pending"?/.test(joined)) throw new Error(`unexpected enrollment response: ${joined}`);
 
@@ -114,10 +114,10 @@ async function run() {
   } finally {
     if (workerDataCreated) {
       try {
-        const remoteWorker = join(workerData, "bin/worker");
+        const remoteWorker = join(workerData, "bin/willcord");
         const isInstalled = await ssh(`test -x ${shellQuote(remoteWorker)} && echo yes || echo no`);
         if (isInstalled === "yes")
-          await ssh(`env WORKER_PLANE_HOME=${shellQuote(workerData)} ${shellQuote(remoteWorker)} uninstall --delete-data`);
+          await ssh(`env WILLCORD_HOME=${shellQuote(workerData)} ${shellQuote(remoteWorker)} uninstall --delete-data`);
         else
           await ssh(`rm -f ${shellQuote(join(workerData, "ca.pem"))} && rmdir ${shellQuote(workerData)}`);
       } catch (error) {

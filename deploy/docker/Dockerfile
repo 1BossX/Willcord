@@ -21,21 +21,21 @@ COPY packages/protocol/package.json packages/protocol/
 RUN pnpm install --frozen-lockfile
 COPY . .
 RUN pnpm build \
-  && pnpm --filter @worker-plane/server deploy --prod --legacy /out/apps/server \
+  && pnpm --filter @willcord/server deploy --prod --legacy /out/apps/server \
   && cp -R migrations /out/migrations
 
 # The Node process is PID 1 and receives SIGTERM directly: it closes
 # connections, the database and the data directory lock (main.lock).
 FROM node:${NODE_VERSION}-bookworm-slim AS main
 ENV NODE_ENV=production \
-    DATA_DIR=/var/lib/worker-plane \
+    DATA_DIR=/var/lib/willcord \
     HOST=0.0.0.0 \
     PORT=3000
-COPY --from=build /out /opt/worker-plane
-RUN install -d -o node -g node -m 0700 /var/lib/worker-plane
+COPY --from=build /out /opt/willcord
+RUN install -d -o node -g node -m 0700 /var/lib/willcord
 USER node
-WORKDIR /opt/worker-plane/apps/server
-VOLUME /var/lib/worker-plane
+WORKDIR /opt/willcord/apps/server
+VOLUME /var/lib/willcord
 EXPOSE 3000
 STOPSIGNAL SIGTERM
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s \

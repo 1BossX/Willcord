@@ -11,7 +11,7 @@ import { coordinatorFixture } from './coordinator-test-support.js';
 import { recoverTranscript } from './transcript-recovery.js';
 function core(messages) { const c = createFauxCore({ provider: 'interruption', api: 'interruption', models: [{ id: 'test' }] }); c.setResponses(messages); return c; }
 async function crashed(t, options = {}) {
-  const root = mkdtempSync(join(tmpdir(), 'worker-plane-interrupted-'));
+  const root = mkdtempSync(join(tmpdir(), 'willcord-interrupted-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const child = spawnSync(process.execPath, [fileURLToPath(new URL('./interruption-crash-fixture.js', import.meta.url)), root]);
   assert.equal(child.signal, 'SIGKILL', child.stderr.toString());
@@ -65,7 +65,7 @@ test('retry rejects unknown worker execution and unresolved children without spe
   f.ledger.accept(request); f.ledger.start(request);
   assert.throws(() => f.coordinator.resolveInterrupted(resolution), /worker execution remains unresolved/);
   assert.equal(f.coordinator.readJob('job').inputTokens, 0);
-  const root = mkdtempSync(join(tmpdir(), 'worker-plane-retry-children-')); t.after(() => rmSync(root, { recursive: true, force: true }));
+  const root = mkdtempSync(join(tmpdir(), 'willcord-retry-children-')); t.after(() => rmSync(root, { recursive: true, force: true }));
   const parent = await coordinatorFixture(root); t.after(() => parent.close());
   parent.coordinator.createJob({ jobId: 'parent', role: 'main', maxTokens: 100000, maxSteps: 10, prompt: 'delegate' });
   const c = core([fauxAssistantMessage([fauxToolCall('delegate', { input: 'child' }, { id: 'delegate' })], { stopReason: 'toolUse' })]);
@@ -75,7 +75,7 @@ test('retry rejects unknown worker execution and unresolved children without spe
 });
 
 async function draftSession(t, { oversized = false, interrupted = false } = {}) {
-  const root = mkdtempSync(join(tmpdir(), 'worker-plane-draft-cancel-')); t.after(() => rmSync(root, { recursive: true, force: true }));
+  const root = mkdtempSync(join(tmpdir(), 'willcord-draft-cancel-')); t.after(() => rmSync(root, { recursive: true, force: true }));
   const f = await coordinatorFixture(root); t.after(() => f.close());
   f.coordinator.createJob({ jobId: 'job', maxTokens: 100000, maxSteps: 10, prompt: 'original' });
   let started; const start = new Promise((resolve) => { started = resolve; }); let send;
@@ -116,7 +116,7 @@ test('already interrupted archival remains immutable when task cancellation foll
 });
 
 test('final commit failure archives live Pi draft atomically with blocked lifecycle', async (t) => {
-  const root = mkdtempSync(join(tmpdir(), 'worker-plane-thrown-draft-'));
+  const root = mkdtempSync(join(tmpdir(), 'willcord-thrown-draft-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const f = await coordinatorFixture(root); t.after(() => f.close());
   f.coordinator.createJob({ jobId: 'job', maxTokens: 100000, maxSteps: 10, prompt: 'request' });
@@ -137,7 +137,7 @@ test('final commit failure archives live Pi draft atomically with blocked lifecy
 });
 
 test('blocked authorization recovery archives streaming snapshot before early return', async (t) => {
-  const root = mkdtempSync(join(tmpdir(), 'worker-plane-blocked-draft-'));
+  const root = mkdtempSync(join(tmpdir(), 'willcord-blocked-draft-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const f = await coordinatorFixture(root); t.after(() => f.close());
   f.coordinator.createJob({ jobId: 'job', maxTokens: 100000, maxSteps: 10, prompt: 'request' });
@@ -154,7 +154,7 @@ test('blocked authorization recovery archives streaming snapshot before early re
 });
 
 test('cancelled committed batch reopens with factual result and never-executed pairing', async (t) => {
-  const root = mkdtempSync(join(tmpdir(), 'worker-plane-cancel-reopen-'));
+  const root = mkdtempSync(join(tmpdir(), 'willcord-cancel-reopen-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   let release, started;
   const start = new Promise((resolve) => { started = resolve; });

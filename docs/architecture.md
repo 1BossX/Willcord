@@ -1,9 +1,9 @@
-# Worker Plane MVP 最终技术方案
+# Willcord MVP 最终技术方案
 
 版本：1.0  
 日期：2026-10-06  
 状态：技术选型确定，可进入实施  
-依据：Worker Plane MVP Spec v2，以及本次 CodebaseDesign 架构评审
+依据：Willcord MVP Spec v2，以及本次 CodebaseDesign 架构评审
 
 ## 1. 已确定的决定
 
@@ -75,7 +75,7 @@ Seam 放在 Pi SDK、WSS 传输、进程执行和持久化访问处，因为这�
 ## 5. 仓库结构
 
 ```text
-worker-plane/
+willcord/
 ├── apps/
 │   ├── server/src/
 │   │   ├── http/                 # 认证、REST、SSE 入口

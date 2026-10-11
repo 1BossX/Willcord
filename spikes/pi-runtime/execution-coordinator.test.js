@@ -10,7 +10,7 @@ import { coordinatorFixture } from './coordinator-test-support.js';
 import { piUsage } from './execution-coordinator.js';
 
 async function fixture(t, options = {}) {
-  const root = mkdtempSync(join(tmpdir(), 'worker-plane-coordinator-'));
+  const root = mkdtempSync(join(tmpdir(), 'willcord-coordinator-'));
   const f = await coordinatorFixture(root, options);
   t.after(() => { f.close(); rmSync(root, { recursive: true, force: true }); });
   f.coordinator.createJob({ jobId: 'job', maxTokens: 100000, maxSteps: 10, prompt: 'original request' });
@@ -105,7 +105,7 @@ test('cache usage semantics are explicit and invalid final usage is rejected', (
 
 for (const mode of ['model', 'intent', 'effect', 'result']) {
   test(`actual Pi/SQLite SIGKILL ${mode} window keeps budgets and original intent`, async (t) => {
-    const root = mkdtempSync(join(tmpdir(), 'worker-plane-coordinator-crash-'));
+    const root = mkdtempSync(join(tmpdir(), 'willcord-coordinator-crash-'));
     t.after(() => rmSync(root, { recursive: true, force: true }));
     const child = spawnSync(process.execPath, [fileURLToPath(new URL('./coordinator-crash-fixture.js', import.meta.url)), root, mode]);
     assert.equal(child.signal, 'SIGKILL', child.stderr.toString());
@@ -182,7 +182,7 @@ test('shared root budget is rechecked between serial worker acceptances', async 
 });
 
 test('cancel during recovered execution fences completion and excludes concurrent recovery/model work', async (t) => {
-  const root = mkdtempSync(join(tmpdir(), 'worker-plane-recover-cancel-'));
+  const root = mkdtempSync(join(tmpdir(), 'willcord-recover-cancel-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const child = spawnSync(process.execPath, [fileURLToPath(new URL('./coordinator-crash-fixture.js', import.meta.url)), root, 'intent']);
   assert.equal(child.signal, 'SIGKILL');
@@ -204,7 +204,7 @@ test('cancel during recovered execution fences completion and excludes concurren
 });
 
 test('restart recovery preserves budget-exceeded lifecycle after safely rejecting pending intent', async (t) => {
-  const root = mkdtempSync(join(tmpdir(), 'worker-plane-recover-budget-'));
+  const root = mkdtempSync(join(tmpdir(), 'willcord-recover-budget-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const child = spawnSync(process.execPath, [fileURLToPath(new URL('./coordinator-crash-fixture.js', import.meta.url)), root, 'intent']);
   assert.equal(child.signal, 'SIGKILL');
@@ -223,7 +223,7 @@ test('restart recovery preserves budget-exceeded lifecycle after safely rejectin
 });
 
 test('actual Pi first valid hook persists later invalid intent but recovery never executes malformed arguments', async (t) => {
-  const root = mkdtempSync(join(tmpdir(), 'worker-plane-invalid-recovery-'));
+  const root = mkdtempSync(join(tmpdir(), 'willcord-invalid-recovery-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const child = spawnSync(process.execPath, [fileURLToPath(new URL('./coordinator-crash-fixture.js', import.meta.url)), root, 'invalid_intent']);
   assert.equal(child.signal, 'SIGKILL', child.stderr.toString());
@@ -256,7 +256,7 @@ test('live Pi coerced arguments are rejected before original-payload worker acce
 });
 
 test('SIGKILL after recovery opening transaction cannot erase durable unknown model attempt', async (t) => {
-  const root = mkdtempSync(join(tmpdir(), 'worker-plane-recovery-open-'));
+  const root = mkdtempSync(join(tmpdir(), 'willcord-recovery-open-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const modelCrash = spawnSync(process.execPath, [fileURLToPath(new URL('./coordinator-crash-fixture.js', import.meta.url)), root, 'model']);
   assert.equal(modelCrash.signal, 'SIGKILL', modelCrash.stderr.toString());

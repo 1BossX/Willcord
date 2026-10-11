@@ -1,7 +1,7 @@
-# Worker Plane main node behind Caddy with Caddy's internal CA.
-#   WORKER_PLANE_SITE  address browsers and workers use, e.g. plane.internal:8443
+# Willcord main node behind Caddy with Caddy's internal CA.
+#   WILLCORD_SITE  address browsers and workers use, e.g. plane.internal:8443
 #                      or 10.0.0.5:8443; PUBLIC_BASE_URL must be https://<this>
-#   WORKER_PLANE_ROOT  release directory, e.g. /opt/worker-plane/current
+#   WILLCORD_ROOT  release directory, e.g. /opt/willcord/current
 # Workers trust the internal root: copy Caddy's root.crt (see docs/operations.md)
 # to each worker and point SSL_CERT_FILE at it.
 {
@@ -11,12 +11,12 @@
 	skip_install_trust
 	pki {
 		ca local {
-			name "Worker Plane"
+			name "Willcord"
 		}
 	}
 }
 
-{$WORKER_PLANE_SITE} {
+{$WILLCORD_SITE} {
 	tls internal
 
 	# Public certificate only; never expose the CA directory or admin API.
@@ -25,7 +25,7 @@
 		path /.well-known/willcord/ca.pem
 	}
 	handle @bootstrap {
-		root * {$WORKER_PLANE_CA_ROOT:/var/lib/caddy/.local/share/caddy/pki/authorities/local}
+		root * {$WILLCORD_CA_ROOT:/var/lib/caddy/.local/share/caddy/pki/authorities/local}
 		rewrite * /root.crt
 		header Content-Type application/x-pem-file
 		header Cache-Control "no-store"
@@ -44,7 +44,7 @@
 	}
 
 	handle {
-		root * {$WORKER_PLANE_ROOT}/apps/web/dist
+		root * {$WILLCORD_ROOT}/apps/web/dist
 		try_files {path} /index.html
 		file_server
 	}

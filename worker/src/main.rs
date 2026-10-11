@@ -2,6 +2,7 @@ mod cli;
 mod generated;
 mod ledger;
 mod logs;
+mod main_node;
 mod process;
 mod tools;
 use base64::Engine as _;

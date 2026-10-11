@@ -15,6 +15,9 @@ permissions:
   contents: write
 env:
   VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('dev-{0}', github.sha) }}
+  # Built into the binary as `willcord main init`'s default image version; a
+  # non-release build has none and must be given --image-version.
+  WILLCORD_VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
 jobs:
   build:
     name: build (${{ matrix.name }})
@@ -69,7 +72,7 @@ jobs:
           rustup target add ${{ matrix.target }}
           cargo zigbuild --locked --release --manifest-path worker/Cargo.toml --target ${{ matrix.target }}.2.17
           echo "WORKER_BIN=worker/target/${{ matrix.target }}/release/willcord" >> "$GITHUB_ENV"
-      - run: '"$WORKER_BIN" status --json'
+      - run: '"$WORKER_BIN" worker status --json'
         env:
           WILLCORD_HOME: ${{ runner.temp }}/worker-smoke
       - name: Check the worker runs on old glibc
@@ -81,7 +84,7 @@ jobs:
           [ "$(printf '%s\n' "$need" GLIBC_2.17 | sort -V | tail -1)" = GLIBC_2.17 ] \
             || { echo "expected at most GLIBC_2.17" >&2; exit 1; }
           for image in centos:7 debian:11 ubuntu:22.04 rockylinux:9; do
-            docker run --rm -v "$PWD/$WORKER_BIN:/w:ro" -e WILLCORD_HOME=/tmp/wp "$image" /w status --json > /dev/null
+            docker run --rm -v "$PWD/$WORKER_BIN:/w:ro" -e WILLCORD_HOME=/tmp/wp "$image" /w worker status --json > /dev/null
             echo "$image: ok"
           done
       - name: Package worker

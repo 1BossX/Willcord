@@ -11,6 +11,9 @@
   <key>ProgramArguments</key>
   <array>
     <string>/usr/local/bin/willcord</string>
+    <string>worker</string>
+    <string>run</string>
+    <string>--config</string>
     <string>/usr/local/etc/willcord/worker.toml</string>
   </array>
   <key>EnvironmentVariables</key>

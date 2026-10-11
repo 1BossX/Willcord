@@ -93,7 +93,7 @@ test(
       delete env.SSL_CERT_DIR;
       const child = spawn(
         join(root, "worker/target/debug/willcord"),
-        [config],
+        ["worker", "run", "--config", config],
         {
           env,
           stdio: ["ignore", "ignore", "pipe"],

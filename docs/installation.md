@@ -29,25 +29,37 @@ CA 指纹接入从 v0.3.0 起提供，主节点与 worker 须同为 v0.3.0 或�
 
 ## 1. 在主节点机器部署
 
-准备 Linux x86_64/arm64 主机、Docker 和 Docker Compose v2。macOS（Docker Desktop）同样可以运行向导，适合本机试用：Docker Desktop 退出后服务随之停止，生产环境请使用 Linux。浏览器和执行机器必须能解析并访问同一个主节点地址；仅在本机试用时可以用 `https://localhost:8443`，但 `localhost` 在其他执行机器上指向它们自己，跨机器部署须使用对方能解析的主机名或 IP。安装器不安装 Docker，不改变系统权限。
+准备 Linux x86_64/arm64 主机、Docker 和 Docker Compose v2。macOS（Docker Desktop）同样可以运行向导，适合本机试用：Docker Desktop 退出后服务随之停止，生产环境请使用 Linux。浏览器和执行机器必须能解析并访问同一个主节点地址；仅在本机试用时可以用 `https://localhost:8443`，但 `localhost` 在其他执行机器上指向它们自己，跨机器部署须使用对方能解析的主机名或 IP。向导不安装 Docker，不改变系统权限。
 
 ```sh
 curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- main
 ```
 
-向导通过终端收集 HTTPS 地址（默认 `https://plane.internal:8443`）、模型 provider/name、API key 和至少 16 字符的管理员密码。密钥输入不回显。provider 不区分大小写，拼错会立即提示并列出可选值；只有 openrouter 有默认模型，其他 provider 需要自己填写模型名称。向导结束时会给出信任根证书的命令（macOS 与 Debian/Ubuntu）。也可以预先指定地址和目录：
+安装器只下载并校验 `willcord` 二进制，随后交给它的 `willcord main init` 完成配置（下载的是同一个二进制，之后也用它管理主节点）。向导通过终端收集 HTTPS 地址（默认 `https://plane.internal:8443`）、模型 provider/name、API key 和至少 16 字符的管理员密码。密钥输入不回显。provider 不区分大小写，拼错会立即提示并列出可选值；只有 openrouter 有默认模型，其他 provider 需要自己填写模型名称。向导结束时会给出信任根证书的命令（macOS 与 Debian/Ubuntu）。也可以预先指定地址和目录：
 
 ```sh
 curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- main --server 'https://plane.internal:8443' --dir '/opt/my-plane'
 ```
 
-目录默认 `./willcord`，当前账户必须可写。安装器生成 `compose.yaml`、`.env` 和 `main.env`，固定镜像版本；环境文件权限 0600，不要提交到 Git。不同目录使用独立的 Compose 项目及数据卷。已有部署文件时拒绝覆盖。
+目录默认 `./willcord`，当前账户必须可写。向导生成 `compose.yaml`、`.env` 和 `main.env`，固定镜像版本；环境文件权限 0600，不要提交到 Git。不同目录使用独立的 Compose 项目及数据卷。已有部署文件时拒绝覆盖。
 
 向导在写入任何文件之前，会向模型服务商确认 API key（支持 openrouter、openai、anthropic）：只有被明确拒绝（HTTP 401）才会要求重新输入（最多 3 次，第 3 次仍被拒绝才退出，此时未写入任何配置）；无法确认（网络受限、其他 provider、权限受限的 key）时只给出提示并继续。
 
-**成功标志**：安装器显示“主节点已就绪”、控制台地址及 `ca.pem` 路径，HTTPS `/health` 的 `scheduling_ready` 为 true。成功后环境文件不再保留首次管理员密码；登录使用刚才输入的密码。
+**成功标志**：向导显示“主节点已就绪”、控制台地址及 `ca.pem` 路径，HTTPS `/health` 的 `scheduling_ready` 为 true。成功后环境文件不再保留首次管理员密码；登录使用刚才输入的密码。
 
 **启动失败**：配置和数据卷会保留。在部署目录执行 `docker compose logs main caddy`，检查主机名解析、端口及模型配置；修复后 `docker compose up -d`。确认 HTTPS 就绪后从 `main.env` 删除 `INITIAL_ADMIN_PASSWORD`，再执行 `docker compose up -d main`。不要通过重跑向导覆盖既有部署。
+
+**日常管理**：向导会把 `willcord` 复制到部署目录，在那里（或用 `--dir` 指定）运行：
+
+```sh
+./willcord main status                      # 容器状态，加上用部署自己的 CA 检查 /health
+./willcord main logs main caddy --tail 100  # 其余参数原样交给 docker compose logs
+./willcord main down                        # 停止，数据卷保留
+./willcord main up
+./willcord main upgrade --image-version vX.Y.Z   # 改 .env 里的镜像版本，pull 并重启
+```
+
+升级前先按 [Docker 指南](docker.md#升级)备份；`main upgrade` 不会替你备份，也不会改写 `compose.yaml`。
 
 手动 Docker 部署与升级见 [Docker 指南](docker.md)，Linux systemd 部署见 [运维手册](operations.md#2-安装主节点linux)。
 
@@ -110,7 +122,7 @@ curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- worker --se
 | 需要核对 | 有无法证明执行状态的调用，按运维手册人工处置 |
 | 可执行 | 在线、完成对账且空闲，可以创建会话 |
 
-后台服务每 5 秒检查授权。后续诊断使用安装器输出的 `status --json` 命令；系统级命令带 `--system`。
+后台服务每 5 秒检查授权。后续诊断使用安装器输出的 `willcord worker status --json` 命令；系统级命令带 `--system`。
 
 ## 5. 第一个任务
 
@@ -120,7 +132,7 @@ curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- worker --se
 
 **成功标志**：任务成功，回复和任务时间线有实际执行结果。默认目录自动创建，不会克隆项目或映射整个 home。
 
-已有项目通过 worker 的 `workspace add my-app /absolute/projects/my-app` 添加，再创建绑定该 workspace 的新会话。机器须已授权、服务运行且空闲；系统级命令带 `--system`。跨机器任务通过 Main Agent 委派，文件不会自动在机器之间传输。
+已有项目通过 `willcord worker workspace add my-app /absolute/projects/my-app` 添加，再创建绑定该 workspace 的新会话。机器须已授权、服务运行且空闲；系统级命令带 `--system`。跨机器任务通过 Main Agent 委派，文件不会自动在机器之间传输。
 
 ## 升级与故障处理
 

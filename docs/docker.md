@@ -13,7 +13,7 @@
 
 ## 推荐：初始化向导
 
-新的 Linux 部署（或 macOS Docker Desktop 本机试用）可运行一行安装向导，自动生成配置、启动服务并导出 CA；步骤与成功标志见 [安装与首次使用](installation.md)。已有部署请按本文升级章节操作。下面保留手动配置方式。
+新的 Linux 部署（或 macOS Docker Desktop 本机试用）可运行一行安装向导，自动生成配置、启动服务并导出 CA；步骤与成功标志见 [安装与首次使用](installation.md)。向导生成的部署可以用部署目录里的 `./willcord main status|logs|down|up|upgrade` 管理，它们只是在该目录里执行下面的 `docker compose` 命令。下面保留手动配置方式。
 
 ## 安装
 
@@ -92,7 +92,7 @@ docker compose start main
 ## 升级
 
 1. 按 [运维手册 §6](operations.md#6-升级) 暂停调度、等待任务结束并备份。
-2. 修改 `.env` 里的 `WILLCORD_VERSION`，执行 `docker compose pull && docker compose up -d`。有新迁移时主节点先在数据卷里保存迁移前快照。
+2. 修改 `.env` 里的 `WILLCORD_VERSION`，执行 `docker compose pull && docker compose up -d`（向导生成的部署可用 `./willcord main upgrade --image-version vX.Y.Z` 代劳，它不备份，也不改写 `compose.yaml`）。有新迁移时主节点先在数据卷里保存迁移前快照。
 3. 检查 `/health`，再恢复调度。回滚时把版本改回旧值，并用旧版本镜像的 `admin.js restore` 恢复迁移前快照。
 
 ## 安全设置

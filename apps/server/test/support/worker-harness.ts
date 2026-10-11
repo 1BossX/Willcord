@@ -71,7 +71,7 @@ export function startWorker(options: { dir: string; id: string; url: string; ca:
   const env = { ...process.env, WORKER_TOKEN: options.token, SSL_CERT_FILE: options.ca, ...options.env };
   // rustls-native-certs prefers SSL_CERT_DIR over SSL_CERT_FILE when both are set.
   delete env.SSL_CERT_DIR;
-  const child = spawn(options.binary ?? join(repoRoot, "worker/target/debug/willcord"), [config], {
+  const child = spawn(options.binary ?? join(repoRoot, "worker/target/debug/willcord"), ["worker", "run", "--config", config], {
     env,
     stdio: ["ignore", "ignore", "pipe"],
   });

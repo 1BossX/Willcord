@@ -393,6 +393,9 @@ async fn main() -> Result<(), Error> {
         live_logs,
         shutdown,
     };
+    // A hand-installed worker names its own data_dir; fail with the cause, not
+    // the OS's "path must be shorter than SUN_LEN".
+    cli::check_socket_path(&worker.data_dir)?;
     let socket_path = worker.data_dir.join("control.sock");
     if socket_path.exists() {
         fs::remove_file(&socket_path)?;

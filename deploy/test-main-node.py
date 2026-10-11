@@ -63,8 +63,12 @@ class MainNodeTests(unittest.TestCase):
         self.origin = f'https://127.0.0.1:{self.server.server_port}'
         self.deploy = self.root / 'deployment'
         self.env = {**os.environ, 'LANG': 'en_US.UTF-8', 'PATH': f'{self.root / "bin"}:{os.environ["PATH"]}',
-                    'TEST_ROOT': str(self.root), 'WILLCORD_TEST_ADDRS': '', 'WILLCORD_TEST_OS': 'Linux'}
-        self.env.pop('SSL_CERT_FILE', None)
+                    'TEST_ROOT': str(self.root), 'WILLCORD_TEST_ADDRS': '', 'WILLCORD_TEST_OS': 'Linux',
+                    # init puts the command on PATH and remembers the deployment: keep both in a scratch home.
+                    'HOME': str(self.root / 'home')}
+        for name in ['SSL_CERT_FILE', 'WILLCORD_CONFIG_DIR', 'WILLCORD_HOME']:
+            self.env.pop(name, None)
+        (self.root / 'home').mkdir()
 
     def tearDown(self):
         self.server.shutdown()
@@ -125,7 +129,8 @@ class MainNodeTests(unittest.TestCase):
         # The first password goes and main restarts without it.
         self.assertEqual(self.compose_calls(), [['version'], ['pull'], ['up', '-d'], ['cp', 'caddy:/data/caddy/pki/authorities/local/root.crt', './ca.pem'], ['up', '-d', 'main']])
         self.assertTrue((self.deploy / 'willcord').exists(), 'a copy of the binary stays beside the deployment')
-        self.assertIn('./willcord main status', out)
+        self.assertIn('willcord main status', out)
+        self.assertNotIn('./willcord', out)
         self.assertIn('“模型连接”绑定模型 API key', out)
         # Existing config is never replaced.
         before = (self.deploy / 'main.env').read_bytes()
@@ -254,13 +259,105 @@ class MainNodeTests(unittest.TestCase):
         self.deployed()
         r = self.cli('main', 'up', cwd=self.deploy)
         self.assertEqual(r.returncode, 0, r.stderr)
-        r = self.cli('main', 'up', cwd=self.root)
-        self.assertNotEqual(r.returncode, 0)
-        self.assertIn('--dir', r.stderr)
         r = subprocess.run([str(self.deploy / 'willcord'), 'main', 'up'], env=self.env, capture_output=True, text=True, cwd=self.root)
         self.assertEqual(r.returncode, 0, r.stderr)
+        # --dir wins over everything and must hold a deployment.
         r = self.cli('main', 'up', '--dir', str(self.root))
         self.assertNotEqual(r.returncode, 0)
+
+    def test_commands_work_from_any_directory_after_init(self):
+        self.deployed()
+        remembered = self.root / 'home/.config/willcord/main-dir'
+        self.assertEqual(remembered.read_text(), str(self.deploy.resolve()))
+        self.assertEqual(remembered.stat().st_mode & 0o777, 0o600)
+        elsewhere = self.root / 'elsewhere'
+        elsewhere.mkdir()
+        r = self.cli('main', 'status', cwd=elsewhere)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(Path(self.calls()[-1][1]).resolve(), self.deploy.resolve())
+        # Another deployment in the current directory is nearer than the remembered one.
+        other = self.root / 'other'
+        other.mkdir()
+        (other / 'compose.yaml').write_text('')
+        self.cli('main', 'up', cwd=other)
+        self.assertEqual(Path(self.calls()[-1][1]).resolve(), other.resolve())
+        # With no memory, say what to do.
+        r = self.cli('main', 'up', cwd=elsewhere, env={'HOME': str(self.root / 'nobody')})
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('--dir', r.stderr)
+        # A deployment that was moved away is named, not silently replaced.
+        shutil.rmtree(self.deploy)
+        r = self.cli('main', 'up', cwd=elsewhere)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn(str(self.deploy.resolve()), r.stderr)
+
+    # ------------------------------------------------ the command on PATH
+
+    def installed(self):
+        return self.root / 'home/.local/bin/willcord'
+
+    def test_init_puts_willcord_on_path_and_says_how_to_reach_it(self):
+        code, out = self.init()
+        self.assertEqual(code, 0, out)
+        self.assertTrue(self.installed().is_file())
+        self.assertEqual(self.installed().stat().st_mode & 0o777, 0o755)
+        self.assertEqual(self.installed().read_bytes(), BINARY.read_bytes())
+        # ~/.local/bin is not on this PATH: one export line, and no shell file is touched.
+        self.assertIn('export PATH="$HOME/.local/bin:$PATH"', out)
+        self.assertEqual(sorted(p.name for p in (self.root / 'home').iterdir()), ['.config', '.local'])
+        # The copy works: it is the program.
+        r = subprocess.run([str(self.installed()), 'version'], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_no_path_hint_when_the_directory_is_already_on_path(self):
+        on_path = f'{self.root / "home/.local/bin"}:{self.env["PATH"]}'
+        code, out = self.init(env={'PATH': on_path})
+        self.assertEqual(code, 0, out)
+        self.assertIn('已安装命令', out)
+        self.assertNotIn('export PATH', out)
+
+    def test_a_file_that_is_not_ours_is_left_alone_and_hints_use_the_real_path(self):
+        self.installed().parent.mkdir(parents=True)
+        self.installed().write_text('#!/bin/sh\necho not willcord\n')
+        code, out = self.init()
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.installed().read_text(), '#!/bin/sh\necho not willcord\n')
+        self.assertIn('没有覆盖', out)
+        self.assertNotIn('export PATH', out)
+        self.assertIn(f"'{self.deploy.resolve()}/willcord' main status", out)
+
+    def test_self_install_and_self_uninstall(self):
+        r = self.cli('self-install')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(self.installed().is_file())
+        # Again: the same copy is already there.
+        r = self.cli('self-install')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('命令已就位', r.stdout)
+        # An older copy of ours is replaced.
+        self.installed().write_bytes(b'willcord-cli-install-marker-v1\0\0 old')
+        r = self.cli('self-install')
+        self.assertIn('已更新命令', r.stdout)
+        self.assertEqual(self.installed().read_bytes(), BINARY.read_bytes())
+        # The installed copy is a full willcord, and removes itself on request.
+        r = subprocess.run([str(self.installed()), 'self-uninstall'], env=self.env, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(self.installed().exists())
+        r = self.cli('self-uninstall')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('不存在', r.stdout)
+        # A foreign file is neither replaced nor removed, and self-install says so with a failure.
+        self.installed().write_text('mine')
+        r = self.cli('self-install')
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('没有覆盖', r.stderr)
+        r = self.cli('self-uninstall')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.installed().read_text(), 'mine')
+        # System scope writes /usr/local/bin and needs root.
+        r = self.cli('self-install', '--system')
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('root', r.stderr)
 
     def test_status_reports_health_using_the_deployments_own_ca(self):
         self.deployed()
@@ -338,6 +435,10 @@ class MainNodeTests(unittest.TestCase):
             r = self.cli(old)
             self.assertEqual(r.returncode, 2, old)
             self.assertIn('unknown command', r.stderr)
+            self.assertIn(f'willcord worker {old}', r.stderr)
+        r = self.cli('statsu')
+        self.assertEqual(r.returncode, 2)
+        self.assertNotIn('你是不是想', r.stderr)
         r = self.cli('worker', 'status', '--json', env={'WILLCORD_HOME': str(self.root / 'worker-home')})
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(json.loads(r.stdout)['state'], 'not_joined')

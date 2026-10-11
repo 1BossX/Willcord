@@ -46,6 +46,7 @@ jobs:
       - run: bash -n deploy/install.sh
       - run: python3 deploy/test-install.py
       - run: python3 deploy/test-main-node.py
+      - run: python3 deploy/test-worker-join.py
       - run: bash deploy/test-release-publish.sh
       - run: pnpm check
       - run: pnpm test

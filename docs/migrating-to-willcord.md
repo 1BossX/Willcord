@@ -7,7 +7,7 @@ v0.5.0 把所有仍叫 `worker-plane` / `WorkerPlane` 的名称统一为 `willco
 | 项目 | 旧 | 新 |
 |---|---|---|
 | 环境变量 | `WORKER_PLANE_*` | `WILLCORD_*` |
-| worker 二进制 | `worker-plane-worker`，安装为 `<数据目录>/bin/worker`，命令 `install`、`join`… | `willcord`，安装为 `<数据目录>/bin/willcord`，命令改为 `willcord worker install`、`willcord worker join`… |
+| worker 二进制 | `worker-plane-worker`，安装为 `<数据目录>/bin/worker`，命令 `install`、`join`… | `willcord`，服务运行 `<数据目录>/bin/willcord`，另有一份命令装到 PATH（`~/.local/bin/willcord`，系统级为 `/usr/local/bin/willcord`）；命令改为 `willcord worker join`（一步安装并加入）、`willcord worker install`… |
 | worker 用户级数据目录 | `~/.local/share/worker-plane`、`~/Library/Application Support/WorkerPlane` | `~/.local/share/willcord`、`~/Library/Application Support/Willcord` |
 | worker 系统级数据目录 | `/var/lib/worker-plane-system`、`/Library/Application Support/WorkerPlane` | `/var/lib/willcord-system`、`/Library/Application Support/Willcord` |
 | 服务名 | systemd `worker-plane-<12位>`；launchd `org.workerplane.worker.<12位>` | systemd `willcord-worker-<12位>`；launchd `org.willcord.worker.<12位>` |
@@ -16,7 +16,7 @@ v0.5.0 把所有仍叫 `worker-plane` / `WorkerPlane` 的名称统一为 `willco
 | Docker 数据卷前缀 | `worker-plane-<hash>_` | `willcord-<hash>_` |
 | 手工部署路径和账户 | `/etc/worker-plane`、`/var/lib/worker-plane`、`/opt/worker-plane`，账户 `worker-plane` | 同名换成 `willcord` |
 | 管理工具 | `worker-plane-admin` | `willcord-admin` |
-| 主节点管理 | 进部署目录手敲 `docker compose …` | `./willcord main status｜logs｜down｜up｜upgrade`（`install.sh main` 只负责下载，向导在 `willcord main init` 里） |
+| 主节点管理 | 进部署目录手敲 `docker compose …` | `willcord main status｜logs｜down｜up｜upgrade`，任意目录可用（向导记住部署目录；`install.sh main` 只负责下载，向导在 `willcord main init` 里） |
 | 手工部署的 worker 单元 | `ExecStart=… /etc/worker-plane/worker.toml` | `ExecStart=/usr/local/bin/willcord worker run --config /etc/willcord/worker.toml`；旧的“把配置文件路径当第一个参数”写法不再支持 |
 | 机器注册签名串 | `workerplane-enrollment-v1` | `willcord-enrollment-v1` |
 

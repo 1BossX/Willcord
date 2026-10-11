@@ -51,7 +51,7 @@ fp=$(openssl x509 -in <目录>/ca.pem -outform DER | shasum -a 256 | cut -d' ' -
 curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- worker --server https://localhost:8443 --ca-fingerprint "$fp"
 ```
 
-检查点：输出里“申请已提交”与终端指纹；设备名是本机主机名而不是 `worker`；没有残留的占位地址（如 `https://your-server`）。
+检查点：输出里有 `Authorization: pending`、终端指纹和一行 `Status: willcord worker status --json`；`~/.local/bin/willcord` 已就位（不在 `PATH` 时输出一行 `export PATH=…`，且没有改动 shell 配置文件）；设备名是本机主机名而不是 `worker`；没有残留的占位地址（如 `https://your-server`）。
 
 ### 4. 批准
 
@@ -82,6 +82,7 @@ curl -fsSL https://1bossx.github.io/Willcord/install.sh | bash -s -- worker --se
 
 ```bash
 willcord worker uninstall --delete-data     # 卸载 worker 服务并删除数据
+willcord self-uninstall                     # 移除 PATH 上的 willcord 命令（只删它自己装的那份）
 docker compose down -v                      # 在部署目录执行：删除主节点容器与数据卷
 rm -rf <部署目录>                            # 含写有临时 key 的 main.env
 ```

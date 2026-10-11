@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { request } from "./api";
+import { getPendingCount, refreshPending, setPendingLoader, subscribePending } from "./pending-store";
 import { installCommand, loadCaFingerprint } from "./install-command";
 
 type Device = {
@@ -7,25 +8,10 @@ type Device = {
   online: number | null; reconciled: number | null; blocked: number | null; active_job_id: string | null;
   workspaces: Array<{ workspace_id: string; path: string; is_default: number }>;
 };
-// One poll of the device list feeds the sidebar badge and the home page, so a
-// worker that has just applied is visible without opening the dialog.
-let pendingCount = 0;
-const subscribers = new Set<() => void>();
-let poller: ReturnType<typeof setInterval> | undefined;
-async function pollPending() {
-  try {
-    const data = await request<{ devices: Device[] }>("/api/enrollments");
-    const count = data.devices.filter(d => d.state === "pending").length;
-    if (count !== pendingCount) { pendingCount = count; subscribers.forEach(notify => notify()); }
-  } catch { /* signed out or offline: keep the last count */ }
-}
-export const refreshPending = () => void pollPending();
+setPendingLoader(async () => (await request<{ devices: Device[] }>("/api/enrollments")).devices.filter(d => d.state === "pending").length);
 export function usePendingEnrollments(): number {
-  return useSyncExternalStore(notify => {
-    subscribers.add(notify);
-    if (subscribers.size === 1) { void pollPending(); poller = setInterval(() => void pollPending(), 8000); }
-    return () => { subscribers.delete(notify); if (!subscribers.size) { clearInterval(poller); poller = undefined; } };
-  }, () => pendingCount);
+  // subscribePending is module-level: a new function per render would make React resubscribe each time.
+  return useSyncExternalStore(subscribePending, getPendingCount);
 }
 const OPEN_EVENT = "willcord:open-enrollment";
 export const openEnrollment = () => window.dispatchEvent(new Event(OPEN_EVENT));

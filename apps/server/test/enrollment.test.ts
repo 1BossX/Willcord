@@ -17,6 +17,7 @@ test("device enrollment proves possession, consumes challenges, gates credential
  const call=async(action:string)=>app.inject({method:"POST",url:`/enrollment/${action}`,payload:await signed(action)});
  try{
   assert.equal((await app.inject({method:"GET",url:"/api/enrollments"})).statusCode,401);
+  assert.equal((await app.inject({method:"GET",url:"/api/enrollments",headers:{cookie:"session=admin"}})).json().public_url,"https://localhost:8443");
   const proof=await signed("apply");
   assert.equal((await app.inject({method:"POST",url:"/enrollment/apply",payload:{...proof,name:"tampered"}})).statusCode,401);
   assert.equal((await app.inject({method:"POST",url:"/enrollment/apply",payload:proof})).json().state,"pending");

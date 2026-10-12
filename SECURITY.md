@@ -11,7 +11,7 @@ Willcord is pre-1.0 (latest release: v0.5.0). Support is best-effort with no res
 - Model keys stay on the main node. Workers still hold device private keys and credentials, stored in the worker's private install directory (mode 0700/0600). Protect worker data, the main database and backups as sensitive data.
 - Model inputs may include file contents, command output and conversation history. Review your model provider's data handling before sending sensitive workloads.
 - Reconciliation avoids blind replay of uncertain executions. It does not guarantee exactly-once external side effects for arbitrary commands. Resolve unknown states before continuing.
-- Use validated HTTPS/WSS and never disable TLS verification. Copy the `--ca-fingerprint` install command only from a trusted console or administrator channel; do not take a fingerprint from the same unverified connection you are about to trust.
+- Use validated HTTPS/WSS and never disable TLS verification. Copy the install command (its join link carries the CA fingerprint after `#sha256=`) only from a trusted console or administrator channel; do not take a fingerprint from the same unverified connection you are about to trust.
 - The main node CA fingerprint is not the worker public-key fingerprint that you compare when approving a device. Verify both separately.
 - Follow `docs/installation.md`, `docs/operations.md` and `docs/worker-onboarding.md`.
 

@@ -24,6 +24,8 @@ use std::{
 const COMPOSE: &str = include_str!("../../deploy/docker/compose.yaml");
 const DEFAULT_PORT: u16 = 8443;
 const DEFAULT_SERVER: &str = "https://plane.internal:8443";
+/// Where a machine without the `willcord` command fetches it; the console shows the same URL.
+const INSTALLER_URL: &str = "https://bossoptional.github.io/Willcord/install.sh";
 const MAIN_USAGE: &str = "usage: willcord main init [--dir DIR] [--server HTTPS_ORIGIN] [--image-version vX.Y.Z] | up | down | status | logs [SERVICE...] | upgrade --image-version vX.Y.Z  (add --dir DIR outside the deployment directory)";
 const RECOVERY: &str = "启动未完成，配置和数据已保留。请在部署目录执行 docker compose logs main caddy 查看原因；修复后执行 docker compose up -d。";
 
@@ -432,6 +434,30 @@ impl Tty {
 
 // --------------------------------------------------------------------- init
 
+/// The two commands that join a worker to this main node: one for a machine that
+/// has no `willcord` yet, one for a machine that does. The link carries the
+/// root certificate's fingerprint, which the worker checks before trusting it.
+fn worker_join_commands(server: &str, ca: &Path) -> [String; 2] {
+    let fingerprint = fs::read(ca)
+        .ok()
+        .and_then(|pem| crate::cli::ca_fingerprint(&pem).ok());
+    let link = match fingerprint {
+        Some(fp) => format!("{server}#sha256={fp}"),
+        None => server.to_owned(),
+    };
+    let link = shell_quote(Path::new(&link));
+    [
+        format!("curl -fsSL {INSTALLER_URL} | bash -s -- worker {link}"),
+        format!("willcord worker join {link}"),
+    ]
+}
+fn print_worker_commands(server: &str, ca: &Path) {
+    let [fresh, installed] = worker_join_commands(server, ca);
+    println!("接入执行机器（在那台机器上运行，之后到控制台“机器授权”核对并批准）：");
+    println!("  还没有 willcord 命令：{fresh}");
+    println!("  已有 willcord 命令：{installed}");
+}
+
 /// Show how the root certificate is trusted on this machine; the browser and
 /// every worker need it unless the certificate is publicly trusted.
 fn trust_hint(ca: &Path) {
@@ -449,7 +475,7 @@ fn trust_hint(ca: &Path) {
             "其他发行版请把它加入系统信任库；Firefox 需要在“设置 → 证书 → 查看证书 → 证书颁发机构”里单独导入。"
         );
     }
-    println!("执行机器用“添加机器”里的命令安装时会自动获取并核对 CA，无需单独信任。");
+    println!("执行机器用下面的接入命令加入时会自动获取并核对 CA，无需单独信任。");
 }
 
 fn create_new(path: &Path, content: &str) -> Result<(), Error> {
@@ -591,7 +617,8 @@ async fn init(mut args: Vec<String>) -> Result<(), Error> {
         "2. 打开 {} 登录，在侧栏“模型连接”绑定模型 API key；未绑定前任务无法执行。",
         origin.server
     );
-    println!("3. 在“机器授权 → 添加机器”复制安装命令，到执行机器上运行。");
+    println!("3. 接入执行机器：控制台“机器授权 → 添加机器”里有同样的命令。");
+    print_worker_commands(&origin.server, &dir.join("ca.pem"));
     println!(
         "日常管理（在任意目录）：{command} main status | logs | down | up | upgrade --image-version vX.Y.Z"
     );
@@ -653,6 +680,7 @@ async fn status(mut args: Vec<String>) -> Result<(), Error> {
     match health(&server, &dir.join("ca.pem")).await {
         Health::Ready => {
             println!("主节点已就绪：{server}");
+            print_worker_commands(&server, &dir.join("ca.pem"));
             Ok(())
         }
         Health::NotReady => Err(format!("{server} 可以访问，但调度尚未就绪（/health 的 scheduling_ready 为 false）。查看 willcord main logs。").into()),
@@ -760,6 +788,17 @@ async fn upgrade(mut args: Vec<String>) -> Result<(), Error> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn worker_commands_name_the_main_node_in_one_quoted_argument() {
+        // Without a readable root certificate there is no fingerprint to carry.
+        let [fresh, installed] =
+            worker_join_commands("https://10.8.0.2:8443", Path::new("/nonexistent/ca.pem"));
+        assert_eq!(
+            fresh,
+            format!("curl -fsSL {INSTALLER_URL} | bash -s -- worker 'https://10.8.0.2:8443'")
+        );
+        assert_eq!(installed, "willcord worker join 'https://10.8.0.2:8443'");
+    }
     #[test]
     fn the_nearest_deployment_wins() {
         let root = std::env::temp_dir().join(format!("wc-find-{}", uuid::Uuid::new_v4()));

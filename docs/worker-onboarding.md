@@ -21,6 +21,8 @@ willcord worker status --json
 
 `worker join` 一步完成安装服务和提交加入申请，并把 `willcord` 命令装到 `~/.local/bin`（不在 `PATH` 里时输出一行 `export PATH=…` 提示，不会改 shell 配置文件；规则见[命令放在哪里](installation.md#willcord-命令放在哪里)）。后面的 `willcord` 就是这个命令（所有执行机器的命令都在 `willcord worker` 之下，`willcord main` 是主节点的命令）。服务自己运行的是数据目录里的那份：Linux 位于 `~/.local/share/willcord/bin/willcord`，macOS 位于 `~/Library/Application Support/Willcord/bin/willcord`。
 
+`join` 的地址可以带上主节点根证书的指纹，写成加入链接 `'https://plane.internal:8443#sha256=<64位指纹>'`（等价于另写 `--ca-fingerprint`）；用 `--name 名称` 指定机器名，默认是主机名。系统级安装不写 `--user` 时，服务以执行 sudo 的账户运行。
+
 只想分两步时，`worker install` 只装服务、`worker join` 稍后再运行；已经由其他方式管理进程时，`worker join --no-service URL` 只提交申请，不安装服务。
 
 控制台打开“机器授权”，核对终端节点 ID 与控制台指纹，再批准。服务每 5 秒检查授权；获准后自动注册、完成对账。机器上线不等于可执行，需显示“可执行”。创建独立会话时选择默认 workspace 即可。

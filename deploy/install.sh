@@ -71,8 +71,17 @@ resolve_version() {
 # the CA (--ca, or fetched and checked against --ca-fingerprint), puts the
 # `willcord` command on PATH and files the join request. This script only
 # validates what it can before asking for sudo, and hands over the verified binary.
+# The checks below mirror the binary's (parse_join_link and valid_user in
+# worker/src/cli.rs), which are the authority; keep them in step.
 worker_install() {
-  [[ -n "$server" ]] || fail "worker 需要 --server HTTPS_ORIGIN。"
+  [[ -n "$server" ]] || fail "worker 需要加入链接，例如 worker 'https://主节点地址#sha256=<CA 指纹>'。"
+  # The join link is the origin, optionally followed by #sha256=<CA fingerprint>.
+  if [[ "$server" == *'#'* ]]; then
+    [[ "${server#*#}" =~ ^sha256=([a-fA-F0-9]{64})$ ]] || fail "加入链接的 # 后只能是 sha256=<64 位十六进制 CA 指纹>。"
+    [[ -z "$ca" && -z "$fingerprint" ]] || fail "加入链接已含 CA 指纹，不能再与 --ca、--ca-fingerprint 同用。"
+    fingerprint=${BASH_REMATCH[1]}
+    server=${server%%#*}
+  fi
   origin "$server"
   [[ -z "$ca" || -z "$fingerprint" ]] || fail "--ca 与 --ca-fingerprint 不能同时使用。"
   if [[ -n "$ca" ]]; then
@@ -80,13 +89,17 @@ worker_install() {
   fi
   [[ -z "$fingerprint" ]] || [[ "$fingerprint" =~ ^[a-fA-F0-9]{64}$ ]] || fail "CA 指纹必须是证书 DER 的 64 位 SHA-256。"
   if [[ "$system" == true ]]; then
-    [[ "$account" =~ ^[A-Za-z0-9._-]+$ && "$account" != -* && ${#account} -le 64 ]] || fail "--system 需要 --user 指定已有普通账户。"
+    # Without --user the service runs as whoever is installing it (the sudo caller when root).
+    if [[ -z "$account" ]]; then
+      if [[ $(id -u) == 0 ]]; then account=${SUDO_USER:-}; else account=$(id -un); fi
+    fi
+    [[ "$account" =~ ^[A-Za-z0-9._-]+$ && "$account" != -* && ${#account} -le 64 ]] || fail "--system 需要 --user 指定已有普通账户（用 sudo 运行时默认取执行 sudo 的账户）。"
     local uid; uid=$(id -u "$account") || fail "账户不存在：$account"
     [[ "$uid" != 0 ]] || fail "执行账户不能是 root。"
     if [[ $(id -u) != 0 ]]; then need sudo; fi
   else
     [[ -z "$account" ]] || fail "--user 只能与 --system 一起使用。"
-    [[ $(id -u) != 0 ]] || fail "用户级安装请不要使用 sudo；服务器请指定 --system --user。"
+    [[ $(id -u) != 0 ]] || fail "用户级安装请不要使用 sudo；服务器请加 --system。"
   fi
   if [[ "$os" == linux ]]; then need systemctl; else need launchctl; fi
   local name="willcord-$version-$os-$arch"
@@ -141,10 +154,10 @@ install_only() {
   else
     "$tmp/$name" "${args[@]}"
   fi
-  printf '\n下一步，按这台机器的角色启动：\n  主节点：willcord main init\n  执行机器：willcord worker join https://<主节点地址> --ca-fingerprint <控制台提供的指纹>\n'
+  printf '\n下一步，按这台机器的角色启动：\n  主节点：willcord main init\n  执行机器：willcord worker join '"'"'https://<主节点地址>#sha256=<控制台提供的 CA 指纹>'"'"'\n'
 }
 main() {
-  local usage='用法：install.sh [--version vX.Y.Z] [--system]（只安装 willcord 命令）；install.sh main|worker [--version vX.Y.Z] [--server HTTPS_ORIGIN] [--ca /absolute/ca.pem | --ca-fingerprint SHA256] [--system --user ACCOUNT] [--dir PATH]（安装并立即启动）'
+  local usage='用法：install.sh [--version vX.Y.Z] [--system]（只安装 willcord 命令）；install.sh main [--version vX.Y.Z] [--server HTTPS_ORIGIN] [--dir PATH]；install.sh worker LINK [--version vX.Y.Z] [--ca /absolute/ca.pem | --ca-fingerprint SHA256] [--system [--user ACCOUNT]]（安装并立即启动；LINK 是 https://主机:端口，可在后面加 #sha256=<CA 指纹>）'
   local role="${1:-install}"
   case "$role" in
     worker|main) shift;;
@@ -159,7 +172,9 @@ main() {
         case "$1" in --version) version="$2";; --server) server="$2";; --ca) ca="$2";; --ca-fingerprint) fingerprint="$2";; --user) account="$2";; --dir) [[ "$role" == main ]] || fail '--dir 只用于 main。'; directory="$2";; esac
         shift 2;;
       --system) system=true; shift;;
-      *) fail "未知参数：$1";;
+      # worker takes its join link as the one bare argument; --server is the older spelling.
+      -*) fail "未知参数：$1";;
+      *) [[ "$role" == worker && -z "$server" ]] || fail "未知参数：$1"; server="$1"; shift;;
     esac
   done
   for tool in curl grep uname tr id mktemp cat mkdir cp chmod rm sed cut sleep; do need "$tool"; done

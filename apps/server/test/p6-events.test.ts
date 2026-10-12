@@ -216,3 +216,38 @@ test("P6-A a log states each gap: chunks the worker logged that this node does n
     assert.deepEqual(snap.session.logs[0].gaps, page.gaps, "the snapshot shows the same gaps");
   } finally { await s.close(); }
 });
+
+test("P6-A a running command carries when it was handed out and when it last produced output", { timeout: 60000 }, async () => {
+  const s = await startScenario({ scripts: { slow: bash("t-1", "echo first; sleep 1; echo second; sleep 30") } });
+  try {
+    s.startWorker(); await s.ready();
+    const session = await s.createSession();
+    const { cursor } = await snapshotOf(s, session);
+    const feed = stream(s, { after: cursor });
+    const before = Date.now();
+    const job = await s.submit(session, "slow");
+    const view = () => fold(feed.events());
+    const output = () => view().get(`log:${job}/t-1/stdout`)?.last_output_at as number | undefined;
+
+    await feed.until(() => view().get(`call:${job}/t-1`)?.dispatched_at != null && output() != null);
+    const dispatched = view().get(`call:${job}/t-1`).dispatched_at as number;
+    const first = output()!;
+    assert.ok(dispatched >= before && dispatched <= Date.now(), "dispatched_at is the main node's clock at hand-out");
+    assert.ok(first >= dispatched, "output cannot predate the dispatch");
+
+    // The second line arrives about a second later and moves the clock forward.
+    await feed.until(() => output()! > first);
+
+    // A reload sees the same values, and says what time the node thinks it is.
+    const snap = await snapshotOf(s, session);
+    assert.equal(snap.session.calls[0].dispatched_at, dispatched);
+    assert.equal(snap.session.logs[0].last_output_at, output());
+    assert.ok(Math.abs(snap.server_time - Date.now()) < 5000);
+
+    await s.api("POST", `/api/jobs/${job}/cancel`);
+    await s.until(() => s.state(job) === "cancelled");
+    await feed.close();
+    // Settling the call does not rewrite when it was handed out.
+    assert.equal(s.one("SELECT dispatched_at FROM runtime_calls WHERE job_id=?", job)?.dispatched_at, dispatched);
+  } finally { await s.close(); }
+});

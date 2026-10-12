@@ -3,6 +3,7 @@
 // (expired cursor) or a stream that cannot reconnect starts over from a snapshot.
 import { useEffect, useState } from "react";
 import { ApiError, request } from "./api";
+import { setServerTime } from "./clock";
 import { advanceCursor, applyEvent, emptyFeed, fromSnapshot, type FeedState, type Snapshot } from "./feed-state";
 
 export type Connection = "connecting" | "live" | "reconnecting";
@@ -35,6 +36,7 @@ export function useFeed(enabled: boolean, sessionId: string | null, handlers: { 
         const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
         const snapshot = await request<Snapshot>(`/api/snapshot${query}`, { signal: controller.signal });
         if (closed || gen !== generation) return;
+        if (snapshot.server_time) setServerTime(snapshot.server_time);
         setState((s) => fromSnapshot(snapshot, sessionId, s.attentionVersion));
         const es = new EventSource(`/api/events?after=${snapshot.cursor}`);
         source = es;

@@ -72,7 +72,7 @@ function workerView(db: Database.Database, workerId: string) {
   return row ? workerRow(row) : null;
 }
 
-const CALL_VIEW = "SELECT job_id,call_id,call_seq,tool_name,CASE WHEN tool_name='write' THEN json_set(json_remove(arguments_json,'$.content'),'$.content_bytes',length(CAST(json_extract(arguments_json,'$.content') AS BLOB))) ELSE arguments_json END arguments_json,status,completed_at,cancel_sent_at,resolve_acked FROM runtime_calls";
+const CALL_VIEW = "SELECT job_id,call_id,call_seq,tool_name,CASE WHEN tool_name='write' THEN json_set(json_remove(arguments_json,'$.content'),'$.content_bytes',length(CAST(json_extract(arguments_json,'$.content') AS BLOB))) ELSE arguments_json END arguments_json,status,dispatched_at,completed_at,cancel_sent_at,resolve_acked FROM runtime_calls";
 
 /** A call's request and status. Its result reaches the UI as the tool message. */
 function callRow({ arguments_json, ...row }: any) {
@@ -86,7 +86,7 @@ function callRow({ arguments_json, ...row }: any) {
  * because this node was full are truncation, reported by main_truncated.
  */
 export function logView(db: Database.Database, jobId: string, callId: string, stream: string) {
-  const state = db.prepare("SELECT job_id,call_id,stream,chunks,bytes_total,worker_truncated,main_truncated,state,pruned_at FROM call_log_state WHERE job_id=? AND call_id=? AND stream=?").get(jobId, callId, stream) as any;
+  const state = db.prepare("SELECT job_id,call_id,stream,chunks,bytes_total,worker_truncated,main_truncated,state,pruned_at,last_output_at FROM call_log_state WHERE job_id=? AND call_id=? AND stream=?").get(jobId, callId, stream) as any;
   if (!state) return null;
   const held = db.prepare("SELECT seq,offset,length(data) n FROM call_logs WHERE job_id=? AND call_id=? AND stream=? ORDER BY seq").all(jobId, callId, stream) as Array<{ seq: number; offset: number; n: number }>;
   const gaps: Array<{ from_seq: number; to_seq: number | null; from_offset: number; missing_bytes: number | null }> = [];
@@ -160,6 +160,8 @@ export function snapshot(db: Database.Database, now: () => number, sessionId?: s
     if (sessionId && !session) return undefined;
     return {
       cursor: cursorNow(db),
+      // Lets the browser measure its clock against ours before it shows how long a command has run.
+      server_time: now(),
       main_session_id: (main as any).session_id as string,
       workers: workerViews(db),
       dispatch: dispatchView(db),

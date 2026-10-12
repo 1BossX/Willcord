@@ -91,26 +91,50 @@ export function BudgetRows({ job, now }: { job: JobControl; now: number }) {
   );
 }
 
+/** How long the "confirm" step waits before it goes back to a plain cancel button. */
+const CONFIRM_MS = 4000;
+
+/**
+ * Cancel in two clicks, in place: the first asks, the second confirms, and an
+ * ignored question goes away by itself. No dialog, so it can sit on a command's card.
+ */
+export function InlineCancel({ job, onDone, onError, label = "取消", question = "停止命令？", className = "secondary-button danger-action" }: {
+  job: JobControl; onDone: () => void; onError: (e: unknown) => void; label?: string; question?: string; className?: string;
+}) {
+  const [step, setStep] = useState<"idle" | "confirm" | "busy">("idle");
+  useEffect(() => {
+    if (step !== "confirm") return;
+    const timer = setTimeout(() => setStep("idle"), CONFIRM_MS);
+    return () => clearTimeout(timer);
+  }, [step]);
+  if (step === "idle")
+    return <button type="button" className={className} onClick={() => setStep("confirm")}>{label}</button>;
+  return (
+    <span className="inline-confirm" role="group" aria-label={question}>
+      <span>{question}</span>
+      <button
+        type="button"
+        className={className}
+        disabled={step === "busy"}
+        autoFocus
+        onClick={async () => {
+          setStep("busy");
+          try { await post(`/api/jobs/${job.job_id}/cancel`); onDone(); } catch (e) { onError(e); } finally { setStep("idle"); }
+        }}
+      >
+        {step === "busy" ? "正在取消…" : "确认停止"}
+      </button>
+      <button type="button" className="secondary-button" disabled={step === "busy"} onClick={() => setStep("idle")}>返回</button>
+    </span>
+  );
+}
+
 /** Cancel for queued or running work; the job shows "正在停止" until the worker confirms. */
 export function CancelButton({ job, onDone, onError }: { job: JobControl; onDone: () => void; onError: (e: unknown) => void }) {
-  const [busy, setBusy] = useState(false);
   if (job.state === "cancel_requested")
     return <p className="inspector-note">正在停止：命令确认结束前，这台机器不会开始下一个任务。</p>;
-  if (!["queued", "waiting_worker", "running"].includes(job.state)) return null;
-  return (
-    <button
-      type="button"
-      className="secondary-button danger-action"
-      disabled={busy}
-      onClick={async () => {
-        if (!window.confirm("取消这个任务？正在运行的命令会被终止。")) return;
-        setBusy(true);
-        try { await post(`/api/jobs/${job.job_id}/cancel`); onDone(); } catch (e) { onError(e); } finally { setBusy(false); }
-      }}
-    >
-      {busy ? "正在取消…" : "取消任务"}
-    </button>
-  );
+  if (!["queued", "waiting_worker", "running", "waiting_children"].includes(job.state)) return null;
+  return <InlineCancel job={job} onDone={onDone} onError={onError} label="取消任务" question="取消这个任务？正在运行的命令会被终止。" />;
 }
 
 /** Retry a finished job under a new ID; the operator checks side effects first. */

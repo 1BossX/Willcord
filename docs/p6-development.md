@@ -231,3 +231,32 @@ P6 阶段整体验收以 P6-C 的记录为准，P6-D 完成后补记多轮对话
 合并 P6-C 后，`pnpm test`：server 87 项（其中 `p6-conversation` 5 项）、web 6 项、protocol 3 项全部通过（`identity` 的迁移计数改为 11）。`pnpm check` 通过。
 
 本机 PATH 上若先找到 anaconda 自带的 OpenSSL 1.1.1，测试生成的证书会被 worker 拒绝（`UnknownIssuer`），所有带 worker 的测试都会失败；把 Homebrew 的 `openssl` 放在前面即可。
+
+## 命令存活状态与卡片取消
+
+此前已发出但还没有结果的调用只显示"正在执行"，那只是数据库里的 `dispatched`：机器掉线、命令静默、命令卡住都是同一句话；取消入口只在右侧任务面板，还要过一次浏览器确认框。
+
+存储与事件：
+
+- `runtime_calls.dispatched_at`：调用交给机器的时间（`dispatch()` 写入，重发不改）。`call_log_state.last_output_at`：最近一个输出块到达主节点的时间。迁移 `015_call_timing.sql`。
+- 两个字段随现有 `call` / `log` 事件和快照下发，刷新页面不丢。快照多一个 `server_time`，浏览器据此校准自己的时钟（`apps/web/src/clock.ts`），本机时钟偏差不会把"刚输出过"显示成"无输出"。
+- 心跳（`last_seen`）仍不是事件；机器是否在线沿用 `worker.online`，掉线超过 30 秒由主节点置为离线并发 `worker` 事件。
+
+判定（`apps/web/src/call-liveness.ts`，纯函数，有单元测试）：
+
+| 状态 | 条件 | 卡片文字 |
+|---|---|---|
+| 等待发送 | call 为 `committed` | 等待发送 |
+| 正在执行 | 已发出，机器在线，60 秒内有输出 | 已运行 2分13秒，8秒前有输出 |
+| 正在执行（静默） | 已发出，机器在线，距上次输出（没有输出则距发出）≥ 60 秒 | 已 1分00秒没有新输出。可能仍在计算，也可能卡住。 |
+| 机器已离线 | `worker.online` 为 0 | 命令可能仍在机器上运行；重连后会自动对账，期间结果不会更新 |
+| 正在停止 | job 为 `cancel_requested` | 已发送终止信号 N 秒，等待机器确认；机器离线则说明重连后才能终止 |
+| 执行情况未知 | call 为 `unknown` | 不会自动重跑，请在任务详情中核对 |
+
+静默只是提示，不据此自动取消：编译、`du` 这类命令本来就长时间没有输出。
+
+取消：命令卡片、对话底部提示和任务面板共用 `InlineCancel`，就地两步确认（"取消"→"停止命令？[确认停止] [返回]"，4 秒无操作自动还原），不再弹浏览器确认框。`waiting_children` 的任务也可以取消。后端不变：`POST /api/jobs/:id/cancel` → `cancel_call` → worker 对进程组发 TERM，`kill_grace_secs`（默认 10 秒）后 KILL。
+
+已知限制：机器离线时取消只会被记录，终止信号要等机器重连才能送达，期间这台机器的执行槽仍被占用（页面会这样说明）；服务端对单个调用的结果超时从发出时算起，包含离线时间。
+
+测试：`apps/web/test/call-liveness.test.ts`；`p6-events` 新增一项，断言两个时间戳在真实 worker 下随命令前进、快照与事件一致、结算后 `dispatched_at` 不变。`identity` 的迁移计数改为 15。

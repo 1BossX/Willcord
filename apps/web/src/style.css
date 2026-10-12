@@ -1484,6 +1484,24 @@ summary:focus-visible {
     opacity: 0.3;
   }
 }
+/* Dots take the colour of what they report; a command that is not believed to be running stops pulsing. */
+.working-dots.tone-dots-warning i {
+  background: #d1a63a;
+}
+.working-dots.tone-dots-danger i {
+  background: #c9695b;
+}
+.working-dots.tone-dots-muted i {
+  background: #aab8bf;
+}
+.working-dots.is-still i {
+  animation: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .working-dots i {
+    animation: none;
+  }
+}
 .composer {
   padding: 17px 30px 18px;
   background: linear-gradient(transparent, #f8fafb 13%);
@@ -2460,9 +2478,70 @@ summary:focus-visible {
 .pending-call code {
   overflow-wrap: anywhere;
 }
-.pending-call.is-unknown {
+.pending-call.is-unknown,
+.pending-call.is-worker-offline {
   border-color: #e6b9af;
   color: #a94e42;
+}
+.pending-call.is-quiet,
+.pending-call.is-cancelling {
+  border-color: #e3cf9a;
+}
+.pending-call.is-worker-offline {
+  background: #fdf6f4;
+}
+.pending-call.is-quiet {
+  background: #fffbf0;
+}
+.pending-main {
+  display: flex;
+  flex: 1 1 260px;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.pending-title code {
+  color: #34474f;
+}
+.pending-detail {
+  line-height: 1.5;
+}
+.pending-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+.pending-actions .secondary-button,
+.agent-working .secondary-button {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+/* The ask-then-confirm step of a cancel: the question and its two buttons stay together. */
+.inline-confirm {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #6b4a42;
+}
+.agent-working .inline-confirm {
+  margin-left: 4px;
+}
+/* Text-only counterparts of .tone-*, which also paint a background. */
+.ink-active {
+  color: #4b79a3;
+}
+.ink-warning {
+  color: #8a6d24;
+}
+.ink-danger {
+  color: #a94e42;
+}
+.ink-muted {
+  color: #6f7f88;
 }
 .pending-call .log-viewer {
   flex-basis: 100%;

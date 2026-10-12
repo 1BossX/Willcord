@@ -2629,3 +2629,56 @@ summary:focus-visible {
 .has-pending { border-style: solid; border-color: #f2b84b; background: rgba(242, 184, 75, 0.12); }
 .sidebar-empty.has-pending { padding: 10px; border: 1px solid #f2b84b; border-radius: 8px; color: #f5dfa8; }
 .job-notes .secondary-button { margin-left: 8px; padding: 4px 10px; font-size: 13px; }
+
+.diagnosis-scenario-grid {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+  max-width: 520px;
+}
+.prompt-suggestions.diagnosis-scenario-grid button {
+  display: grid;
+  gap: 6px;
+  text-align: left;
+  grid-template-columns: 1fr auto;
+  align-items: start;
+}
+.prompt-suggestions.diagnosis-scenario-grid strong {
+  color: #2f4552;
+  font-size: 13px;
+}
+.prompt-suggestions.diagnosis-scenario-grid span {
+  font-size: 11px;
+  color: #7c94a0;
+  grid-column: 1 / -1;
+}
+.prompt-suggestions.diagnosis-scenario-grid button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.diagnosis-manual-session { margin-top: 16px; }
+.diagnosis-result {
+  margin: 12px 0 0;
+  padding: 14px 16px;
+  border: 1px solid #d4e3ea;
+  border-radius: 10px;
+  background: #f8fbfc;
+}
+.diagnosis-result-heading { margin: 0 0 10px; font-size: 14px; }
+.diagnosis-result-block { margin-top: 10px; }
+.diagnosis-result-block h4 { margin: 0 0 6px; font-size: 12px; color: #5a7380; text-transform: uppercase; letter-spacing: 0.04em; }
+.diagnosis-inconclusive { font-weight: 600; color: #8a5a00; }
+.diagnosis-evidence-list { margin: 0; padding-left: 0; list-style: none; }
+.diagnosis-evidence-list li { margin-bottom: 10px; }
+.diagnosis-call-id { font-size: 11px; margin-right: 8px; }
+.diagnosis-evidence-meta { font-size: 11px; color: #7c94a0; }
+.diagnosis-evidence-list pre {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  background: #fff;
+  border-radius: 6px;
+  font-size: 11px;
+  max-height: 160px;
+  overflow: auto;
+}
+.muted-copy { font-size: 12px; color: #7c94a0; margin-top: 12px; }

@@ -29,11 +29,13 @@ const CHILD_FAILED = new Set(["failed", "cancelled"]);
  * with their results, and how many earlier exchanges of its session it carries.
  */
 function jobRow(row: any) {
-  const { children_json, context_json, ...job } = row;
+  const { children_json, context_json, result_json, ...job } = row;
   const children = JSON.parse(children_json) as Array<{ state: string }>;
   const context = context_json ? JSON.parse(context_json) as CarriedContext : null;
   return {
-    ...job, children,
+    ...job,
+    result: result_json ? JSON.parse(result_json) : null,
+    children,
     context: context && { jobs: context.jobs.length, omitted: context.omitted },
     children_summary: {
       total: children.length,

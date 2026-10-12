@@ -1,0 +1,15 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { diagnosisScenarios } from "../src/diagnosis-scenarios.ts";
+
+test("three diagnosis scenarios are defined", () => {
+  assert.deepEqual(diagnosisScenarios.map((s) => s.id), [
+    "docker-service",
+    "disk-usage",
+    "post-deploy",
+  ]);
+  for (const scenario of diagnosisScenarios) {
+    assert.match(scenario.prompt, /结论、证据和建议的下一步/);
+    assert.match(scenario.prompt, /无法确认/);
+  }
+});

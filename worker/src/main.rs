@@ -930,7 +930,7 @@ async fn tool_call(
     let timeout = if call.tool == "bash" {
         let command = call.arguments["command"].as_str().unwrap_or("");
         if diagnosis::is_diagnosis(call.execution_mode.as_deref()) {
-            if diagnosis::bash_argv(command).is_err() {
+            if diagnosis::bash_allowed(command).is_err() {
                 send(socket, &rejected_frame(worker, epoch, &identity, "invalid")).await?;
                 return Ok(());
             }

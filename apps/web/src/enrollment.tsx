@@ -43,13 +43,15 @@ export function EnrollmentPanel() {
     }).catch(e => { if (!controller.signal.aborted) setTrustError(String(e)); });
     return () => controller.abort();
   }, [open, adding, trustMode]);
-  const [publicUrl, setPublicUrl] = useState("");
+  const [publicUrl, setPublicUrl] = useState<string | null>(null);
   const [copyStatus, setCopyStatus] = useState("");
-  // Workers need the address the main node was set up with, not whatever this browser used to reach it.
-  const origin = publicUrl || window.location.origin;
+  // Workers need the address the main node was set up with, not whatever this browser used to reach it,
+  // so no command is built until that address has arrived.
+  const origin = publicUrl;
   let fresh = "", installed = "", commandError = "";
   try {
     const caFile = trustMode === "file" ? ca : "", pin = trustMode === "pin" ? fingerprint : undefined;
+    if (origin === null) throw new Error("正在读取主节点地址…");
     if (trustMode === "file" && !ca) throw new Error("请填写 CA 绝对路径");
     fresh = installCommand(origin, caFile, system, pin);
     installed = joinCommand(origin, caFile, system, pin);
@@ -67,7 +69,7 @@ export function EnrollmentPanel() {
       loading = true;
       try {
         const data = await request<{ devices: Device[]; public_url?: string }>("/api/enrollments", { signal: controller.signal });
-        if (!controller.signal.aborted) { setError(""); setDevices(data.devices); setPublicUrl(data.public_url ?? ""); setLoaded(true); }
+        if (!controller.signal.aborted) { setError(""); setDevices(data.devices); setPublicUrl(data.public_url ?? window.location.origin); setLoaded(true); }
       } catch (e) { if (!controller.signal.aborted) setError(String(e)); }
       finally { loading = false; }
     }
@@ -93,14 +95,14 @@ export function EnrollmentPanel() {
       <div className="dialog-heading"><h2 id="enrollment-title">机器授权</h2><button className="secondary-button" onClick={close} aria-label="关闭机器授权">关闭</button></div>
       <button className="secondary-button" aria-expanded={adding} onClick={() => { setAdding(v => !v); setCopyStatus(""); }}>添加机器</button>
       {adding && <section className="enrollment-install" aria-label="添加机器">
-        <p>主节点：<strong>{origin}</strong></p>
-        {isLoopbackOrigin(origin) && <p role="alert">这个地址只在本机有效，其他机器连不上。请用主节点的局域网或域名地址打开控制台，再复制命令。</p>}
+        <p>主节点：<strong>{origin ?? "…"}</strong></p>
+        {origin !== null && isLoopbackOrigin(origin) && <p role="alert">这个地址只在本机有效，其他机器连不上。请用主节点的局域网或域名地址打开控制台，再复制命令。</p>}
         {fresh ? <>
           <label>在执行机器上运行（还没有 willcord 命令）<textarea readOnly value={fresh} rows={3} /></label>
           <button className="primary-button" onClick={() => void copyCommand(fresh)}>复制命令</button>
           <label>已经装过 willcord 命令的机器<textarea readOnly value={installed} rows={2} /></label>
           <button className="secondary-button" onClick={() => void copyCommand(installed)}>复制命令</button>
-        </> : <p>{commandError || "正在读取 CA 指纹…"}</p>}
+        </> : <p>{commandError || "正在读取主节点地址和 CA 指纹…"}</p>}
         <p role="status">{copyStatus}</p>
         <details>
           <summary>高级选项</summary>

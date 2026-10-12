@@ -6,6 +6,7 @@ import { createRoot } from "react-dom/client";
 import { marked } from "marked";
 import { ApiError, request } from "./api";
 import { AttentionPanel, BudgetRows, CancelButton, DispatchBanner, LogViewer, RetryButton, endReasonLabel, type JobControl } from "./control";
+import { CaTrustGuide } from "./ca-trust-guide";
 import { useFeed } from "./feed";
 import "./style.css";
 
@@ -1160,34 +1161,37 @@ function App() {
           </span>
         </section>
         <section className="login-panel">
-          <form onSubmit={login}>
-            <span className="eyebrow">WELCOME BACK</span>
-            <h2>登录工作台</h2>
-            <p className="muted">使用管理员密码连接主节点。</p>
-            <label htmlFor="password">管理员密码</label>
-            <input
-              id="password"
-              type="password"
-              autoComplete="current-password"
-              required
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              placeholder="输入密码"
-            />
-            {error && (
-              <p role="alert" className="form-error">
-                {error}
-              </p>
-            )}
-            <button className="primary-button" disabled={loggingIn}>
-              {loggingIn ? "正在登录…" : "进入工作台"}
-              <Icon name="arrow" />
-            </button>
-            <span className="login-security">
-              <Icon name="lock" />
-              会话与执行记录仅向已登录用户开放
-            </span>
-          </form>
+          <div className="login-stack">
+            <form onSubmit={login}>
+              <span className="eyebrow">WELCOME BACK</span>
+              <h2>登录工作台</h2>
+              <p className="muted">使用管理员密码连接主节点。</p>
+              <label htmlFor="password">管理员密码</label>
+              <input
+                id="password"
+                type="password"
+                autoComplete="current-password"
+                required
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                placeholder="输入密码"
+              />
+              {error && (
+                <p role="alert" className="form-error">
+                  {error}
+                </p>
+              )}
+              <button className="primary-button" disabled={loggingIn}>
+                {loggingIn ? "正在登录…" : "进入工作台"}
+                <Icon name="arrow" />
+              </button>
+              <span className="login-security">
+                <Icon name="lock" />
+                会话与执行记录仅向已登录用户开放
+              </span>
+            </form>
+            <CaTrustGuide />
+          </div>
         </section>
       </main>
     );

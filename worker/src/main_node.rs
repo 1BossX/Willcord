@@ -215,7 +215,7 @@ fn env_value(text: &str, key: &str) -> Option<String> {
 // ------------------------------------------------------------ environment
 
 /// Whether to show the macOS hints. Debug builds let tests choose.
-fn is_macos() -> bool {
+pub(crate) fn is_macos() -> bool {
     #[cfg(debug_assertions)]
     if let Ok(os) = std::env::var("WILLCORD_TEST_OS") {
         return os == "Darwin";
@@ -434,18 +434,21 @@ impl Tty {
 
 // --------------------------------------------------------------------- init
 
+/// The main node's address with the root certificate's fingerprint after `#`, when it can be read.
+fn main_link(server: &str, ca: &Path) -> String {
+    let fingerprint = fs::read(ca)
+        .ok()
+        .and_then(|pem| crate::cli::ca_fingerprint(&pem).ok());
+    match fingerprint {
+        Some(fp) => format!("{server}#sha256={fp}"),
+        None => server.to_owned(),
+    }
+}
 /// The two commands that join a worker to this main node: one for a machine that
 /// has no `willcord` yet, one for a machine that does. The link carries the
 /// root certificate's fingerprint, which the worker checks before trusting it.
 fn worker_join_commands(server: &str, ca: &Path) -> [String; 2] {
-    let fingerprint = fs::read(ca)
-        .ok()
-        .and_then(|pem| crate::cli::ca_fingerprint(&pem).ok());
-    let link = match fingerprint {
-        Some(fp) => format!("{server}#sha256={fp}"),
-        None => server.to_owned(),
-    };
-    let link = shell_quote(Path::new(&link));
+    let link = shell_quote(Path::new(&main_link(server, ca)));
     [
         format!("curl -fsSL {INSTALLER_URL} | bash -s -- worker {link}"),
         format!("willcord worker join {link}"),
@@ -459,8 +462,13 @@ fn print_worker_commands(server: &str, ca: &Path) {
 }
 
 /// Show how the root certificate is trusted on this machine; the browser and
-/// every worker need it unless the certificate is publicly trusted.
-fn trust_hint(ca: &Path) {
+/// every worker need it unless the certificate is publicly trusted. The command
+/// first: it checks the certificate against the fingerprint in the link.
+fn trust_hint(command: &str, server: &str, ca: &Path) {
+    let link = shell_quote(Path::new(&main_link(server, ca)));
+    println!("信任根证书（推荐，在要打开控制台的机器上运行）：\n  {command} trust-ca {link}");
+    println!("它会重新从主节点取得根证书，核对指纹后导入系统信任库；Firefox 需另行导入。");
+    println!("手动方式（不依赖 willcord 命令）：");
     let quoted = shell_quote(ca);
     if is_macos() {
         println!(
@@ -612,7 +620,7 @@ async fn init(mut args: Vec<String>) -> Result<(), Error> {
     );
     let command = crate::path_install::ensure(crate::path_install::Scope::User, &beside);
     println!("\n下一步：\n1. 让浏览器信任根证书，否则控制台会提示证书不安全。");
-    trust_hint(&dir.join("ca.pem"));
+    trust_hint(&command, &origin.server, &dir.join("ca.pem"));
     println!(
         "2. 打开 {} 登录，在侧栏“模型连接”绑定模型 API key；未绑定前任务无法执行。",
         origin.server

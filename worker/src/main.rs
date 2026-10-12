@@ -7,6 +7,7 @@ mod netaddr;
 mod path_install;
 mod process;
 mod tools;
+mod trust;
 use base64::Engine as _;
 use fs2::FileExt;
 use futures_util::{SinkExt, StreamExt};

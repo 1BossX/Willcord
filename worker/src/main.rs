@@ -5,6 +5,7 @@ mod logs;
 mod main_node;
 mod netaddr;
 mod path_install;
+mod platform;
 mod process;
 mod tools;
 mod trust;

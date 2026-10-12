@@ -5,10 +5,10 @@
 use crate::{
     Error,
     cli::{
-        ca_fingerprint, certificate_pem, check_main_node, fetch_published_ca, parse_join_link,
-        private_dir, root, save, shell_quote, take_value, valid_fingerprint,
+        ca_fingerprint, certificate_pem, fetch_published_ca, parse_join_link, private_dir,
+        probe_https_health, root, save, shell_quote, take_value, valid_fingerprint,
     },
-    main_node::is_macos,
+    platform::is_macos,
 };
 use std::{
     fs,
@@ -199,7 +199,7 @@ pub async fn trust_ca(mut args: Vec<String>) -> Result<(), Error> {
     private_dir(&dir)?;
     let path = dir.join(format!("{fingerprint}.pem"));
     save(&path, pem.as_bytes())?;
-    if let Err(e) = check_main_node(&origin, Some(&path)).await {
+    if let Err(e) = probe_https_health(&origin, Some(&path)).await {
         let _ = fs::remove_file(&path);
         return Err(e);
     }

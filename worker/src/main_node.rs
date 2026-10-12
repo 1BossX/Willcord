@@ -6,6 +6,7 @@ use crate::{
     Error,
     cli::{shell_quote, take_value},
     netaddr,
+    platform::is_macos,
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -210,17 +211,6 @@ fn env_value(text: &str, key: &str) -> Option<String> {
         }
     }
     Some(out)
-}
-
-// ------------------------------------------------------------ environment
-
-/// Whether to show the macOS hints. Debug builds let tests choose.
-pub(crate) fn is_macos() -> bool {
-    #[cfg(debug_assertions)]
-    if let Ok(os) = std::env::var("WILLCORD_TEST_OS") {
-        return os == "Darwin";
-    }
-    cfg!(target_os = "macos")
 }
 
 fn docker_missing(e: std::io::Error) -> Error {

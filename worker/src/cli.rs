@@ -364,7 +364,7 @@ fn pem_of_der(der: &[u8]) -> Result<String, Error> {
     Ok(pem)
 }
 /// Before anything is installed: does the main node answer HTTPS under this trust?
-pub(crate) async fn check_main_node(base: &str, ca: Option<&Path>) -> Result<(), Error> {
+pub(crate) async fn probe_https_health(base: &str, ca: Option<&Path>) -> Result<(), Error> {
     let client = client_trusting(ca)?;
     client
         .get(format!("{base}/health"))
@@ -1019,7 +1019,7 @@ async fn join_installing(args: &[String], name: Option<&str>) -> Result<bool, Er
         let _ = SYSTEM_CA.set(ca.clone());
     }
     let installed = async {
-        check_main_node(&base, ca_file.as_deref()).await?;
+        probe_https_health(&base, ca_file.as_deref()).await?;
         let (sys, dir) = if system {
             let sys = install_system(&system_root()?, account.as_deref(), ca_file.clone())?;
             let dir = sys.data();

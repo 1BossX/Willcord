@@ -1,6 +1,6 @@
 # 安装与首次使用
 
-推荐路线：**安装 willcord 命令 → 启动主节点 → 信任内部 CA → 登录控制台 → 启动 worker → 核对指纹批准 → 等待可执行 → 完成只读任务**。先装命令，再用命令启动：主节点用 `willcord main init`，执行机器用 `willcord worker join`。主节点通过 Docker Compose 部署；worker 装在每台执行机器的宿主机上。
+推荐路线：**安装 willcord 命令 → 启动主节点 → 信任内部 CA → 登录控制台 → 绑定模型 API key → 启动 worker → 核对指纹批准 → 等待可执行 → 完成第一次诊断**。先装命令，再用命令启动：主节点用 `willcord main init`，执行机器用 `willcord worker join`。主节点通过 Docker Compose 部署；worker 装在每台执行机器的宿主机上。
 
 安装器需要 Bash 3.2+、curl 和 shasum/sha256sum。
 
@@ -202,15 +202,28 @@ curl -fsSL https://bossoptional.github.io/Willcord/install.sh | bash -s -- worke
 
 后台服务每 5 秒检查授权。后续诊断使用 `willcord worker status --json`；系统级命令前加 `sudo`、后面带 `--system`。
 
-## 5. 第一个任务
+## 5. 第一次诊断
 
-选择“可执行”的机器及默认 workspace，新建独立会话，输入：
+机器显示“可执行”且控制台已绑定模型 API key 后，工作台首页会出现**首次诊断**入口，三个场景任选其一：
 
-> 列出当前工作目录的文件，并报告工作目录路径。
+1. Docker 服务起不来  
+2. 磁盘用量异常  
+3. 部署后检查  
 
-**成功标志**：任务成功，回复和任务时间线有实际执行结果。默认目录自动创建，不会克隆项目或映射整个 home。
+点选后会创建默认工作目录上的独立会话并发送诊断任务。**成功标志**：任务进入执行并完成，回复与任务时间线有实际检查输出；在场景入口合入后，结果会按「结论、证据、建议的下一步」展示。
+
+批准 worker 后，若模型已绑定，工作台会自动打开第一个场景（Docker 服务起不来）的会话；也可在机器卡片里手动换场景。
 
 已有项目通过 `willcord worker workspace add my-app /absolute/projects/my-app` 添加，再创建绑定该 workspace 的新会话。机器须已授权、服务运行且空闲；系统级命令带 `--system`。跨机器任务通过 Main Agent 委派，文件不会自动在机器之间传输。
+
+### 常见卡住点（各有一句原因与下一步）
+
+| 情况 | 原因与下一步 |
+|---|---|
+| 未安装 Docker / Compose v2 / 无法访问守护进程 | `willcord main init` 或 `install.sh main` 会说明需要先安装 Docker Engine 与 Compose v2、启动服务并确认账户权限；向导**不会**替你安装 Docker 或改系统权限。 |
+| 浏览器尚未信任 CA | 登录页无法连接或证书报错时，按登录页「信任证书」或运行 `willcord trust-ca` 导入根证书后再登录。 |
+| worker 连不上主节点 | 控制台机器离线：在执行机器上运行「添加机器」命令，确认服务运行且加入链接地址与主节点 `PUBLIC_BASE_URL` 一致（避免其他机器无法用的 localhost）。 |
+| 尚未绑定模型 key | 控制台顶部「尚未绑定模型」：打开「模型连接」填入 API key 并保存。 |
 
 ## 升级与故障处理
 
@@ -220,4 +233,4 @@ curl -fsSL https://bossoptional.github.io/Willcord/install.sh | bash -s -- worke
 - TLS 失败：确认地址和浏览器/控制台的信任状态。根 CA 变化后，从可信控制台重新复制带新指纹的安装命令；手动 CA 模式则重新运行带新 `--ca` 的安装命令。
 - 用户级与系统级安装各有独立身份，不要克隆数据目录到第二台机器。撤销、未知执行状态和恢复见 [worker 安装与授权](worker-onboarding.md) 与 [运维手册](operations.md)。
 
-安装器与实机验收的历史记录见 [一行安装验收](dev/acceptance/one-line-install.md)。每次发版后以新用户视角走一遍的流程见 [新用户走查流程](dev/acceptance/first-run-walkthrough.md)。
+安装器与实机验收的历史记录见 [一行安装验收](dev/acceptance/one-line-install.md)。每次发版后以新用户视角走一遍的流程见 [新用户走查流程](dev/acceptance/first-run-walkthrough.md)。外人从安装到第一次诊断的步骤记录见 [安装到首次诊断](dev/acceptance/install-to-first-diagnosis.md)。

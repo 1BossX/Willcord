@@ -42,7 +42,12 @@ export async function request<T>(
       throw new ApiError(401, errors.unauthorized);
     headers.set("x-csrf-token", auth.csrf);
   }
-  const response = await fetch(url, { ...init, headers });
+  let response: Response;
+  try {
+    response = await fetch(url, { ...init, headers });
+  } catch (cause) {
+    throw cause instanceof Error ? cause : new Error(String(cause));
+  }
   const data = await response.json().catch(() => null);
   if (!response.ok)
     throw new ApiError(

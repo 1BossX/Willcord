@@ -159,13 +159,13 @@ class MainNodeTests(unittest.TestCase):
             code, out = self.init(server=False, extra=['--server', server])
             self.assertNotEqual(code, 0, server)
             self.assertFalse(self.deploy.exists() and (self.deploy / 'main.env').exists())
-        for env, needle in [({'TEST_NO_COMPOSE': '1'}, 'Docker Compose v2'), ({'TEST_DOCKER_DOWN': '1'}, '无法访问 Docker')]:
+        for env, needle in [({'TEST_NO_COMPOSE': '1'}, 'Docker Compose v2'), ({'TEST_DOCKER_DOWN': '1'}, '无法访问 Docker 守护进程')]:
             code, out = self.init(env=env)
             self.assertNotEqual(code, 0, out)
             self.assertIn(needle, out)
         code, out = self.init(env={'PATH': '/nonexistent'})
         self.assertNotEqual(code, 0)
-        self.assertIn('缺少 docker', out)
+        self.assertIn('未找到 docker', out)
         self.assertFalse((self.deploy / 'main.env').exists())
 
     def test_init_asks_no_model_questions(self):

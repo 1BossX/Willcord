@@ -9,7 +9,10 @@ import { AttentionPanel, BudgetRows, CancelButton, DispatchBanner, InlineCancel,
 import { callLiveness, jobActivity, lastOutputOf } from "./call-liveness";
 import { useNow } from "./clock";
 import { CaTrustGuide } from "./ca-trust-guide";
+import { diagnosisScenarios, type DiagnosisScenario } from "./diagnosis-scenarios";
 import { useFeed } from "./feed";
+import { loginFailureMessage } from "./login-connectivity";
+import { SetupJourneyPanel, START_FIRST_DIAGNOSIS } from "./setup-journey-panel";
 import "./style.css";
 
 type Worker = {
@@ -767,6 +770,7 @@ function App() {
   };
   const [password, setPassword] = useState(""),
     [error, setError] = useState("");
+  const [modelBound, setModelBound] = useState(false);
   const [submitting, setSubmitting] = useState(false),
     [loggingIn, setLoggingIn] = useState(false);
   const [modalOpen, setModalOpen] = useState(false),
@@ -902,6 +906,70 @@ function App() {
     setWorkspaces([]);
     setModalOpen(true);
   }
+  async function beginDiagnosisScenario(
+    scenario: DiagnosisScenario,
+    workerId: string,
+  ) {
+    if (submitting) return;
+    setSubmitting(true);
+    setError("");
+    try {
+      const listed = await request<{ workspaces: Workspace[] }>(
+        `/api/workers/${encodeURIComponent(workerId)}/workspaces?all=true`,
+      );
+      const workspace =
+        listed.workspaces.find((w) => w.is_default) ?? listed.workspaces[0];
+      if (!workspace) throw new Error("这台机器还没有工作目录。");
+      const created = await request<Session>("/api/sessions", {
+        method: "POST",
+        body: JSON.stringify({
+          worker_id: workerId,
+          workspace_id: workspace.workspace_id,
+          repo_id: workspace.repo_id,
+        }),
+      });
+      selectSession(created);
+      await request(`/api/sessions/${encodeURIComponent(created.session_id)}/messages`, {
+        method: "POST",
+        body: JSON.stringify({
+          client_request_id: crypto.randomUUID(),
+          message: scenario.prompt,
+        }),
+      });
+      setDrafts((current) => {
+        const next = { ...current };
+        delete next[created.session_id];
+        return next;
+      });
+      setSelectedJobId(null);
+      localStorage.setItem("willcord-first-diagnosis-started", scenario.id);
+    } catch (cause) {
+      report(cause);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+  useEffect(() => {
+    const onStart = (event: Event) => {
+      const detail = (event as CustomEvent<{ scenarioId?: DiagnosisScenario["id"] }>).detail;
+      const worker = workers.find((w) => w.schedulable);
+      if (!worker) return;
+      const scenario =
+        diagnosisScenarios.find((s) => s.id === detail?.scenarioId) ??
+        diagnosisScenarios[0];
+      void beginDiagnosisScenario(scenario, worker.worker_id);
+    };
+    window.addEventListener(START_FIRST_DIAGNOSIS, onStart);
+    return () => window.removeEventListener(START_FIRST_DIAGNOSIS, onStart);
+  }, [workers, submitting]);
+  useEffect(() => {
+    if (!modelBound || submitting) return;
+    if (sessionStorage.getItem("willcord-await-first-diagnosis") !== "1") return;
+    const worker = workers.find((w) => w.schedulable);
+    if (!worker) return;
+    sessionStorage.removeItem("willcord-await-first-diagnosis");
+    void beginDiagnosisScenario(diagnosisScenarios[0], worker.worker_id);
+  }, [workers, modelBound, submitting]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -914,11 +982,27 @@ function App() {
       .catch((cause) => {
         if (!controller.signal.aborted) {
           setAuth("logged-out");
-          report(cause);
+          setError(loginFailureMessage(cause));
         }
       });
     return () => controller.abort();
   }, []);
+  useEffect(() => {
+    if (auth !== "logged-in") return;
+    let live = true;
+    const load = () =>
+      request<{ has_key: boolean }>("/api/settings/model")
+        .then((v) => {
+          if (live) setModelBound(v.has_key);
+        })
+        .catch(() => {});
+    void load();
+    window.addEventListener("willcord:model-settings-changed", load);
+    return () => {
+      live = false;
+      window.removeEventListener("willcord:model-settings-changed", load);
+    };
+  }, [auth]);
   // After login, reopen the session the browser had open, Main included.
   useEffect(() => {
     if (restored.current || !feed.state.mainSessionId) return;
@@ -1014,13 +1098,7 @@ function App() {
       setPassword("");
       restored.current = false;
     } catch (cause) {
-      setError(
-        cause instanceof ApiError && cause.status === 401
-          ? "密码不正确，请重试。"
-          : cause instanceof Error
-            ? cause.message
-            : "登录失败。",
-      );
+      setError(loginFailureMessage(cause));
     } finally {
       setLoggingIn(false);
     }
@@ -1486,6 +1564,10 @@ function App() {
         )}
         {selectedWorker === null && !sessionId ? (
           <div className="main-agent-home">
+            <SetupJourneyPanel
+              workers={workers}
+              onStartScenario={(scenario, workerId) => void beginDiagnosisScenario(scenario, workerId)}
+            />
             <div className="welcome-topline">
               <span className="eyebrow">MAIN AGENT</span>
 
@@ -1646,24 +1728,27 @@ function App() {
                   <span className="empty-icon">
                     <Icon name="terminal" />
                   </span>
-                  <h2>你想在这台机器上完成什么？</h2>
+                  <h2>开始诊断</h2>
                   <p>
-                    描述目标，Agent 会在 {activeSession?.workspace_id}{" "}
-                    中读取文件、修改内容或运行命令。
+                    选择场景后发送任务；结果应包含结论、证据与建议的下一步（结构化展示依赖场景入口合入）。
                   </p>
-                  <div className="prompt-suggestions">
-                    {[
-                      "列出当前工作目录的文件，并报告工作目录路径",
-                      "检查项目状态并总结当前改动",
-                    ].map((prompt) => (
+                  <div className="prompt-suggestions diagnosis-scenario-grid">
+                    {diagnosisScenarios.map((scenario) => (
                       <button
-                        key={prompt}
+                        key={scenario.id}
+                        type="button"
+                        disabled={
+                          !activeWorker?.schedulable ||
+                          !modelBound ||
+                          submitting
+                        }
                         onClick={() => {
-                          setText(prompt);
-                          composer.current?.focus();
+                          if (!activeWorker) return;
+                          void beginDiagnosisScenario(scenario, activeWorker.worker_id);
                         }}
                       >
-                        {prompt}
+                        <strong>{scenario.title}</strong>
+                        <span>{scenario.summary}</span>
                         <Icon name="arrow" />
                       </button>
                     ))}

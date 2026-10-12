@@ -1454,6 +1454,92 @@ summary:focus-visible {
   height: 12px;
   color: #a8b8bf;
 }
+.setup-journey {
+  margin: 0 0 28px;
+  padding: 20px 22px;
+  border: 1px solid #e1eaee;
+  border-radius: 10px;
+  background: linear-gradient(180deg, #f8fbfc 0%, #fff 100%);
+}
+.setup-journey.is-ready {
+  border-color: #c9e8d8;
+  background: linear-gradient(180deg, #f3fbf6 0%, #fff 100%);
+}
+.setup-journey-head h2 {
+  margin: 6px 0 8px;
+  font-size: 20px;
+}
+.setup-step-list {
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 8px;
+}
+.setup-step-list li {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  font-size: 13px;
+  color: #5f7380;
+}
+.setup-step-list .is-done {
+  color: #1f6b45;
+}
+.setup-step-marker {
+  width: 18px;
+  text-align: center;
+  flex-shrink: 0;
+}
+.setup-blocker {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: #fff6f4;
+  border: 1px solid #f0d4cc;
+  font-size: 12px;
+  color: #6a4f48;
+}
+.setup-blocker-actions {
+  margin-top: 10px;
+}
+.diagnosis-scenario-grid {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+.diagnosis-scenario-card,
+.prompt-suggestions.diagnosis-scenario-grid button {
+  display: grid;
+  gap: 6px;
+  text-align: left;
+  align-items: start;
+}
+.diagnosis-scenario-card {
+  padding: 14px 16px;
+  border: 1px solid #dce7ec;
+  border-radius: 8px;
+  background: #fff;
+  cursor: pointer;
+}
+.diagnosis-scenario-card strong,
+.prompt-suggestions.diagnosis-scenario-grid strong {
+  color: #2f4552;
+  font-size: 13px;
+}
+.diagnosis-scenario-card span,
+.prompt-suggestions.diagnosis-scenario-grid span {
+  font-size: 11px;
+  color: #7c94a0;
+}
+.diagnosis-scenario-card .icon {
+  justify-self: end;
+}
+.prompt-suggestions.diagnosis-scenario-grid button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
 .agent-working {
   display: flex;
   align-items: center;

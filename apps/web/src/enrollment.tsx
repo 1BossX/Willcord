@@ -87,7 +87,13 @@ export function EnrollmentPanel() {
   }, []);
   async function mutate(url: string, method: string, body: object) {
     setBusy(true); setError("");
-    try { await request(url, { method, body: JSON.stringify(body) }); setRevision(r => r + 1); setEditing(null); refreshPending(); }
+    try {
+      await request(url, { method, body: JSON.stringify(body) });
+      setRevision(r => r + 1);
+      setEditing(null);
+      refreshPending();
+      if (url.endsWith("/approve")) sessionStorage.setItem("willcord-await-first-diagnosis", "1");
+    }
     catch (e) { setError(String(e)); }
     finally { setBusy(false); }
   }
@@ -119,7 +125,7 @@ export function EnrollmentPanel() {
           {trustMode === "file" && <label>执行机器上的 CA 绝对路径<input value={ca} placeholder="/absolute/ca.pem" onChange={e => { setCa(e.target.value); setCopyStatus(""); }} /></label>}
           {trustMode === "system" && <p>仅适用于执行机器已经信任主节点证书的部署；验证失败会停止，不会自动盲信。</p>}
         </details>
-        <p>命令里的 CA 指纹由执行机器核对，无需手动复制证书。安装后在终端核对节点指纹，再到下方批准。等待“可执行”，创建独立会话，输入“列出当前工作目录的文件，并报告工作目录路径”。</p>
+        <p>命令里的 CA 指纹由执行机器核对，无需手动复制证书。安装后在终端核对节点指纹，再到下方批准。机器显示「可执行」后，工作台会引导你选择诊断场景并开始第一次诊断。</p>
       </section>}
       <p>批准前，请核对本机终端显示的节点指纹。</p>
       {error && <p role="alert">{error}</p>}

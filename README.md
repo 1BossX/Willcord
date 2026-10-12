@@ -15,7 +15,7 @@ Willcord 是面向内网与生产环境的 AI 运维控制面。模型调用、�
 
 ## 安装与开始使用
 
-流程：**安装 willcord 命令 → 启动主节点 → 信任内部 CA → 登录控制台 → 启动 worker → 核对指纹并批准 → 等待“可执行” → 完成一次只读任务**。
+流程：**安装 willcord 命令 → 启动主节点 → 信任内部 CA → 登录控制台 → 绑定模型 API key → 启动 worker → 核对指纹并批准 → 等待“可执行” → 完成第一次诊断**。
 
 **第 1 步：安装命令**（每台机器都做一次，不启动任何服务）：
 
@@ -52,7 +52,7 @@ curl -fsSL https://bossoptional.github.io/Willcord/install.sh | bash -s -- worke
 - 安装器默认安装最新正式 Release，并校验 SHA-256；固定版本加 `--version vX.Y.Z`。
 - CA 指纹接入从 v0.3.0 起提供；更早版本使用手动 `--ca`，见[安装指南](docs/installation.md#手动-ca-兼容流程)。分开写的 `--ca-fingerprint` 仍然可用。
 
-在控制台核对终端显示的指纹后批准，等机器显示“可执行”。然后选择默认工作目录创建会话，输入“列出当前工作目录的文件，并报告工作目录路径”。任务成功后，再添加已有项目目录，或用 Main Agent 跨机器委派任务。
+在控制台核对终端显示的指纹后批准，等机器显示“可执行”。工作台会引导你选择诊断场景（Docker 服务起不来、磁盘用量异常、部署后检查）并开始第一次诊断。之后可添加已有项目目录，或用 Main Agent 跨机器委派任务。
 
 - [安装与首次使用](docs/installation.md)：分步操作、成功标志与故障处理
 - [Docker 部署与升级](docs/docker.md)
@@ -69,7 +69,7 @@ curl -fsSL https://bossoptional.github.io/Willcord/install.sh | bash -s -- worke
 
 ## 当前状态
 
-当前版本 v0.1.0-beta.1，处于开发与受控验收阶段。用于生产前，请在自己的环境完成安全、权限与故障恢复验收。
+当前版本 v0.1.0-beta.2，处于开发与受控验收阶段。用于生产前，请在自己的环境完成安全、权限与故障恢复验收。
 
 从 v0.5.0 起所有名称统一为 willcord，旧名称下的部署不会被识别，升级步骤见[迁移说明](docs/migrating-to-willcord.md)。
 

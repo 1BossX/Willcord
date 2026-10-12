@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "case_id": "o1-kr1-003-post-deploy-health-fail",
+  "scenario_id": "post-deploy",
+  "title": "部署后本机健康检查返回 503",
+  "description": "127.0.0.1:17891/health 持续返回 HTTP 503，模拟用户自有服务部署后不健康。",
+  "requires": ["loopback_http"],
+  "setup": "setup.sh",
+  "teardown": "teardown.sh",
+  "probes": [
+    {
+      "call_id": "bash-1",
+      "tool": "bash",
+      "command": "curl -fsS http://127.0.0.1:17891/health"
+    }
+  ],
+  "expected": {
+    "inconclusive": false,
+    "probe_outputs_contain": {
+      "bash-1": ["503", "22"]
+    },
+    "reference_summary": "## 结论\n本机 http://127.0.0.1:17891/health 健康检查失败（HTTP 503）。\n\n## 证据\n调用 `bash-1` 的 curl 未能通过健康检查（非零退出或输出表明 503）。\n\n## 建议的下一步\n查看该服务的进程日志与最近部署变更，修复导致 503 的原因后再次 curl 健康端点。"
+  }
+}

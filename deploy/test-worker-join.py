@@ -165,6 +165,24 @@ class WorkerJoinTests(unittest.TestCase):
         self.assertEqual(len(self.requested('/.well-known/willcord/ca.pem')), 1)
         self.assertEqual([p for p in Path(tempfile_dir()).glob('willcord-ca-*.pem')], [])
 
+    def test_a_join_link_carries_the_pin_and_a_name_can_be_chosen(self):
+        r = self.join('--name', '  build-box.local ', url=f'{self.origin}#sha256={self.pin.upper()}')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('CA 指纹已核对', r.stdout)
+        enrollment = json.loads((self.data / 'enrollment.json').read_text())
+        self.assertEqual((enrollment['url'], enrollment['name']), (self.origin, 'build-box'))
+        self.assertEqual((self.data / 'ca.pem').read_bytes(), self.server.pem.replace(b'\r', b''))
+
+    def test_a_malformed_or_doubled_link_installs_nothing(self):
+        for url, args in [(f'{self.origin}#sha256={self.pin[:-1]}', []), (f'{self.origin}#', []), (f'{self.origin}#sha1={self.pin}', []),
+                          (f'{self.origin}#sha256={self.pin}', ['--ca-fingerprint', self.pin]),
+                          (f'{self.origin}#sha256={self.pin}', ['--ca', str(self.root / 'tls/cert.pem')]),
+                          (f'{self.origin}#sha256={self.pin}', ['--no-service']),
+                          (self.origin, ['--ca-fingerprint', self.pin, '--name', ' '])]:
+            with self.subTest(url=url, args=args):
+                self.assertNotEqual(self.join(*args, url=url).returncode, 0)
+        self.assert_nothing_installed()
+
     def test_a_wrong_or_malformed_answer_installs_nothing(self):
         r = self.join('--ca-fingerprint', '0' * 64)
         self.assertNotEqual(r.returncode, 0)
@@ -258,6 +276,10 @@ class WorkerJoinTests(unittest.TestCase):
             r = self.join(url=url)
             self.assertNotEqual(r.returncode, 0, url)
         r = self.join('--system', '--user', 'nobody-here', '--ca-fingerprint', self.pin)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('root', r.stderr)
+        # Without --user the account is the sudo caller; with no root there is nothing to default to.
+        r = self.join('--system', '--ca-fingerprint', self.pin)
         self.assertNotEqual(r.returncode, 0)
         self.assertIn('root', r.stderr)
         r = self.join('--user', 'someone', '--ca-fingerprint', self.pin)

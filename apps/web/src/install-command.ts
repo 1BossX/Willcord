@@ -2,20 +2,38 @@ export const installerUrl = "https://bossoptional.github.io/Willcord/install.sh"
 export function shellQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
-export function installCommand(origin: string, ca: string, system: boolean, account: string, fingerprint?: string): string {
+/**
+ * The main node's origin, with the root CA's fingerprint after `#` when workers must pin it.
+ * `willcord worker join` and install.sh both accept this one argument (see parse_join_link in worker/src/cli.rs).
+ */
+export function joinLink(origin: string, fingerprint?: string): string {
   const url = new URL(origin);
   if (url.protocol !== "https:" || url.origin !== origin) throw new Error("主节点地址必须是 HTTPS origin");
+  if (fingerprint === undefined) return origin;
+  if (!/^[a-f0-9]{64}$/.test(fingerprint)) throw new Error("等待主节点 CA 指纹");
+  return `${origin}#sha256=${fingerprint}`;
+}
+/** `--system` runs the service as whoever installs it, so no account is named here. */
+function joinArgs(origin: string, ca: string, system: boolean, fingerprint?: string): string[] {
   if (ca && fingerprint) throw new Error("不能同时提供 CA 文件和指纹");
-  if (fingerprint !== undefined && !/^[a-f0-9]{64}$/.test(fingerprint)) throw new Error("等待主节点 CA 指纹");
   if (ca && (!ca.startsWith("/") || /[\r\n\0]/.test(ca))) throw new Error("请填写执行机器上 CA 文件的绝对路径");
-  if (system && (!/^[A-Za-z0-9._-]{1,64}$/.test(account) || account.startsWith("-") || account === "root")) {
-    throw new Error("请填写已有的非 root 执行账户");
-  }
-  const args = ["worker", "--server", origin];
-  if (ca) args.push("--ca", ca);
-  if (fingerprint) args.push("--ca-fingerprint", fingerprint);
-  if (system) args.push("--system", "--user", account);
-  return `curl -fsSL ${shellQuote(installerUrl)} | bash -s -- ${args.map(shellQuote).join(" ")}`;
+  const args = [shellQuote(joinLink(origin, fingerprint))];
+  if (ca) args.push("--ca", shellQuote(ca));
+  if (system) args.push("--system");
+  return args;
+}
+/** For a machine that has no `willcord` command yet: fetches it, then joins. */
+export function installCommand(origin: string, ca: string, system: boolean, fingerprint?: string): string {
+  return `curl -fsSL ${installerUrl} | bash -s -- worker ${joinArgs(origin, ca, system, fingerprint).join(" ")}`;
+}
+/** For a machine that already has the `willcord` command. */
+export function joinCommand(origin: string, ca: string, system: boolean, fingerprint?: string): string {
+  return `${system ? "sudo " : ""}willcord worker join ${joinArgs(origin, ca, system, fingerprint).join(" ")}`;
+}
+/** A main node reached as localhost is not an address another machine can use. */
+export function isLoopbackOrigin(origin: string): boolean {
+  const host = new URL(origin).hostname;
+  return host === "localhost" || host.endsWith(".localhost") || host === "[::1]" || /^127\./.test(host);
 }
 
 /** Root fetched over the administrator's already-trusted HTTPS connection. */

@@ -24,6 +24,7 @@ record()
 if name=='uname':
  print(os.environ.get('TEST_OS','Linux') if args==['-s'] else os.environ.get('TEST_ARCH','x86_64'))
 elif name=='id':
+ if args==['-un']: print('builder');sys.exit()
  if len(args)>1 and args[1]=='missing': sys.exit(1)
  print('0' if len(args)>1 and args[1]=='root' else '1000')
 elif name=='sudo':
@@ -157,6 +158,27 @@ class InstallerTests(unittest.TestCase):
    self.assertNotEqual(r.returncode,0,bad)
   r=self.run_worker('--ca-fingerprint',pin);self.assertNotEqual(r.returncode,0);self.assertIn('不能同时使用',r.stderr)
   self.assertEqual(self.handed_over(),[]);self.clean_tmp()
+ def test_a_join_link_carries_the_address_and_the_pin_in_one_argument(self):
+  pin='ab'*32;link=f'https://plane.internal:8443#sha256={pin}'
+  def worker(*args):return subprocess.run([BASH,str(SCRIPT),'worker',*args],env=self.env,capture_output=True,text=True)
+  r=worker(link);self.assertEqual(r.returncode,0,r.stderr)
+  self.assertEqual(self.handed_over(),[['worker','join','https://plane.internal:8443','--ca-fingerprint',pin]])
+  (self.root/'calls').unlink()
+  # The older --server spelling takes the same link.
+  r=worker('--server',link);self.assertEqual(r.returncode,0,r.stderr)
+  self.assertEqual(self.handed_over(),[['worker','join','https://plane.internal:8443','--ca-fingerprint',pin]])
+  (self.root/'calls').unlink()
+  for args in [[link,'--ca-fingerprint',pin],[link,'--ca',str(self.ca)],[f'https://plane.internal:8443#sha256={pin[:-1]}'],['https://plane.internal:8443#'],['https://plane.internal:8443#sha1='+pin],[link,'https://other.internal'],[]]:
+   with self.subTest(args=args):
+    r=worker(*args);self.assertNotEqual(r.returncode,0)
+  self.assertEqual(self.handed_over(),[]);self.clean_tmp()
+ def test_only_worker_takes_a_bare_link(self):
+  for args in [['https://plane.internal:8443'],['main','https://plane.internal:8443']]:
+   r=subprocess.run([BASH,str(SCRIPT),*args],env=self.env,capture_output=True,text=True);self.assertNotEqual(r.returncode,0,args)
+  self.assertFalse((self.root/'calls').exists())
+ def test_a_system_service_runs_as_the_installing_account_unless_told_otherwise(self):
+  r=subprocess.run([BASH,str(SCRIPT),'worker','https://plane.example.com','--system'],env=self.env,capture_output=True,text=True);self.assertEqual(r.returncode,0,r.stderr)
+  self.assertEqual(self.handed_over(),[['worker','join','https://plane.example.com','--system','--user','builder']])
  def test_reinstall_preserves_identity_and_ledger(self):
   data=self.root/"user's data";data.mkdir()
   for name in ['identity.pk8','ledger.sqlite']:(data/name).write_text('keep')

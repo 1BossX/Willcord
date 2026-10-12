@@ -44,11 +44,11 @@ curl -fsSL https://bossoptional.github.io/Willcord/install.sh | bash -s -- main 
 
 ### 3. 安装 worker
 
-在“机器授权 → 添加机器”复制命令；只有 https 来源才能生成。代理访问时无法使用该弹窗，改为手工拼命令：
+在“机器授权 → 添加机器”复制命令；只有 https 来源才能生成。命令里的地址取自主节点的 `PUBLIC_BASE_URL`；地址是 localhost 时弹窗会警告“其他机器连不上”（本机验收可忽略）。需要手工拼命令时，加入链接 = 地址 + `#sha256=` + CA 指纹：
 
 ```bash
 fp=$(openssl x509 -in <目录>/ca.pem -outform DER | shasum -a 256 | cut -d' ' -f1)
-curl -fsSL https://bossoptional.github.io/Willcord/install.sh | bash -s -- worker --server https://localhost:8443 --ca-fingerprint "$fp"
+curl -fsSL https://bossoptional.github.io/Willcord/install.sh | bash -s -- worker "https://localhost:8443#sha256=$fp"
 ```
 
 检查点：输出里有 `Authorization: pending`、终端指纹和一行 `Status: willcord worker status --json`；`~/.local/bin/willcord` 已就位（不在 `PATH` 时输出一行 `export PATH=…`，且没有改动 shell 配置文件）；设备名是本机主机名而不是 `worker`；没有残留的占位地址（如 `https://your-server`）。

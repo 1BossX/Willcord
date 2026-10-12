@@ -3,7 +3,7 @@ import type { FastifyInstance } from "fastify";
 import type Database from "better-sqlite3";
 const hash = (s: string | Buffer) => createHash("sha256").update(s).digest("hex");
 export const enrollmentPaths = new Set(["/enrollment/challenge", "/enrollment/apply", "/enrollment/credentials", "/enrollment/status", "/enrollment/workspace"]);
-export function registerEnrollment(app: FastifyInstance, db: Database.Database, now: () => number, disconnect: (id: string) => void) {
+export function registerEnrollment(app: FastifyInstance, db: Database.Database, now: () => number, disconnect: (id: string) => void, publicBaseUrl: string) {
   const route = { bodyLimit: 4096, config: { rateLimit: { max: 30, timeWindow: 60000 } } };
   app.post("/enrollment/challenge", route, async () => {
     db.prepare("DELETE FROM enrollment_challenges WHERE expires_at<=?").run(now());
@@ -61,7 +61,7 @@ export function registerEnrollment(app: FastifyInstance, db: Database.Database, 
       return reply.code(result.code).send(result.data);
     });
   }
-  app.get("/api/enrollments", async () => ({ devices: (db.prepare("SELECT e.worker_id,e.name,e.os,e.arch,e.state,e.created_at,e.updated_at,w.online,w.reconciled,w.blocked,s.active_job_id FROM enrollments e LEFT JOIN workers w USING(worker_id) LEFT JOIN worker_slots s USING(worker_id) ORDER BY e.created_at DESC").all() as any[]).map(d=>({...d,workspaces:db.prepare("SELECT workspace_id,path,is_default FROM workspaces WHERE worker_id=?").all(d.worker_id)})) }));
+  app.get("/api/enrollments", async () => ({ public_url: new URL(publicBaseUrl).origin, devices: (db.prepare("SELECT e.worker_id,e.name,e.os,e.arch,e.state,e.created_at,e.updated_at,w.online,w.reconciled,w.blocked,s.active_job_id FROM enrollments e LEFT JOIN workers w USING(worker_id) LEFT JOIN worker_slots s USING(worker_id) ORDER BY e.created_at DESC").all() as any[]).map(d=>({...d,workspaces:db.prepare("SELECT workspace_id,path,is_default FROM workspaces WHERE worker_id=?").all(d.worker_id)})) }));
   app.patch<{Params:{id:string}}>("/api/enrollments/:id",async(req,reply)=>{
     const name=(req.body as {name?:unknown}|null)?.name;
     if(typeof name!=="string" || !name.trim() || name.length>128) return reply.code(400).send({error:"invalid_metadata"});

@@ -408,7 +408,7 @@ export async function createApp(
   registerEnrollment(app, db, now, (id) => {
     const c = connections.get(id);
     if (c) { offline(id, c.epoch); c.socket.close(1008, "device authorization revoked"); connections.delete(id); }
-  });
+  }, origin);
   app.post("/api/worker-tokens", async (req, reply) => {
     const id = (req.body as { worker_id?: unknown } | null)?.worker_id;
     if (typeof id !== "string" || !id.length || id.length > 128)

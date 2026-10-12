@@ -33,23 +33,24 @@ willcord main init
 
 向导只问访问地址（自动列出本机探测到的内网 IP 供选择）和首次管理员密码，生成配置、启动服务并导出 `ca.pem`。模型不在安装时设置：登录控制台后在侧栏“模型连接”绑定 API key。让浏览器信任这个根证书后登录控制台。向导结束后会记住部署目录：在任意目录运行 `willcord main status | logs | down | up | upgrade` 即可。执行机器上的命令都在 `willcord worker …` 之下。
 
-**第 2 步 · worker**（Linux/macOS x86_64/arm64；Linux 需要 glibc 2.17 或更新）：在控制台打开“机器授权 → 添加机器”，拿到主节点地址和 CA 指纹，在执行机器上以普通账户运行：
+**第 2 步 · worker**（Linux/macOS x86_64/arm64；Linux 需要 glibc 2.17 或更新）：在控制台打开“机器授权 → 添加机器”复制命令，也可以直接用 `willcord main init` / `willcord main status` 结尾打印的那一行。在执行机器上以普通账户运行：
 
 ```sh
-willcord worker join 'https://plane.internal:8443' --ca-fingerprint '<控制台提供的64位指纹>'
+willcord worker join 'https://plane.internal:8443#sha256=<控制台提供的64位指纹>'
 ```
 
-控制台复制出来的是一步完成的写法（安装命令并加入），等价于上面两步，也可以直接用：
+引号里是一个**加入链接**：主节点地址，加上 `#sha256=` 和主节点根证书的指纹。还没装 willcord 命令的机器，用控制台给出的第一条命令，一步完成安装并加入：
 
 ```sh
-curl -fsSL https://bossoptional.github.io/Willcord/install.sh | bash -s -- worker --server 'https://plane.internal:8443' --ca-fingerprint '<控制台提供的64位指纹>'
+curl -fsSL https://bossoptional.github.io/Willcord/install.sh | bash -s -- worker 'https://plane.internal:8443#sha256=<控制台提供的64位指纹>'
 ```
 
-- 指纹只从已信任的控制台复制，不要手写。安装器核对根证书的 SHA-256 指纹后，才建立 HTTPS/WSS 连接；执行机器不必提前复制证书。
-- 常驻服务器加 `--system --user 'ops'`，以已有的非 root 账户运行系统级服务。
+- 指纹只从已信任的控制台复制，不要手写。安装器核对根证书的 SHA-256 指纹后，才建立 HTTPS/WSS 连接；执行机器不必提前复制证书。公共可信证书可以只写地址。
+- 机器名默认是主机名，用 `--name 名称` 指定，之后也能在控制台改。
+- 常驻服务器加 `--system`（命令前加 `sudo`），以执行 sudo 的账户运行系统级服务；换账户加 `--user 'ops'`，账户必须已存在且不是 root。
 - 用户级服务：macOS 在用户登录后启动；Linux 需要 systemd 用户会话。
 - 安装器默认安装最新正式 Release，并校验 SHA-256；固定版本加 `--version vX.Y.Z`。
-- CA 指纹接入从 v0.3.0 起提供；更早版本使用手动 `--ca`，见[安装指南](docs/installation.md#手动-ca-兼容流程)。
+- CA 指纹接入从 v0.3.0 起提供；更早版本使用手动 `--ca`，见[安装指南](docs/installation.md#手动-ca-兼容流程)。分开写的 `--ca-fingerprint` 仍然可用。
 
 在控制台核对终端显示的指纹后批准，等机器显示“可执行”。然后选择默认工作目录创建会话，输入“列出当前工作目录的文件，并报告工作目录路径”。任务成功后，再添加已有项目目录，或用 Main Agent 跨机器委派任务。
 

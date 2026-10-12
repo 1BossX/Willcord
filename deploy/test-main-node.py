@@ -4,6 +4,7 @@
 Needs the debug build (cargo build --manifest-path worker/Cargo.toml): its test
 seams (WILLCORD_TEST_ADDRS, WILLCORD_TEST_OS) do not exist in release builds.
 """
+import hashlib
 import http.server
 import json
 import os
@@ -242,6 +243,17 @@ class MainNodeTests(unittest.TestCase):
                 self.assertEqual(code, 0, out)
                 self.assertIn(needle, out)
                 self.assertIn('deployment/ca.pem', out)
+
+    def test_init_and_status_print_the_commands_that_join_a_worker(self):
+        code, out = self.init()
+        self.assertEqual(code, 0, out)
+        der = subprocess.check_output(['openssl', 'x509', '-in', str(self.deploy / 'ca.pem'), '-outform', 'DER'])
+        link = f"'{self.origin}#sha256={hashlib.sha256(der).hexdigest()}'"
+        self.assertIn(f'| bash -s -- worker {link}', out)
+        self.assertIn(f'willcord worker join {link}', out)
+        r = self.cli('main', 'status', '--dir', str(self.deploy))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(f'willcord worker join {link}', r.stdout)
 
     def test_start_failure_keeps_config_and_password_for_recovery(self):
         code, out = self.init(env={'TEST_START_FAIL': '1'})

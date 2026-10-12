@@ -304,23 +304,35 @@ async fn fetch_pinned_ca(base: &str, fingerprint: &str) -> Result<PathBuf, Error
         .write_all(pem.as_bytes())?;
     Ok(path)
 }
-/// A single certificate whose DER hashes to `fingerprint`, as clean PEM; anything
-/// else the response carried is dropped.
-fn pinned_ca_pem(body: &[u8], fingerprint: &str) -> Result<String, Error> {
+/// The DER of the one certificate in `body`, which must be something rustls
+/// would accept as a trust anchor, not merely base64.
+fn single_certificate_der(body: &[u8]) -> Result<Vec<u8>, Error> {
     let text = std::str::from_utf8(body).map_err(|_| "根证书不是文本 PEM。")?;
     if text.matches("-----BEGIN CERTIFICATE-----").count() != 1
         || text.matches("-----END CERTIFICATE-----").count() != 1
     {
         return Err("必须提供单张根证书。".into());
     }
-    // Must be something rustls would accept as a trust anchor, not merely base64.
     reqwest::Certificate::from_pem(body).map_err(|_| "根证书格式无效。")?;
     let inner = text
         .split_once("-----BEGIN CERTIFICATE-----")
         .and_then(|(_, rest)| rest.split_once("-----END CERTIFICATE-----"))
         .map(|(inner, _)| inner.split_whitespace().collect::<String>())
         .ok_or("根证书格式无效。")?;
-    let der = B64.decode(inner).map_err(|_| "根证书格式无效。")?;
+    Ok(B64.decode(inner).map_err(|_| "根证书格式无效。")?)
+}
+/// The SHA-256 of a root certificate's DER, as the console shows it and a join
+/// link carries it.
+pub(crate) fn ca_fingerprint(pem: &[u8]) -> Result<String, Error> {
+    Ok(format!(
+        "{:x}",
+        Sha256::digest(single_certificate_der(pem)?)
+    ))
+}
+/// A single certificate whose DER hashes to `fingerprint`, as clean PEM; anything
+/// else the response carried is dropped.
+fn pinned_ca_pem(body: &[u8], fingerprint: &str) -> Result<String, Error> {
+    let der = single_certificate_der(body)?;
     if format!("{:x}", Sha256::digest(&der)) != fingerprint.to_ascii_lowercase() {
         return Err("CA 指纹不匹配，未安装或申请加入。".into());
     }
@@ -686,8 +698,14 @@ fn install_system(root: &Path, user: Option<&str>, ca: Option<PathBuf>) -> Resul
     if unsafe { libc::geteuid() } != 0 {
         return Err("a system service must be installed as root (sudo)".into());
     }
-    let user = user
-        .ok_or("install --system requires --user ACCOUNT, the existing account commands run as")?;
+    let default;
+    let user = match user {
+        Some(user) => user,
+        None => {
+            default = default_service_account()?;
+            &default
+        }
+    };
     let (uid, gid, home) = lookup(user)?;
     let old = root
         .join("system.json")
@@ -767,11 +785,12 @@ fn install_next_step(system_user: Option<&str>, command: &str, attempted: bool) 
     } else {
         ""
     };
+    let link = "'https://<主节点地址>#sha256=<控制台显示的 CA 指纹>'";
     match system_user {
         Some(user) => format!(
-            "Installed as a system service running as {user}. Next: sudo {command} worker join --system <server-https-origin>{note}"
+            "Installed as a system service running as {user}. Next: sudo {command} worker join --system {link}{note}"
         ),
-        None => format!("Installed. Next: {command} worker join <server-https-origin>{note}"),
+        None => format!("Installed. Next: {command} worker join {link}{note}"),
     }
 }
 /// The command that shows this machine's state, as it can be typed.
@@ -810,6 +829,63 @@ fn https_origin(raw: &str) -> Result<String, Error> {
         return Err("join requires an HTTPS origin".into());
     }
     Ok(url.as_str().trim_end_matches('/').to_owned())
+}
+/// A join link is the main node's HTTPS origin, optionally followed by
+/// `#sha256=<64 hex>`: the SHA-256 of its root CA certificate (DER), so that one
+/// argument carries both what to connect to and whom to trust.
+fn parse_join_link(raw: &str) -> Result<(String, Option<String>), Error> {
+    let (origin, fragment) = match raw.split_once('#') {
+        Some((origin, fragment)) => (origin, Some(fragment)),
+        None => (raw, None),
+    };
+    let fingerprint = match fragment {
+        None => None,
+        Some(f) => match f.strip_prefix("sha256=") {
+            Some(hex) if hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit()) => {
+                Some(hex.to_ascii_lowercase())
+            }
+            _ => return Err("加入链接的 # 后只能是 sha256=<64 位十六进制 CA 指纹>。".into()),
+        },
+    };
+    Ok((https_origin(origin)?, fingerprint))
+}
+/// `join LINK` with the fingerprint folded into `--ca-fingerprint`, which is what
+/// the rest of the join path reads. The link's origin replaces the argument.
+fn expand_join_link(args: &mut Vec<String>) -> Result<(), Error> {
+    let Some(i) = args
+        .iter()
+        .position(|a| a.starts_with("https://") && a.contains('#'))
+    else {
+        return Ok(());
+    };
+    let (origin, fingerprint) = parse_join_link(&args[i])?;
+    if let Some(fingerprint) = fingerprint {
+        if args.iter().any(|a| a == "--ca" || a == "--ca-fingerprint") {
+            return Err("加入链接已含 CA 指纹，不能再与 --ca、--ca-fingerprint 同用。".into());
+        }
+        args.push("--ca-fingerprint".into());
+        args.push(fingerprint);
+    }
+    args[i] = origin;
+    Ok(())
+}
+/// The name given with `--name`, cleaned the way the hostname is.
+fn join_name(raw: &str) -> Result<String, Error> {
+    if raw.trim().is_empty() {
+        return Err("--name 不能为空。".into());
+    }
+    Ok(normalize_device_name(raw, None))
+}
+/// `--system` without `--user`: the person who ran sudo, since that is whose
+/// machine this is. Never root.
+fn default_service_account() -> Result<String, Error> {
+    match std::env::var("SUDO_USER") {
+        Ok(user) if valid_user(&user) && user != "root" => Ok(user),
+        _ => Err(
+            "--system 需要 --user 指定已有普通账户（用 sudo 运行时默认取执行 sudo 的账户）。"
+                .into(),
+        ),
+    }
 }
 /// The CA an earlier install of this scope saved.
 fn saved_ca(system: bool) -> Option<PathBuf> {
@@ -855,7 +931,7 @@ fn session_available(system: bool) -> Result<(), Error> {
                 .args(["--user", "show-environment"])
                 .output()
                 .is_ok_and(|o| o.status.success()),
-            "需要 systemd 用户会话；常驻服务器请用 --system --user ACCOUNT。",
+            "需要 systemd 用户会话；常驻服务器请用 --system。",
         )
     };
     if ok { Ok(()) } else { Err(why.into()) }
@@ -864,7 +940,7 @@ fn session_available(system: bool) -> Result<(), Error> {
 /// yet (or is an older build): install it, then join through the installed copy.
 /// `--ca FILE` or `--ca-fingerprint SHA256` says whom to trust for a private CA.
 /// Returns false when there is nothing to install and the plain join should run.
-async fn join_installing(args: &[String]) -> Result<bool, Error> {
+async fn join_installing(args: &[String], name: Option<&str>) -> Result<bool, Error> {
     let mut probe = args.to_vec();
     let ca = take_value(&mut probe, "--ca")?;
     let fingerprint = take_value(&mut probe, "--ca-fingerprint")?;
@@ -882,14 +958,11 @@ async fn join_installing(args: &[String]) -> Result<bool, Error> {
         root()?
     })?;
     if probe.len() != 2 {
-        return Err("usage: willcord worker join URL [--ca FILE | --ca-fingerprint SHA256] [--system --user ACCOUNT]".into());
+        return Err("usage: willcord worker join LINK [--name NAME] [--ca FILE | --ca-fingerprint SHA256] [--system [--user ACCOUNT]]".into());
     }
     let base = https_origin(&probe[1])?;
     let unix_euid = unsafe { libc::geteuid() };
     if system {
-        if account.is_none() {
-            return Err("--system 需要 --user 指定已有普通账户。".into());
-        }
         if unix_euid != 0 {
             return Err("系统级安装需要 root：请用 sudo 运行。".into());
         }
@@ -898,7 +971,7 @@ async fn join_installing(args: &[String]) -> Result<bool, Error> {
             return Err("--user 只能与 --system 一起使用。".into());
         }
         if unix_euid == 0 {
-            return Err("用户级安装请不要使用 sudo；服务器请指定 --system --user。".into());
+            return Err("用户级安装请不要使用 sudo；服务器请加 --system。".into());
         }
     }
     if let Some(file) = &ca {
@@ -952,13 +1025,16 @@ async fn join_installing(args: &[String]) -> Result<bool, Error> {
     if system {
         join.arg("--system");
     }
+    if let Some(name) = name {
+        join.args(["--name", name]);
+    }
     let status = join.arg(&base).status()?;
     std::process::exit(status.code().unwrap_or(1));
 }
 const USAGE: &str = "usage:
   willcord main init [--dir DIR] [--server HTTPS_ORIGIN] [--image-version vX.Y.Z]
   willcord main up | down | status | logs [SERVICE...] | upgrade --image-version vX.Y.Z   (add --dir DIR outside the deployment directory)
-  willcord worker install [--system --user ACCOUNT] | join URL [--ca FILE | --ca-fingerprint SHA256] [--system --user ACCOUNT] [--no-service] | status [--json] | workspace add ID PATH | workspace list | run [--config FILE] | uninstall [--delete-data]   (add --system to manage the system service)
+  willcord worker install [--system [--user ACCOUNT]] | join LINK [--name NAME] [--ca FILE | --ca-fingerprint SHA256] [--system [--user ACCOUNT]] [--no-service] | status [--json] | workspace add ID PATH | workspace list | run [--config FILE] | uninstall [--delete-data]   (add --system to manage the system service; LINK is https://HOST:PORT, optionally followed by #sha256=CA_FINGERPRINT)
   willcord self-install | self-uninstall [--system]   (put this program on PATH, or take it off again)
   willcord version";
 /// A mistyped command is not a failure with a backtrace-style message: say so plainly and exit.
@@ -1057,6 +1133,16 @@ async fn worker(mut args: Vec<String>) -> Result<Option<PathBuf>, Error> {
         }
         Route::Unknown => usage_error(Some(command)),
     }
+    // `join LINK`: the link's fingerprint becomes `--ca-fingerprint`, so what follows
+    // reads the same flags whether the person typed a link or the two arguments.
+    let name = take_value(&mut args, "--name")?;
+    if name.is_some() && command != "join" {
+        return Err("--name 只用于 join。".into());
+    }
+    let name = name.as_deref().map(join_name).transpose()?;
+    if command == "join" {
+        expand_join_link(&mut args)?;
+    }
     // `join --no-service` only files the request, for a process managed some other way.
     let no_service = command == "join" && take_flag(&mut args, "--no-service");
     if no_service && args.iter().any(|a| a == "--ca" || a == "--ca-fingerprint") {
@@ -1064,7 +1150,7 @@ async fn worker(mut args: Vec<String>) -> Result<Option<PathBuf>, Error> {
             "--no-service 不安装服务，也就不保存 CA：不能与 --ca、--ca-fingerprint 同用。".into(),
         );
     }
-    if command == "join" && !no_service && join_installing(&args).await? {
+    if command == "join" && !no_service && join_installing(&args, name.as_deref()).await? {
         return Ok(None);
     }
     // A hand-installed service names its configuration file instead of
@@ -1107,7 +1193,10 @@ async fn worker(mut args: Vec<String>) -> Result<Option<PathBuf>, Error> {
         }
         None => {
             if command == "install" && unsafe { libc::geteuid() } == 0 {
-                return Err("install as root needs --system --user ACCOUNT; run without sudo for a per-user service".into());
+                return Err(
+                    "install as root needs --system; run without sudo for a per-user service"
+                        .into(),
+                );
             }
             let dir = root()?;
             if ["install", "join", "run"].contains(&command) {
@@ -1154,7 +1243,10 @@ async fn worker(mut args: Vec<String>) -> Result<Option<PathBuf>, Error> {
                 identity(&dir)?;
                 save(
                     &dir.join("enrollment.json"),
-                    serde_json::to_string(&json!({"url":base,"name":device_name()}))?.as_bytes(),
+                    serde_json::to_string(
+                        &json!({"url":base,"name":name.clone().unwrap_or_else(device_name)}),
+                    )?
+                    .as_bytes(),
                 )?;
             }
             setup(&dir, base)?;
@@ -1504,11 +1596,11 @@ mod tests {
         let user = install_next_step(None, "willcord", false);
         assert_eq!(
             user,
-            "Installed. Next: willcord worker join <server-https-origin>"
+            "Installed. Next: willcord worker join 'https://<主节点地址>#sha256=<控制台显示的 CA 指纹>'"
         );
         let system = install_next_step(Some("ops"), "willcord", true);
         assert!(system.contains(
-            "running as ops. Next: sudo willcord worker join --system <server-https-origin>"
+            "running as ops. Next: sudo willcord worker join --system 'https://<主节点地址>#sha256=<控制台显示的 CA 指纹>'"
         ));
         assert!(system.ends_with("already attempted; this shows its current state)"));
         // Every command it names must route: nothing is left at the top level.
@@ -1587,6 +1679,66 @@ mod tests {
         ] {
             assert!(https_origin(bad).is_err(), "{bad}");
         }
+    }
+    #[test]
+    fn a_join_link_carries_the_origin_and_the_ca_fingerprint() {
+        let fp = "AB".repeat(32);
+        assert_eq!(
+            parse_join_link(&format!("https://plane.internal:8443#sha256={fp}")).unwrap(),
+            (
+                "https://plane.internal:8443".to_owned(),
+                Some(fp.to_ascii_lowercase())
+            )
+        );
+        assert_eq!(
+            parse_join_link("https://plane.example.com").unwrap(),
+            ("https://plane.example.com".to_owned(), None)
+        );
+        for bad in [
+            "https://plane.internal#".to_owned(),
+            "https://plane.internal#sha256=abc".to_owned(),
+            format!("https://plane.internal#sha1={fp}"),
+            format!("https://plane.internal#sha256={}z", &fp[..63]),
+            format!("http://plane.internal#sha256={fp}"),
+            format!("https://plane.internal/path#sha256={fp}"),
+        ] {
+            assert!(parse_join_link(&bad).is_err(), "{bad}");
+        }
+    }
+    #[test]
+    fn a_link_expands_into_the_flags_the_join_path_reads() {
+        let fp = "ab".repeat(32);
+        let link = format!("https://plane.internal:8443#sha256={fp}");
+        let mut args: Vec<String> = ["join", "--system", &link].map(String::from).to_vec();
+        expand_join_link(&mut args).unwrap();
+        assert_eq!(
+            args,
+            [
+                "join",
+                "--system",
+                "https://plane.internal:8443",
+                "--ca-fingerprint",
+                &fp
+            ]
+        );
+        // A bare origin is left for the existing validation.
+        let mut bare: Vec<String> = ["join", "https://plane.internal"]
+            .map(String::from)
+            .to_vec();
+        expand_join_link(&mut bare).unwrap();
+        assert_eq!(bare, ["join", "https://plane.internal"]);
+        // One way of naming the CA at a time.
+        for extra in [["--ca", "/ca.pem"], ["--ca-fingerprint", fp.as_str()]] {
+            let mut both: Vec<String> = ["join", &link].map(String::from).to_vec();
+            both.extend(extra.map(String::from));
+            assert!(expand_join_link(&mut both).is_err());
+        }
+    }
+    #[test]
+    fn a_name_is_cleaned_like_a_hostname_and_never_empty() {
+        assert_eq!(join_name("  build-box.local ").unwrap(), "build-box");
+        assert!(join_name("   ").is_err());
+        assert!(join_name("").is_err());
     }
     #[test]
     fn the_status_command_follows_the_scope() {

@@ -266,13 +266,10 @@ async fn client() -> Result<reqwest::Client, Error> {
 }
 /// The root certificate a main node publishes for first contact. This is the one
 /// request made without verifying the server, which is only safe because the
-/// certificate it returns must match a fingerprint the person got out of band,
-/// and nothing else from that connection is used. Returns a private temporary file.
-async fn fetch_pinned_ca(base: &str, fingerprint: &str) -> Result<PathBuf, Error> {
+/// caller must check what it returns against a fingerprint the person got out of
+/// band, and nothing else from that connection is used. Returns the raw body.
+pub(crate) async fn fetch_published_ca(base: &str) -> Result<Vec<u8>, Error> {
     const LIMIT: usize = 64 * 1024;
-    if fingerprint.len() != 64 || !fingerprint.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Err("CA 指纹必须是证书 DER 的 64 位 SHA-256。".into());
-    }
     let client = reqwest::Client::builder()
         .https_only(true)
         .danger_accept_invalid_certs(true)
@@ -293,7 +290,21 @@ async fn fetch_pinned_ca(base: &str, fingerprint: &str) -> Result<PathBuf, Error
             return Err("根证书响应过大。".into());
         }
     }
-    let pem = pinned_ca_pem(&body, fingerprint)?;
+    Ok(body)
+}
+
+/// A CA fingerprint as the 64 hex digits of a SHA-256, lower-cased.
+pub(crate) fn valid_fingerprint(fingerprint: &str) -> Result<String, Error> {
+    if fingerprint.len() != 64 || !fingerprint.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("CA 指纹必须是证书 DER 的 64 位 SHA-256。".into());
+    }
+    Ok(fingerprint.to_ascii_lowercase())
+}
+
+async fn fetch_pinned_ca(base: &str, fingerprint: &str) -> Result<PathBuf, Error> {
+    let fingerprint = valid_fingerprint(fingerprint)?;
+    let body = fetch_published_ca(base).await?;
+    let pem = pinned_ca_pem(&body, &fingerprint)?;
     let path = std::env::temp_dir().join(format!("willcord-ca-{}.pem", uuid::Uuid::new_v4()));
     use std::os::unix::fs::OpenOptionsExt;
     fs::OpenOptions::new()
@@ -336,7 +347,14 @@ fn pinned_ca_pem(body: &[u8], fingerprint: &str) -> Result<String, Error> {
     if format!("{:x}", Sha256::digest(&der)) != fingerprint.to_ascii_lowercase() {
         return Err("CA 指纹不匹配，未安装或申请加入。".into());
     }
-    let b64 = B64.encode(&der);
+    pem_of_der(&der)
+}
+/// The one certificate in `body` as clean PEM, whatever else the response carried.
+pub(crate) fn certificate_pem(body: &[u8]) -> Result<String, Error> {
+    pem_of_der(&single_certificate_der(body)?)
+}
+fn pem_of_der(der: &[u8]) -> Result<String, Error> {
+    let b64 = B64.encode(der);
     let mut pem = String::from("-----BEGIN CERTIFICATE-----\n");
     for line in b64.as_bytes().chunks(64) {
         pem.push_str(std::str::from_utf8(line)?);
@@ -346,8 +364,24 @@ fn pinned_ca_pem(body: &[u8], fingerprint: &str) -> Result<String, Error> {
     Ok(pem)
 }
 /// Before anything is installed: does the main node answer HTTPS under this trust?
-async fn check_main_node(base: &str, ca: Option<&Path>) -> Result<(), Error> {
+pub(crate) async fn probe_https_health(base: &str, ca: Option<&Path>) -> Result<(), Error> {
     let client = client_trusting(ca)?;
+    check_health(&client, base).await
+}
+/// Trust-ca's check: only the root just downloaded and saved. The machine's own roots
+/// are left out, so a publicly or internally trusted certificate on the same origin
+/// cannot pass for the main node's root and get it imported.
+pub(crate) async fn probe_pinned_https_health(base: &str, ca: &Path) -> Result<(), Error> {
+    let client = reqwest::Client::builder()
+        .https_only(true)
+        .tls_built_in_root_certs(false)
+        .add_root_certificate(reqwest::Certificate::from_pem(&fs::read(ca)?)?)
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(15))
+        .build()?;
+    check_health(&client, base).await
+}
+async fn check_health(client: &reqwest::Client, base: &str) -> Result<(), Error> {
     client
         .get(format!("{base}/health"))
         .timeout(std::time::Duration::from_secs(15))
@@ -833,7 +867,7 @@ fn https_origin(raw: &str) -> Result<String, Error> {
 /// A join link is the main node's HTTPS origin, optionally followed by
 /// `#sha256=<64 hex>`: the SHA-256 of its root CA certificate (DER), so that one
 /// argument carries both what to connect to and whom to trust.
-fn parse_join_link(raw: &str) -> Result<(String, Option<String>), Error> {
+pub(crate) fn parse_join_link(raw: &str) -> Result<(String, Option<String>), Error> {
     let (origin, fragment) = match raw.split_once('#') {
         Some((origin, fragment)) => (origin, Some(fragment)),
         None => (raw, None),
@@ -1001,7 +1035,7 @@ async fn join_installing(args: &[String], name: Option<&str>) -> Result<bool, Er
         let _ = SYSTEM_CA.set(ca.clone());
     }
     let installed = async {
-        check_main_node(&base, ca_file.as_deref()).await?;
+        probe_https_health(&base, ca_file.as_deref()).await?;
         let (sys, dir) = if system {
             let sys = install_system(&system_root()?, account.as_deref(), ca_file.clone())?;
             let dir = sys.data();
@@ -1036,6 +1070,7 @@ const USAGE: &str = "usage:
   willcord main up | down | status | logs [SERVICE...] | upgrade --image-version vX.Y.Z   (add --dir DIR outside the deployment directory)
   willcord worker install [--system [--user ACCOUNT]] | join LINK [--name NAME] [--ca FILE | --ca-fingerprint SHA256] [--system [--user ACCOUNT]] [--no-service] | status [--json] | workspace add ID PATH | workspace list | run [--config FILE] | uninstall [--delete-data]   (add --system to manage the system service; LINK is https://HOST:PORT, optionally followed by #sha256=CA_FINGERPRINT)
   willcord self-install | self-uninstall [--system]   (put this program on PATH, or take it off again)
+  willcord trust-ca LINK [--ca-fingerprint SHA256]   (trust the main node's root certificate on this machine; LINK is https://HOST:PORT, optionally followed by #sha256=CA_FINGERPRINT)
   willcord version";
 /// A mistyped command is not a failure with a backtrace-style message: say so plainly and exit.
 fn usage_error(command: Option<&str>) -> ! {
@@ -1106,6 +1141,14 @@ pub async fn dispatch() -> Result<Option<PathBuf>, Error> {
                 crate::path_install::uninstall_running(scope)?.1
             };
             println!("{text}");
+            return Ok(None);
+        }
+        Some("trust-ca") => {
+            args.remove(0);
+            if let Err(e) = crate::trust::trust_ca(args).await {
+                eprintln!("willcord: {e}");
+                std::process::exit(1);
+            }
             return Ok(None);
         }
         Some("version" | "-V" | "--version") => {

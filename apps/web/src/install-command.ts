@@ -45,8 +45,9 @@ export async function certificateFingerprint(pem: string): Promise<string> {
   const hash = await crypto.subtle.digest("SHA-256", der);
   return Array.from(new Uint8Array(hash), b => b.toString(16).padStart(2, "0")).join("");
 }
+export const caPemPath = "/.well-known/willcord/ca.pem";
 export async function loadCaFingerprint(signal: AbortSignal): Promise<string> {
-  const response = await fetch("/.well-known/willcord/ca.pem", { signal, credentials: "omit", redirect: "error", cache: "no-store" });
+  const response = await fetch(caPemPath, { signal, credentials: "omit", redirect: "error", cache: "no-store" });
   if (!response.ok || !response.body) throw new Error("主节点未启用 CA 自动获取，可选择手动 CA 或系统信任");
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = []; let size = 0;

@@ -15,9 +15,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return
 
 
+class ReuseTCPServer(socketserver.TCPServer):
+    allow_reuse_address = True
+
+
 def main() -> None:
     port = int(sys.argv[1])
-    with socketserver.TCPServer(("127.0.0.1", port), Handler) as httpd:
+    with ReuseTCPServer(("127.0.0.1", port), Handler) as httpd:
         httpd.serve_forever()
 
 

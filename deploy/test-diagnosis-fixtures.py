@@ -6,10 +6,12 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -27,6 +29,25 @@ def docker_ok() -> bool:
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     ).returncode == 0
+
+
+def passwordless_sudo() -> bool:
+    return subprocess.run(
+        ["sudo", "-n", "true"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    ).returncode == 0
+
+
+def wait_for_tcp(host: str, port: int, timeout: float = 10.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection((host, port), timeout=0.25):
+                return
+        except OSError:
+            time.sleep(0.05)
+    raise TimeoutError(f"port {host}:{port} not accepting connections within {timeout}s")
 
 
 def run_probe(command: str) -> tuple[int, str, str]:
@@ -100,6 +121,8 @@ class DiagnosisFixtureTests(unittest.TestCase):
             requires = set(case.get("requires") or [])
             if "docker" in requires and not docker_ok():
                 continue
+            if "sudo" in requires and not passwordless_sudo():
+                continue
             self._run_case(slug, case)
 
     def _run_case(self, slug: str, case: dict) -> None:
@@ -108,9 +131,7 @@ class DiagnosisFixtureTests(unittest.TestCase):
         if "loopback_http" in (case.get("requires") or []):
             health = HealthServer(HEALTH_PORT)
             health.start()
-            import time
-
-            time.sleep(0.2)
+            wait_for_tcp("127.0.0.1", HEALTH_PORT)
         try:
             subprocess.run(["bash", str(case_dir / case["setup"])], check=True, cwd=case_dir)
             outputs: dict[str, str] = {}

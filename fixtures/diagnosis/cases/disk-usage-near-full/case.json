@@ -16,7 +16,7 @@
     {
       "call_id": "bash-2",
       "tool": "bash",
-      "command": "du --max-depth=1 /tmp/willcord-diagnosis-fixtures/disk-near-full/mnt"
+      "command": "du -a --max-depth=1 /tmp/willcord-diagnosis-fixtures/disk-near-full/mnt"
     }
   ],
   "expected": {

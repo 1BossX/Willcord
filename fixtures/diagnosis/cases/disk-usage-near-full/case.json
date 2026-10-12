@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "case_id": "o1-kr1-002-disk-near-full",
+  "scenario_id": "disk-usage",
+  "title": "独立挂载点磁盘将满",
+  "description": "在 /tmp/willcord-diagnosis-fixtures/disk-near-full/mnt 挂载 16M tmpfs 并写满，df 显示接近 100%。",
+  "requires": ["sudo"],
+  "setup": "setup.sh",
+  "teardown": "teardown.sh",
+  "probes": [
+    {
+      "call_id": "bash-1",
+      "tool": "bash",
+      "command": "df -h /tmp/willcord-diagnosis-fixtures/disk-near-full/mnt"
+    },
+    {
+      "call_id": "bash-2",
+      "tool": "bash",
+      "command": "du -a --max-depth=1 /tmp/willcord-diagnosis-fixtures/disk-near-full/mnt"
+    }
+  ],
+  "expected": {
+    "inconclusive": false,
+    "probe_outputs_contain": {
+      "bash-1": ["disk-near-full", "mnt"],
+      "bash-2": ["fill.bin"]
+    },
+    "reference_summary": "## 结论\n挂载点 /tmp/willcord-diagnosis-fixtures/disk-near-full/mnt 磁盘空间已用尽或接近用尽。\n\n## 证据\n调用 `bash-1` 的 df 显示该挂载点使用率极高；调用 `bash-2` 的 du 显示该路径下存在大文件占用。\n\n## 建议的下一步\n确认可删除的数据或扩容该卷；在业务低峰执行清理并再次用 df 验证。"
+  }
+}

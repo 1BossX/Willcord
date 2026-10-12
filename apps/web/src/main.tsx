@@ -9,8 +9,10 @@ import { AttentionPanel, BudgetRows, CancelButton, DispatchBanner, InlineCancel,
 import { callLiveness, jobActivity, lastOutputOf } from "./call-liveness";
 import { useNow } from "./clock";
 import { CaTrustGuide } from "./ca-trust-guide";
-import { diagnosisScenarios, type DiagnosisScenario } from "./diagnosis-scenarios";
 import { useFeed } from "./feed";
+import { DiagnosisResultPanel, type DiagnosisReport } from "./diagnosis-result";
+import { canReuseDiagnosisSession } from "./diagnosis-session";
+import { diagnosisScenarios, type DiagnosisScenario } from "./diagnosis-scenarios";
 import { loginFailureMessage } from "./login-connectivity";
 import { SetupJourneyPanel, START_FIRST_DIAGNOSIS } from "./setup-journey-panel";
 import "./style.css";
@@ -43,6 +45,8 @@ type Session = {
   path: string;
   created_at: number;
   title: string | null;
+  execution_mode?: "diagnosis" | null;
+  diagnosis_scenario?: DiagnosisScenario["id"] | null;
   /** Set on a child session created by a Main Agent delegation. */
   parent_job_id?: string | null;
   delegation_id?: string | null;
@@ -70,6 +74,11 @@ type Job = JobControl & {
   started_at: number | null;
   queue_position: number | null;
   wait_until: number | null;
+  result?: {
+    outcome: string;
+    summary: string;
+    diagnosis?: DiagnosisReport;
+  } | null;
 };
 type Message = { message_id: string; job_id: string; content_json: string };
 type ToolContent = {
@@ -633,6 +642,31 @@ type LogState = { job_id: string; call_id: string; stream: string; bytes_held: n
  * machine it waits for, children, a stop in progress, a check it needs, and
  * earlier exchanges the model did not see.
  */
+function DiagnosisScenarioButtons({
+  disabled,
+  onPick,
+}: {
+  disabled?: boolean;
+  onPick: (scenario: DiagnosisScenario) => void;
+}) {
+  return (
+    <div className="prompt-suggestions diagnosis-scenario-grid">
+      {diagnosisScenarios.map((scenario) => (
+        <button
+          key={scenario.id}
+          type="button"
+          disabled={disabled}
+          onClick={() => onPick(scenario)}
+        >
+          <strong>{scenario.title}</strong>
+          <span>{scenario.summary}</span>
+          <Icon name="arrow" />
+        </button>
+      ))}
+    </div>
+  );
+}
+
 /** With no machine yet: say whether one is already waiting for approval, which is easy to miss. */
 function NoMachines({ className }: { className: string }) {
   const pending = usePendingEnrollments();
@@ -914,22 +948,36 @@ function App() {
     setSubmitting(true);
     setError("");
     try {
-      const listed = await request<{ workspaces: Workspace[] }>(
-        `/api/workers/${encodeURIComponent(workerId)}/workspaces?all=true`,
-      );
-      const workspace =
-        listed.workspaces.find((w) => w.is_default) ?? listed.workspaces[0];
-      if (!workspace) throw new Error("这台机器还没有工作目录。");
-      const created = await request<Session>("/api/sessions", {
-        method: "POST",
-        body: JSON.stringify({
-          worker_id: workerId,
-          workspace_id: workspace.workspace_id,
-          repo_id: workspace.repo_id,
-        }),
-      });
-      selectSession(created);
-      await request(`/api/sessions/${encodeURIComponent(created.session_id)}/messages`, {
+      const reuseSession = canReuseDiagnosisSession(
+        activeSession,
+        workerId,
+        scenario.id,
+        messages.length > 0,
+        jobs.length > 0,
+      )
+        ? activeSession!
+        : null;
+      let target = reuseSession;
+      if (!target) {
+        const listed = await request<{ workspaces: Workspace[] }>(
+          `/api/workers/${encodeURIComponent(workerId)}/workspaces?all=true`,
+        );
+        const workspace =
+          listed.workspaces.find((w) => w.is_default) ?? listed.workspaces[0];
+        if (!workspace) throw new Error("这台机器还没有工作目录。");
+        target = await request<Session>("/api/sessions", {
+          method: "POST",
+          body: JSON.stringify({
+            worker_id: workerId,
+            workspace_id: workspace.workspace_id,
+            repo_id: workspace.repo_id,
+            execution_mode: "diagnosis",
+            diagnosis_scenario: scenario.id,
+          }),
+        });
+        selectSession(target);
+      }
+      await request(`/api/sessions/${encodeURIComponent(target.session_id)}/messages`, {
         method: "POST",
         body: JSON.stringify({
           client_request_id: crypto.randomUUID(),
@@ -938,7 +986,7 @@ function App() {
       });
       setDrafts((current) => {
         const next = { ...current };
-        delete next[created.session_id];
+        delete next[target!.session_id];
         return next;
       });
       setSelectedJobId(null);
@@ -1661,11 +1709,13 @@ function App() {
             ) : (
             <div className="target-bar">
               <Icon name="lock" />
-              <span>固定目标</span>
+              <span>{activeSession?.execution_mode === "diagnosis" ? "诊断模式" : "固定目标"}</span>
               <strong title={selectedWorker ?? undefined}>{activeWorker?.display_name ?? selectedWorker}</strong>
               <span className="target-separator">/</span>
               <strong>
-                {activeSession?.workspace_id ?? "尚未选择工作目录"}
+                {activeSession?.execution_mode === "diagnosis"
+                  ? diagnosisScenarios.find((s) => s.id === activeSession.diagnosis_scenario)?.title ?? "主机排障"
+                  : activeSession?.workspace_id ?? "尚未选择工作目录"}
               </strong>
               {activeSession?.repo_id && (
                 <span className="target-repo" title={activeSession.repo_id}>
@@ -1703,16 +1753,22 @@ function App() {
               ) : !sessionId ? (
                 <div className="empty-state">
                   <span className="empty-icon">
-                    <Icon name="chat" />
+                    <Icon name="terminal" />
                   </span>
-                  <h2>为 {activeWorker?.display_name ?? selectedWorker} 开始一个独立会话</h2>
-                  <p>明确选择工作目录后，这个会话始终在同一目标上执行。</p>
+                  <h2>在 {activeWorker?.display_name ?? selectedWorker} 上开始诊断</h2>
+                  <p>选择场景后，Agent 会在这台主机上做只读检查（诊断模式会拦截写入和未授权命令）。</p>
+                  {selectedWorker && (
+                    <DiagnosisScenarioButtons
+                      disabled={submitting || !activeWorker?.schedulable || !modelBound}
+                      onPick={(scenario) => void beginDiagnosisScenario(scenario, selectedWorker)}
+                    />
+                  )}
                   <button
-                    className="primary-button"
+                    type="button"
+                    className="secondary-button diagnosis-manual-session"
                     onClick={() => openNewSession()}
                   >
-                    <Icon name="plus" />
-                    新建独立会话
+                    新建非诊断会话…
                   </button>
                 </div>
               ) : !messages.length && activeSession?.kind === "main" ? (
@@ -1728,31 +1784,21 @@ function App() {
                   <span className="empty-icon">
                     <Icon name="terminal" />
                   </span>
-                  <h2>开始诊断</h2>
+                  <h2>选择诊断场景</h2>
                   <p>
-                    选择场景后发送任务；结果应包含结论、证据与建议的下一步（结构化展示依赖场景入口合入）。
+                    针对这台主机的 Docker、磁盘或部署后服务做只读排障；结果会包含结论、证据与建议的下一步。
                   </p>
-                  <div className="prompt-suggestions diagnosis-scenario-grid">
-                    {diagnosisScenarios.map((scenario) => (
-                      <button
-                        key={scenario.id}
-                        type="button"
-                        disabled={
-                          !activeWorker?.schedulable ||
-                          !modelBound ||
-                          submitting
-                        }
-                        onClick={() => {
-                          if (!activeWorker) return;
-                          void beginDiagnosisScenario(scenario, activeWorker.worker_id);
-                        }}
-                      >
-                        <strong>{scenario.title}</strong>
-                        <span>{scenario.summary}</span>
-                        <Icon name="arrow" />
-                      </button>
-                    ))}
-                  </div>
+                  {activeSession?.kind === "worker" && activeSession.worker_id && (
+                    <DiagnosisScenarioButtons
+                      disabled={submitting || !activeWorker?.schedulable || !modelBound}
+                      onPick={(scenario) => void beginDiagnosisScenario(scenario, activeSession.worker_id)}
+                    />
+                  )}
+                  {activeSession?.execution_mode !== "diagnosis" && (
+                    <p className="muted-copy">
+                      或在下方输入自定义任务（非诊断模式，受工作目录约束）。
+                    </p>
+                  )}
                 </div>
               ) : (
                 <div className="conversation-inner">
@@ -1808,6 +1854,9 @@ function App() {
                           .filter((draft) => draft.job_id === group.job.job_id)
                           .sort((a, b) => a.created_at - b.created_at)
                           .map((draft) => <DraftMessage key={draft.draft_id} draft={draft} agent={agentName} />)}
+                        {group.job.result?.diagnosis && group.job.state === "succeeded" && (
+                          <DiagnosisResultPanel report={group.job.result.diagnosis} />
+                        )}
                         <JobNotes job={group.job} worker={workers.find((w) => w.worker_id === group.job.worker_id)} />
                       </section>
                     );
@@ -1853,8 +1902,10 @@ function App() {
                   }}
                   placeholder={
                     sessionId
-                      ? "描述任务，或继续这个会话…"
-                      : "新建会话后即可提交任务"
+                      ? activeSession?.execution_mode === "diagnosis"
+                        ? "补充说明或继续诊断…"
+                        : "描述任务，或继续这个会话…"
+                      : "选择诊断场景或新建会话"
                   }
                   disabled={!sessionId || submitting}
                   maxLength={32000}
@@ -1877,6 +1928,8 @@ function App() {
                   <Icon name="lock" />
                   {activeSession?.kind === "main"
                     ? "Main Agent 在主节点运行；委派的任务进入各机器的队列。"
+                    : activeSession?.execution_mode === "diagnosis"
+                      ? "诊断模式：仅允许只读检查命令，不会写入文件或执行修复。"
                     : activeWorker?.blocked
                     ? "消息将保留在队列中，等待机器完成核对。"
                     : !activeWorker?.online

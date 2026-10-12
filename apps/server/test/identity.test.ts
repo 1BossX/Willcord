@@ -1,10 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import argon2 from "argon2";
-import { openDatabase } from "../src/storage.js";
+import { MIGRATIONS, openDatabase } from "../src/storage.js";
+
+const expectedMigrations = () =>
+  readdirSync(MIGRATIONS).filter((name) => name.endsWith(".sql")).length;
 import { createApp } from "../src/app.js";
 test("real SQLite migration, reopen, authentication and CSRF boundaries", async () => {
   const dir = mkdtempSync(join(tmpdir(), "willcord-"));
@@ -24,7 +27,7 @@ test("real SQLite migration, reopen, authentication and CSRF boundaries", async 
         n: number;
       }
     ).n,
-    16,
+    expectedMigrations(),
   );
   const app = await createApp(db, "https://localhost:8443", { logging: false });
   try {
@@ -256,7 +259,7 @@ test("migration 001 database upgrades without discarding identity or active slot
         n: number;
       }
     ).n,
-    16,
+    expectedMigrations(),
   );
   assert.deepEqual(
     db.prepare("SELECT connection_epoch,online,reconciled FROM workers").get(),

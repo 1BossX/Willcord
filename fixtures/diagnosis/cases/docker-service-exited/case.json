@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "case_id": "o1-kr1-001-docker-exited",
+  "scenario_id": "docker-service",
+  "title": "容器启动后立即退出（退出码 1）",
+  "description": "一台 Linux 上可重复创建名为 willcord-fixture-docker-exited 的已退出容器。",
+  "requires": ["docker"],
+  "setup": "setup.sh",
+  "teardown": "teardown.sh",
+  "probes": [
+    {
+      "call_id": "bash-1",
+      "tool": "bash",
+      "command": "docker ps -a"
+    },
+    {
+      "call_id": "bash-2",
+      "tool": "bash",
+      "command": "docker inspect willcord-fixture-docker-exited"
+    }
+  ],
+  "expected": {
+    "inconclusive": false,
+    "probe_outputs_contain": {
+      "bash-1": ["willcord-fixture-docker-exited", "Exited"],
+      "bash-2": ["ExitCode", "1"]
+    },
+    "reference_summary": "## 结论\n容器 willcord-fixture-docker-exited 已退出，退出码为 1。\n\n## 证据\n调用 `bash-1` 的 docker ps -a 输出显示该容器为 Exited；调用 `bash-2` 的 docker inspect 显示 ExitCode 为 1。\n\n## 建议的下一步\n查看该容器的 docker logs，核对镜像入口命令与环境变量后再尝试修复。"
+  }
+}

@@ -930,7 +930,7 @@ async fn tool_call(
     let timeout = if call.tool == "bash" {
         let command = call.arguments["command"].as_str().unwrap_or("");
         if diagnosis::is_diagnosis(call.execution_mode.as_deref()) {
-            if diagnosis::bash_allowed(command).is_err() {
+            if diagnosis::bash_argv(command).is_err() {
                 send(socket, &rejected_frame(worker, epoch, &identity, "invalid")).await?;
                 return Ok(());
             }
@@ -1061,15 +1061,15 @@ async fn run_bash(
         Ok(log) => Arc::new(log),
         Err(e) => return failed(&e),
     };
-    let outcome = process::run_bash(
-        command,
-        std::path::Path::new(&workspace.path),
-        timeout,
-        cancel,
-        log.clone(),
-        limits,
-    )
-    .await;
+    let cwd = std::path::Path::new(&workspace.path);
+    let outcome = if diagnosis::is_diagnosis(call.execution_mode.as_deref()) {
+        match diagnosis::bash_argv(command) {
+            Ok(argv) => process::run_direct(&argv, cwd, timeout, cancel, log.clone(), limits).await,
+            Err(e) => return failed(&e),
+        }
+    } else {
+        process::run_bash(command, cwd, timeout, cancel, log.clone(), limits).await
+    };
     let (_, streams) = log.summary();
     match outcome {
         Ok(process::Outcome::Finished(result)) => (

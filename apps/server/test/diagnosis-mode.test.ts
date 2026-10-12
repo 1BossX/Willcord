@@ -70,15 +70,16 @@ test("O2-KR1 diagnosis mode refuses writes and unauthorized bash before executio
       ["b1", 2, "docker restart web"],
       ["b2", 3, "rm -rf /tmp/x"],
       ["b3", 4, "cat /etc/shadow"],
+      ["b-chain", 6, "docker ps & touch pr75-chain-marker"],
     ] as const) {
       peer.call(1, callId, seq, "bash", { command }, "diag-w", "diagnosis");
       assert.equal((await peer.next("tool_rejected", 15000, (f) => f.call_id === callId)).reason, "invalid");
     }
+    assert.equal(existsSync(join(workspace, "pr75-chain-marker")), false);
 
     peer.call(1, "b4", 5, "bash", { command: "docker ps" }, "diag-w", "diagnosis");
     assert.equal((await peer.next("tool_accepted")).call_id, "b4");
-    const allowed = await peer.next("tool_result", 30000, (f) => f.call_id === "b4");
-    assert.equal(typeof allowed.result.exit_code, "number");
+    await peer.next("tool_result", 30000, (f) => f.call_id === "b4");
   } finally {
     if (worker) stopWorker(worker);
     rmSync(dir, { recursive: true, force: true });

@@ -11,81 +11,48 @@ pub fn write_allowed(execution_mode: Option<&str>) -> bool {
 /// Bash is allowed only as a single, read-only inspection command from the
 /// fixed allowlist below. Anything else is refused before exec.
 pub fn bash_allowed(command: &str) -> Result<(), &'static str> {
+    bash_argv(command).map(|_| ())
+}
+
+/// Validated argv for direct exec (no shell). Diagnosis mode must use this path.
+pub fn bash_argv(command: &str) -> Result<Vec<String>, &'static str> {
     let trimmed = command.trim();
     if trimmed.is_empty() {
         return Err("invalid");
     }
-    if trimmed.contains(['|', ';', '\n', '\r', '`']) {
-        return Err("invalid");
-    }
-    if trimmed.contains("&&") || trimmed.contains("||") {
-        return Err("invalid");
-    }
-    if trimmed.contains(['>', '<']) {
-        return Err("invalid");
-    }
-    if trimmed.contains("$(") || trimmed.contains("${") {
-        return Err("invalid");
-    }
-
-    let tokens = tokenize(trimmed)?;
+    let tokens: Vec<String> = trimmed.split_whitespace().map(|s| s.to_owned()).collect();
     if tokens.is_empty() {
         return Err("invalid");
     }
-
-    match tokens[0].as_str() {
-        "docker" => allow_docker(&tokens),
-        "df" => allow_df(&tokens),
-        "du" => allow_du(&tokens),
-        "systemctl" => allow_systemctl(&tokens),
-        "curl" => allow_curl(&tokens),
-        _ => Err("invalid"),
+    for token in &tokens {
+        reject_token_metacharacters(token)?;
     }
+    match tokens[0].as_str() {
+        "docker" => allow_docker(&tokens)?,
+        "df" => allow_df(&tokens)?,
+        "du" => allow_du(&tokens)?,
+        "systemctl" => allow_systemctl(&tokens)?,
+        "curl" => allow_curl(&tokens)?,
+        _ => return Err("invalid"),
+    }
+    Ok(tokens)
 }
 
-fn tokenize(input: &str) -> Result<Vec<String>, &'static str> {
-    let mut out = Vec::new();
-    let mut current = String::new();
-    let mut quote: Option<char> = None;
-    let mut escape = false;
-    for ch in input.chars() {
-        if escape {
-            current.push(ch);
-            escape = false;
-            continue;
+fn reject_token_metacharacters(token: &str) -> Result<(), &'static str> {
+    if token.starts_with("http://") || token.starts_with("https://") {
+        if token.contains('\\') || token.contains('@') {
+            return Err("invalid");
         }
-        if ch == '\\' && quote == Some('"') {
-            escape = true;
-            continue;
-        }
-        if let Some(q) = quote {
-            if ch == q {
-                quote = None;
-            } else {
-                current.push(ch);
-            }
-            continue;
-        }
-        if ch == '"' || ch == '\'' {
-            quote = Some(ch);
-            continue;
-        }
-        if ch.is_whitespace() {
-            if !current.is_empty() {
-                out.push(current);
-                current = String::new();
-            }
-            continue;
-        }
-        current.push(ch);
+        return Ok(());
     }
-    if quote.is_some() {
+    const FORBIDDEN: &[char] = &[
+        '&', '\\', '$', '*', '?', '[', ']', '~', '{', '}', '!', '#', '|', ';', '\n', '\r', '`',
+        '<', '>', '"', '\'',
+    ];
+    if token.chars().any(|c| FORBIDDEN.contains(&c)) {
         return Err("invalid");
     }
-    if !current.is_empty() {
-        out.push(current);
-    }
-    Ok(out)
+    Ok(())
 }
 
 fn allow_docker(tokens: &[String]) -> Result<(), &'static str> {
@@ -285,6 +252,9 @@ fn consume_curl_flag(tokens: &[String], i: &mut usize) -> Result<(), &'static st
 }
 
 fn parse_loopback_health_url(raw: &str) -> Result<(), &'static str> {
+    if raw.contains('\\') || raw.contains('@') {
+        return Err("invalid");
+    }
     let parsed = url::Url::parse(raw).map_err(|_| "invalid")?;
     if parsed.scheme() != "http" && parsed.scheme() != "https" {
         return Err("invalid");
@@ -294,8 +264,8 @@ fn parse_loopback_health_url(raw: &str) -> Result<(), &'static str> {
     }
     let ok = match parsed.host() {
         Some(url::Host::Domain(name)) => name.eq_ignore_ascii_case("localhost"),
-        Some(url::Host::Ipv4(addr)) => addr.is_loopback(),
-        Some(url::Host::Ipv6(addr)) => addr.is_loopback(),
+        Some(url::Host::Ipv4(addr)) => addr == std::net::Ipv4Addr::LOCALHOST,
+        Some(url::Host::Ipv6(addr)) => addr == std::net::Ipv6Addr::LOCALHOST,
         None => false,
     };
     if ok { Ok(()) } else { Err("invalid") }
@@ -373,6 +343,8 @@ mod tests {
             "curl http://localhost.attacker/ready",
             "curl http://user@127.0.0.1/health",
             "curl http://127.0.0.1@evil.example/health",
+            "curl http://127.0.0.1\\@example.com/health",
+            "curl http://127.0.0.2/health",
             "curl localhost:8080/ready",
             "curl -fsS http://127.0.0.1/health extra-arg",
             "curl -fsS http://127.0.0.1/a http://127.0.0.1/b",
@@ -382,6 +354,20 @@ mod tests {
         assert_eq!(bash_allowed("curl -fsS http://127.0.0.1/health"), Ok(()));
         assert_eq!(bash_allowed("curl http://[::1]/health"), Ok(()));
         assert_eq!(bash_allowed("curl https://[::1]:8080/healthz"), Ok(()));
+    }
+
+    #[test]
+    fn qa_block_shell_and_allowlist_bypasses() {
+        for cmd in [
+            "docker ps & touch /tmp/pr75-pwned",
+            "systemctl status nginx & systemctl restart nginx",
+            "df -h & rm -rf /tmp/pr75-victim",
+            "curl http://127.0.0.1\\@example.com/health",
+            "du -sh /var/*",
+            "docker ps $IFS",
+        ] {
+            assert_eq!(bash_allowed(cmd), Err("invalid"), "expected block: {cmd}");
+        }
     }
 
     #[test]

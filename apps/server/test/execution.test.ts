@@ -18,7 +18,9 @@ function fixture(){
  const coordinator=new ExecutionCoordinator(db,connections,Date.now,()=>new Promise(()=>{}));
  /** Commit an intent the way Pi's beforeToolCall hook does. */
  const commit=(callId:string,seq:number,tool:string,args:object)=>{
-  const hash=requestHash({worker_id:"venus",job_id:"j",call_id:callId,call_seq:seq,workspace_id:"primary",config_version:1,tool,arguments:args});
+  const mode=(db.prepare("SELECT execution_mode FROM sessions WHERE session_id='s'").get() as {execution_mode:string|null}|undefined)?.execution_mode;
+  const request={worker_id:"venus",job_id:"j",call_id:callId,call_seq:seq,workspace_id:"primary",config_version:1,tool,arguments:args,...(mode==="diagnosis"?{execution_mode:"diagnosis"}:{})};
+  const hash=requestHash(request);
   db.prepare("INSERT INTO runtime_turns VALUES('j',?,'{}','h',?)").run(`turn-${callId}`,Date.now());
   db.prepare("INSERT INTO runtime_calls(job_id,turn_key,call_id,call_seq,request_hash,tool_name,arguments_json,status) VALUES('j',?,?,?,?,?,?,'committed')").run(`turn-${callId}`,callId,seq,hash,tool,JSON.stringify(args));
   return hash;

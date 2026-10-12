@@ -1,4 +1,5 @@
 mod cli;
+mod diagnosis;
 mod generated;
 mod ledger;
 mod logs;
@@ -898,7 +899,10 @@ async fn tool_call(
         args.remove("transfer_chunks");
         args.insert("content".into(), Value::String(content));
     }
-    let canonical = serde_json::json!({"worker_id":call.worker_id,"job_id":call.job_id,"call_id":call.call_id,"call_seq":call.call_seq,"workspace_id":call.workspace_id,"config_version":call.config_version,"tool":call.tool,"arguments":call.arguments});
+    let mut canonical = serde_json::json!({"worker_id":call.worker_id,"job_id":call.job_id,"call_id":call.call_id,"call_seq":call.call_seq,"workspace_id":call.workspace_id,"config_version":call.config_version,"tool":call.tool,"arguments":call.arguments});
+    if let Some(mode) = call.execution_mode.as_ref() {
+        canonical["execution_mode"] = Value::String(mode.clone());
+    }
     if format!("{:x}", sha2::Sha256::digest(serde_jcs::to_vec(&canonical)?)) != call.request_hash {
         return Err("request hash mismatch".into());
     }
@@ -919,7 +923,18 @@ async fn tool_call(
         boot_id: worker.boot_id.clone(),
     };
     // A request this worker would never run is refused before the ledger sees it.
+    if call.tool == "write" && !diagnosis::write_allowed(call.execution_mode.as_deref()) {
+        send(socket, &rejected_frame(worker, epoch, &identity, "invalid")).await?;
+        return Ok(());
+    }
     let timeout = if call.tool == "bash" {
+        let command = call.arguments["command"].as_str().unwrap_or("");
+        if diagnosis::is_diagnosis(call.execution_mode.as_deref()) {
+            if diagnosis::bash_allowed(command).is_err() {
+                send(socket, &rejected_frame(worker, epoch, &identity, "invalid")).await?;
+                return Ok(());
+            }
+        }
         match process::bash_timeout(&call.arguments, worker.max_tool_timeout_secs) {
             Ok(timeout) => Some(timeout),
             Err(reason) => {
@@ -1046,15 +1061,15 @@ async fn run_bash(
         Ok(log) => Arc::new(log),
         Err(e) => return failed(&e),
     };
-    let outcome = process::run_bash(
-        command,
-        std::path::Path::new(&workspace.path),
-        timeout,
-        cancel,
-        log.clone(),
-        limits,
-    )
-    .await;
+    let cwd = std::path::Path::new(&workspace.path);
+    let outcome = if diagnosis::is_diagnosis(call.execution_mode.as_deref()) {
+        match diagnosis::bash_argv(command) {
+            Ok(argv) => process::run_direct(&argv, cwd, timeout, cancel, log.clone(), limits).await,
+            Err(e) => return failed(&e),
+        }
+    } else {
+        process::run_bash(command, cwd, timeout, cancel, log.clone(), limits).await
+    };
     let (_, streams) = log.summary();
     match outcome {
         Ok(process::Outcome::Finished(result)) => (

@@ -25,6 +25,7 @@ rustls = { version = "=0.23.45", default-features = false, features = ["ring", "
 
 ring = "=0.17.14"
 reqwest = { version = "=0.12.28", default-features = false, features = ["rustls-tls-native-roots", "json"] }
+url = "=2.5.8"
 
 # Release binaries are built natively on each platform's runner and published as-is.
 [profile.release]

@@ -76,7 +76,7 @@ async function midCallRestore(ackAfter: boolean) {
   // Online: the main node keeps running and writing while the copy is taken.
   const summary = await backup(s.dir, copy);
   assert.equal(summary.integrity, "ok");
-  assert.equal(summary.schema, "015_call_timing.sql");
+  assert.equal(summary.schema, "016_diagnosis_mode.sql");
   assert.equal(summary.unsettled_calls, 1, "the copy holds the call as dispatched");
   assert.deepEqual(inspect(copy), summary);
   await s.until(() => s.state(slow) === "succeeded");
@@ -174,7 +174,7 @@ test("P7-A an upgrade keeps unsettled calls, dedupe watermarks and parent waits,
     db = openDatabase(path);
     db.close();
     const after = inspect(path);
-    assert.equal(after.schema, "015_call_timing.sql");
+    assert.equal(after.schema, "016_diagnosis_mode.sql");
     const { schema: _a, ...kept } = after, { schema: _b, ...was } = before;
     assert.deepEqual(kept, was);
     assert.deepEqual([after.unsettled_calls, after.call_seq_watermark, after.queue_seq_watermark, after.waiting_parents, after.open_children], [1, 2, 7, 1, 1]);

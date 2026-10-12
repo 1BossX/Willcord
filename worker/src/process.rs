@@ -119,6 +119,31 @@ async fn drain(mut pipe: impl AsyncReadExt + Unpin, log: Arc<CallLog>, stream: u
     }
 }
 
+/// Run a program directly (no shell). Used in diagnosis mode after argv validation.
+pub async fn run_direct(
+    argv: &[String],
+    cwd: &Path,
+    timeout: Duration,
+    cancel: watch::Receiver<bool>,
+    log: Arc<CallLog>,
+    limits: &Limits,
+) -> Result<Outcome, Error> {
+    let program = argv.first().ok_or("empty argv")?.as_str();
+    let started = Instant::now();
+    let mut child = Command::new(program)
+        .args(&argv[1..])
+        .current_dir(cwd)
+        .env_clear()
+        .env("PATH", &limits.command_path)
+        .env("HOME", std::env::var("HOME").unwrap_or_default())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .process_group(0)
+        .spawn()?;
+    run_child(&mut child, started, timeout, cancel, log, limits).await
+}
+
 pub async fn run_bash(
     command: &str,
     cwd: &Path,
@@ -139,9 +164,20 @@ pub async fn run_bash(
         .stderr(std::process::Stdio::piped())
         .process_group(0)
         .spawn()?;
+    run_child(&mut child, started, timeout, cancel, log, limits).await
+}
+
+async fn run_child(
+    child: &mut Child,
+    started: Instant,
+    timeout: Duration,
+    cancel: watch::Receiver<bool>,
+    log: Arc<CallLog>,
+    limits: &Limits,
+) -> Result<Outcome, Error> {
     let pgid = child
         .id()
-        .ok_or("bash exited before its process group was known")? as i32;
+        .ok_or("process exited before its process group was known")? as i32;
     let readers = [
         tokio::spawn(drain(child.stdout.take().unwrap(), log.clone(), 0)),
         tokio::spawn(drain(child.stderr.take().unwrap(), log.clone(), 1)),
@@ -152,14 +188,12 @@ pub async fn run_bash(
         _ = tokio::time::sleep(timeout) => { termination = "timeout"; false }
         _ = cancelled(cancel) => { termination = "cancelled"; false }
     };
-    // Members left behind by a finished command are stopped the same way.
     let leftover = exited && group_alive(pgid);
     let stopped = if !exited || leftover {
-        terminate(&mut child, pgid, limits).await
+        terminate(child, pgid, limits).await
     } else {
         true
     };
-    // A process that escaped the group may hold the pipes open.
     let mut pipes_closed = true;
     let deadline = Instant::now() + limits.confirm;
     for reader in readers {

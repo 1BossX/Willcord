@@ -10,6 +10,8 @@ import { delegate, nextQueueSeq, readyState } from "./jobs.js";
 import { freezeContext, omittedNote, priorContext } from "./context.js";
 import { logView } from "./feed.js";
 import { modelFromEnv, type ModelConfig } from "./config.js";
+import { buildDiagnosisReport } from "./diagnosis-report.js";
+import { diagnosisAnswerFormat } from "./diagnosis-scenarios.js";
 
 type Socket = { readyState: number; send(data: string): void };
 type Connection = { epoch: number; socket: Socket; tokenDigest: string };
@@ -665,7 +667,7 @@ export class ExecutionCoordinator {
       this.db.prepare("UPDATE jobs SET runtime_generation=runtime_generation+1 WHERE job_id=?").run(jobId);
       return (this.db.prepare("SELECT runtime_generation g FROM jobs WHERE job_id=?").get(jobId) as { g: number }).g;
     })();
-    const job = { ...(this.db.prepare("SELECT j.*,s.kind session_kind,s.workspace_id,s.workspace_version,s.repo_id,s.path,s.execution_mode FROM jobs j JOIN sessions s USING(session_id) WHERE j.job_id=?").get(jobId) as any), runtime_generation: generation };
+    const job = { ...(this.db.prepare("SELECT j.*,s.kind session_kind,s.workspace_id,s.workspace_version,s.repo_id,s.path,s.execution_mode,s.diagnosis_scenario FROM jobs j JOIN sessions s USING(session_id) WHERE j.job_id=?").get(jobId) as any), runtime_generation: generation };
     this.running.add(jobId);
     this.armDeadline(jobId, job.deadline_at);
     let failure: unknown;
@@ -789,7 +791,12 @@ export class ExecutionCoordinator {
     this.db.transaction(() => {
       if (this.db.prepare("SELECT 1 FROM runtime_history WHERE job_id=? AND entry_key=?").get(job.job_id, `user:${job.job_id}`)) return;
       freezeContext(this.db, job.job_id);
-      this.db.prepare("INSERT INTO runtime_history(job_id,entry_key,message_json) VALUES(?,?,?)").run(job.job_id, `user:${job.job_id}`, JSON.stringify({ role: "user", content: [{ type: "text", text: job.verify_command ? `${job.input_text}\n\nWhen you finish, the main node runs this verification command in this workspace; the step succeeds only if it exits 0:\n${job.verify_command}` : job.input_text }], timestamp: job.created_at }));
+      const userText = job.verify_command
+        ? `${job.input_text}\n\nWhen you finish, the main node runs this verification command in this workspace; the step succeeds only if it exits 0:\n${job.verify_command}`
+        : job.execution_mode === "diagnosis"
+          ? `${job.input_text}${diagnosisAnswerFormat(job.diagnosis_scenario)}`
+          : job.input_text;
+      this.db.prepare("INSERT INTO runtime_history(job_id,entry_key,message_json) VALUES(?,?,?)").run(job.job_id, `user:${job.job_id}`, JSON.stringify({ role: "user", content: [{ type: "text", text: userText }], timestamp: job.created_at }));
     })();
     // Committed intents from an earlier run finish first, in order, with their original IDs.
     const open = this.db.prepare("SELECT call_id FROM runtime_calls WHERE job_id=? AND status IN ('committed','dispatched','unknown') ORDER BY call_seq").all(job.job_id) as Array<{ call_id: string }>;
@@ -1333,11 +1340,18 @@ export function newJobId() { return randomUUID(); }
  * A model's success is its judgement backed by these calls, not proof.
  */
 export function finalResult(db: Database.Database, jobId: string) {
-  const job = db.prepare("SELECT state,end_reason,cancel_reason,worker_id FROM jobs WHERE job_id=?").get(jobId) as { state: string; end_reason: string | null; cancel_reason: string | null; worker_id: string | null };
+  const job = db.prepare("SELECT j.state,j.end_reason,j.cancel_reason,j.worker_id,s.execution_mode,s.diagnosis_scenario FROM jobs j JOIN sessions s USING(session_id) WHERE j.job_id=?").get(jobId) as {
+    state: string;
+    end_reason: string | null;
+    cancel_reason: string | null;
+    worker_id: string | null;
+    execution_mode: string | null;
+    diagnosis_scenario: string | null;
+  };
   const final = db.prepare("SELECT content_json FROM messages WHERE job_id=? AND json_extract(content_json,'$.role')='assistant' ORDER BY seq DESC LIMIT 1").get(jobId) as { content_json: string } | undefined;
   const content = final ? JSON.parse(final.content_json).content : undefined;
   const text = Array.isArray(content) ? content.filter((c: any) => c?.type === "text").map((c: any) => c.text).join("\n") : typeof content === "string" ? content : "";
-  const calls = db.prepare("SELECT call_id,tool_name,status,result_json FROM runtime_calls WHERE job_id=? ORDER BY call_seq").all(jobId) as Array<{ call_id: string; tool_name: string; status: string; result_json: string | null }>;
+  const calls = db.prepare("SELECT call_id,tool_name,status,arguments_json,result_json FROM runtime_calls WHERE job_id=? ORDER BY call_seq").all(jobId) as Array<{ call_id: string; tool_name: string; status: string; arguments_json: string; result_json: string | null }>;
   let exitCode: number | undefined, truncated = false;
   const failedCalls: string[] = [];
   for (const c of calls) {
@@ -1349,7 +1363,7 @@ export function finalResult(db: Database.Database, jobId: string) {
   }
   const children = job.worker_id === null ? (db.prepare("SELECT job_id,delegation_id,state FROM jobs WHERE parent_job_id=? ORDER BY created_at,rowid").all(jobId) as any[]) : undefined;
   const verification = db.prepare("SELECT call_id,status,result_json FROM runtime_calls WHERE job_id=? AND turn_key=?").get(jobId, `verify:${jobId}`) as { call_id: string; status: string; result_json: string | null } | undefined;
-  return {
+  const base = {
     outcome: job.state,
     summary: text || job.end_reason || job.state,
     evidence_call_ids: calls.filter((c) => c.status === "completed").map((c) => c.call_id),
@@ -1360,6 +1374,19 @@ export function finalResult(db: Database.Database, jobId: string) {
     ...(children ? { children } : {}),
     ...(verification ? { verification: { call_id: verification.call_id, status: verification.status, exit_code: verification.result_json ? JSON.parse(verification.result_json).result?.exit_code ?? null : null } } : {}),
   };
+  if (job.execution_mode === "diagnosis") {
+    const scenarioId =
+      job.diagnosis_scenario === "docker-service" ||
+      job.diagnosis_scenario === "disk-usage" ||
+      job.diagnosis_scenario === "post-deploy"
+        ? job.diagnosis_scenario
+        : null;
+    return {
+      ...base,
+      diagnosis: buildDiagnosisReport(base.summary, calls, scenarioId),
+    };
+  }
+  return base;
 }
 
 /** How long a dispatched call may go without a result before it is unknown. */

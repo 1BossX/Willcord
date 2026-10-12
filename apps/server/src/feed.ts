@@ -33,7 +33,9 @@ function jobRow(row: any) {
   const children = JSON.parse(children_json) as Array<{ state: string }>;
   const context = context_json ? JSON.parse(context_json) as CarriedContext : null;
   return {
-    ...job, children,
+    ...job,
+    result: job.result_json ? JSON.parse(job.result_json) : null,
+    children,
     context: context && { jobs: context.jobs.length, omitted: context.omitted },
     children_summary: {
       total: children.length,

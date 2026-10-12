@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "case_id": "o1-kr1-004-inconclusive-healthy",
+  "scenario_id": "docker-service",
+  "title": "无明确故障：容器仍在运行",
+  "description": "目标容器处于运行状态，只读检查无法支撑「服务起不来」的确定原因。",
+  "requires": ["docker"],
+  "setup": "setup.sh",
+  "teardown": "teardown.sh",
+  "probes": [
+    {
+      "call_id": "bash-1",
+      "tool": "bash",
+      "command": "docker ps -a"
+    },
+    {
+      "call_id": "bash-2",
+      "tool": "bash",
+      "command": "docker inspect willcord-fixture-inconclusive"
+    }
+  ],
+  "expected": {
+    "inconclusive": true,
+    "probe_outputs_contain": {
+      "bash-1": ["willcord-fixture-inconclusive", "Up"],
+      "bash-2": ["Running"]
+    },
+    "reference_summary": "## 结论\n服务起不来是因为容器已经崩溃退出。\n\n## 证据\n根据经验判断，应该是镜像入口命令写错。\n\n## 建议的下一步\n修改镜像后重新部署。",
+    "conclusion_must_not_match": ["^确定", "根因是", "因为.*已退出"]
+  }
+}

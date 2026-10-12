@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { diagnosisScenarios, scenarioById } from "../src/diagnosis-scenarios.ts";
+import { diagnosisScenarios } from "../src/diagnosis-scenarios.ts";
 
-test("three first-diagnosis scenarios are defined", () => {
+test("three diagnosis scenarios are defined", () => {
   assert.deepEqual(diagnosisScenarios.map((s) => s.id), [
     "docker-service",
     "disk-usage",
@@ -14,7 +14,9 @@ test("three first-diagnosis scenarios are defined", () => {
   }
 });
 
-test("scenario lookup by id", () => {
-  assert.equal(scenarioById("disk-usage")?.title, "磁盘用量异常");
-  assert.equal(scenarioById("missing" as "disk-usage"), undefined);
+test("post-deploy prompt names Willcord release, trust-ca, and Caddy loopback exclusions", () => {
+  const post = diagnosisScenarios.find((s) => s.id === "post-deploy")!;
+  assert.match(post.prompt, /Willcord 发版/);
+  assert.match(post.prompt, /trust-ca/);
+  assert.match(post.prompt, /Caddy 回环/);
 });

@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bossoptional.github.io/Willcord/fixtures/diagnosis/schema.json",
+  "title": "Willcord diagnosis fault case (O1-KR1 / future O1-KR3)",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "case_id",
+    "scenario_id",
+    "title",
+    "setup",
+    "teardown",
+    "probes",
+    "expected"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "case_id": { "type": "string", "pattern": "^o1-kr1-[0-9]{3}-[a-z0-9-]+$" },
+    "scenario_id": {
+      "enum": ["docker-service", "disk-usage", "post-deploy"]
+    },
+    "title": { "type": "string", "minLength": 1 },
+    "description": { "type": "string" },
+    "requires": {
+      "type": "array",
+      "items": { "enum": ["docker", "sudo", "loopback_http"] }
+    },
+    "setup": { "type": "string" },
+    "teardown": { "type": "string" },
+    "probes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["call_id", "tool", "command"],
+        "properties": {
+          "call_id": { "type": "string" },
+          "tool": { "enum": ["bash"] },
+          "command": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "expected": {
+      "type": "object",
+      "required": ["inconclusive", "reference_summary"],
+      "properties": {
+        "inconclusive": { "type": "boolean" },
+        "probe_outputs_contain": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        },
+        "reference_summary": { "type": "string", "minLength": 1 },
+        "conclusion_must_not_match": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    }
+  },
+  "additionalProperties": false
+}

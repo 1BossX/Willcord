@@ -220,31 +220,85 @@ fn allow_curl(tokens: &[String]) -> Result<(), &'static str> {
     if tokens[0] != "curl" {
         return Err("invalid");
     }
-    let mut saw_url = false;
-    for t in tokens.iter().skip(1) {
+    let mut urls = 0usize;
+    let mut i = 1usize;
+    while i < tokens.len() {
+        let t = &tokens[i];
         if t.starts_with('-') {
-            if t == "-o" || t == "--output" {
-                return Err("invalid");
-            }
+            consume_curl_flag(tokens, &mut i)?;
             continue;
         }
-        if local_health_url(t) {
-            saw_url = true;
-        } else if t.contains("://") {
+        if urls > 0 {
             return Err("invalid");
         }
+        parse_loopback_health_url(t)?;
+        urls += 1;
+        i += 1;
     }
-    if saw_url { Ok(()) } else { Err("invalid") }
+    if urls == 1 { Ok(()) } else { Err("invalid") }
 }
 
-fn local_health_url(url: &str) -> bool {
-    let lower = url.to_ascii_lowercase();
-    lower.starts_with("http://127.0.0.1")
-        || lower.starts_with("http://localhost")
-        || lower.starts_with("http://[::1]")
-        || lower.starts_with("https://127.0.0.1")
-        || lower.starts_with("https://localhost")
-        || lower.starts_with("https://[::1]")
+/// Read-only curl flags for a single local health GET. Anything else is refused.
+fn consume_curl_flag(tokens: &[String], i: &mut usize) -> Result<(), &'static str> {
+    let flag = tokens[*i].as_str();
+    if flag == "-" {
+        return Err("invalid");
+    }
+    if flag.starts_with("--") {
+        match flag {
+            "--fail" | "--silent" | "--show-error" | "--ipv4" | "--ipv6" => {
+                *i += 1;
+                Ok(())
+            }
+            "--max-time" | "--connect-timeout" | "--header" | "--user-agent" => {
+                *i += 1;
+                let _ = tokens
+                    .get(*i)
+                    .filter(|v| !v.starts_with('-'))
+                    .ok_or("invalid")?;
+                *i += 1;
+                Ok(())
+            }
+            _ => Err("invalid"),
+        }
+    } else if flag.starts_with('-') {
+        let mut needs_value = false;
+        for ch in flag.chars().skip(1) {
+            match ch {
+                'f' | 's' | 'S' | '4' | '6' => {}
+                'm' | 'H' | 'A' => needs_value = true,
+                _ => return Err("invalid"),
+            }
+        }
+        *i += 1;
+        if needs_value {
+            let _ = tokens
+                .get(*i)
+                .filter(|v| !v.starts_with('-'))
+                .ok_or("invalid")?;
+            *i += 1;
+        }
+        Ok(())
+    } else {
+        Err("invalid")
+    }
+}
+
+fn parse_loopback_health_url(raw: &str) -> Result<(), &'static str> {
+    let parsed = url::Url::parse(raw).map_err(|_| "invalid")?;
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return Err("invalid");
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err("invalid");
+    }
+    let ok = match parsed.host() {
+        Some(url::Host::Domain(name)) => name.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(addr)) => addr.is_loopback(),
+        Some(url::Host::Ipv6(addr)) => addr.is_loopback(),
+        None => false,
+    };
+    if ok { Ok(()) } else { Err("invalid") }
 }
 
 pub fn is_diagnosis(execution_mode: Option<&str>) -> bool {
@@ -310,5 +364,43 @@ mod tests {
     fn du_depth_is_capped() {
         assert_eq!(bash_allowed("du -d 6 /var"), Err("invalid"));
         assert_eq!(bash_allowed("du --max-depth=9 /var"), Err("invalid"));
+    }
+
+    #[test]
+    fn curl_rejects_remote_and_prefix_url_tricks() {
+        for cmd in [
+            "curl http://127.0.0.1.evil.com/health",
+            "curl http://localhost.attacker/ready",
+            "curl http://user@127.0.0.1/health",
+            "curl http://127.0.0.1@evil.example/health",
+            "curl localhost:8080/ready",
+            "curl -fsS http://127.0.0.1/health extra-arg",
+            "curl -fsS http://127.0.0.1/a http://127.0.0.1/b",
+        ] {
+            assert_ne!(bash_allowed(cmd), Ok(()), "expected block: {cmd}");
+        }
+        assert_eq!(bash_allowed("curl -fsS http://127.0.0.1/health"), Ok(()));
+        assert_eq!(bash_allowed("curl http://[::1]/health"), Ok(()));
+        assert_eq!(bash_allowed("curl https://[::1]:8080/healthz"), Ok(()));
+    }
+
+    #[test]
+    fn curl_rejects_write_upload_and_config_flags() {
+        for cmd in [
+            "curl -o /tmp/out http://127.0.0.1/health",
+            "curl --output /tmp/out http://127.0.0.1/health",
+            "curl -O http://127.0.0.1/file",
+            "curl -D /tmp/h http://127.0.0.1/health",
+            "curl --trace /tmp/tr http://127.0.0.1/health",
+            "curl -K /etc/curlrc http://127.0.0.1/health",
+            "curl -T /etc/passwd http://127.0.0.1/health",
+            "curl -d x http://127.0.0.1/health",
+            "curl -F k=v http://127.0.0.1/health",
+            "curl -c /tmp/c http://127.0.0.1/health",
+            "curl -L http://127.0.0.1/health",
+            "curl -X POST http://127.0.0.1/health",
+        ] {
+            assert_ne!(bash_allowed(cmd), Ok(()), "expected block: {cmd}");
+        }
     }
 }

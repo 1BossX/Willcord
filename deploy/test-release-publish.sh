@@ -30,7 +30,8 @@ gh() {
 
 run() {
   : > "$mock_log"
-  GITHUB_REF_NAME="$1" GITHUB_REPOSITORY='BossOptional/Willcord' RELEASE_DIR="$release_dir" main
+  : > "$test_dir/out"
+  GITHUB_REF_NAME="$1" GITHUB_REPOSITORY='BossOptional/Willcord' RELEASE_DIR="$release_dir" main >"$test_dir/out" 2>&1
 }
 
 mock_state=absent
@@ -38,6 +39,7 @@ run v0.3.0-rc.1
 grep -F -- '--verify-tag' "$mock_log" >/dev/null
 grep -F -- '--draft' "$mock_log" >/dev/null
 grep -F -- '--prerelease' "$mock_log" >/dev/null
+! grep -F -- 'publish with latest:' "$test_dir/out" >/dev/null
 
 mock_state=existing; mock_draft=true; mock_prerelease=true
 run v0.3.0-rc.1
@@ -60,5 +62,31 @@ mock_state=absent
 run v0.3.0
 grep -F -- '--draft' "$mock_log" >/dev/null
 ! grep -F -- '--prerelease' "$mock_log" >/dev/null
+! grep -F -- 'publish with latest:' "$test_dir/out" >/dev/null
+
+mock_state=absent
+run v0.1.0-beta.1
+grep -F -- '--draft' "$mock_log" >/dev/null
+! grep -F -- '--prerelease' "$mock_log" >/dev/null
+grep -F -- 'publish with latest: gh release edit v0.1.0-beta.1 --repo BossOptional/Willcord --draft=false --latest' "$test_dir/out" >/dev/null
+
+mock_state=existing; mock_draft=true; mock_prerelease=false
+run v0.1.0-beta.1
+grep -F -- 'release upload v0.1.0-beta.1' "$mock_log" >/dev/null
+! grep -F -- '--prerelease' "$mock_log" >/dev/null
+grep -F -- '--draft=false --latest' "$test_dir/out" >/dev/null
+
+mock_state=existing; mock_draft=true; mock_prerelease=true
+if (run v0.1.0-beta.1) >/dev/null 2>&1; then
+  echo 'beta draft marked prerelease unexpectedly accepted' >&2; exit 1
+fi
+[[ ! -s "$mock_log" ]]
+
+mock_state=absent
+run v0.1.0-beta.2
+! grep -F -- '--prerelease' "$mock_log" >/dev/null
+grep -F -- '--latest' "$test_dir/out" >/dev/null
+
+bash "$root/deploy/test-release-version.sh"
 
 printf 'release publish tests passed\n'

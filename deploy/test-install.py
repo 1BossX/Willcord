@@ -36,7 +36,9 @@ elif name=='sudo':
 elif name=='curl':
  url=next((a for a in args if a.startswith('https://')), '')
  if os.environ.get('TEST_NO_RELEASE')=='1': sys.exit(22)
- if url.endswith('/latest'): print('https://github.com/BossOptional/Willcord/releases' if os.environ.get('TEST_NO_LATEST')=='1' else 'https://github.com/BossOptional/Willcord/releases/tag/v1.2.3',end='');sys.exit()
+ if url.endswith('/latest'):
+  tag=os.environ.get('TEST_LATEST_TAG','v1.2.3')
+  print('https://github.com/BossOptional/Willcord/releases' if os.environ.get('TEST_NO_LATEST')=='1' else 'https://github.com/BossOptional/Willcord/releases/tag/'+tag,end='');sys.exit()
  dest=p(args[args.index('-o')+1]) if '-o' in args else None
  if '/releases/tags/' in url and os.environ.get('TEST_API_LIMIT')=='1': sys.exit(22)
  if '/releases/tags/' in url: data=json.dumps({'draft':False,'prerelease':os.environ.get('TEST_PRERELEASE')=='1'}).encode()
@@ -113,6 +115,26 @@ class InstallerTests(unittest.TestCase):
     self.assertFalse((Path(self.env['WILLCORD_HOME'])/'bin/willcord').exists())
     self.assertFalse((Path(self.env['WILLCORD_SYSTEM_ROOT'])/'bin/willcord').exists())
     self.clean_tmp()
+ def test_a_beta_latest_installs_that_version_and_a_stable_latest_still_does(self):
+  self.asset('willcord-v0.1.0-beta.1-linux-x86_64',f'#!{sys.executable}\n{STUB}'.encode())
+  r=self.run_worker(env={'TEST_LATEST_TAG':'v0.1.0-beta.1'})
+  self.assertEqual(r.returncode,0,r.stderr)
+  self.assertIn('安装版本：v0.1.0-beta.1',r.stdout)
+  self.assertNotIn('预发布',r.stdout)
+  self.assertTrue(any('willcord-v0.1.0-beta.1-linux-x86_64' in str(a) for n,a in self.calls() if n=='curl'))
+  self.clean_tmp()
+  (self.root/'calls').unlink()
+  r=self.run_main(env={'TEST_LATEST_TAG':'v0.1.0-beta.1'})
+  self.assertEqual(r.returncode,0,r.stderr)
+  self.assertEqual(self.handed_over(),[['main','init','--dir',str(self.root/'deployment'),'--image-version','v0.1.0-beta.1']])
+  self.clean_tmp()
+  (self.root/'calls').unlink()
+  r=self.run_worker('--version','v0.1.0-beta.1')
+  self.assertEqual(r.returncode,0,r.stderr)
+  self.assertIn('安装版本：v0.1.0-beta.1',r.stdout)
+  self.clean_tmp()
+  r=self.run_worker(env={'TEST_LATEST_TAG':'v1.2.3-rc.1'});self.assertNotEqual(r.returncode,0)
+  self.assertIn('不是正式版本',r.stderr)
  def test_prerelease_only_when_named(self):
   r=self.run_worker('--version','v1.2.3-rc.1',env={'TEST_PRERELEASE':'1'});self.assertEqual(r.returncode,0,r.stderr)
   self.assertIn('安装预发布版本：v1.2.3-rc.1',r.stdout)

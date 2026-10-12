@@ -105,9 +105,10 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/checkout@v4
       - name: Tag multi-arch images
         run: |
-          version=${GITHUB_REF_NAME#v}
+          version=$(bash deploy/image-tag.sh "$GITHUB_REF_NAME")
           for target in main caddy; do
             image="$REGISTRY/willcord-$target"
             docker buildx imagetools create -t "$image:$version" \

@@ -4,9 +4,9 @@
 
 安装器需要 Bash 3.2+、curl 和 shasum/sha256sum。
 
-- 只使用已发布的正式 Release，并校验 SHA-256；没有正式版本时退出，不使用草稿、预发布或源码构建结果。
-- 省略 `--version` 时安装最新正式版本并显示实际版本；固定版本加 `--version vX.Y.Z`。
-- 预发布版本（如 `v0.3.0-rc.1`）只用于验收，须用 `--version` 显式指定，安装器会标明“预发布”。
+- 只使用已发布的正式 Release，并校验 SHA-256；没有正式版本时退出，不使用草稿、预发布或源码构建结果。正式版本是 `vX.Y.Z`，以及不勾选 GitHub prerelease 的 `vX.Y.Z-beta.N`（例如 `v0.1.0-beta.1`）。
+- 省略 `--version` 时安装 GitHub latest 指向的正式版本并显示实际版本，所以一行安装可以装到 `0.1.0-beta.1` 这种 beta 号；固定版本加 `--version`。
+- 其他预发布版本（如 `v0.3.0-rc.1`）只用于验收，须用 `--version` 显式指定，安装器会标明“预发布”。一行安装和 Pages 不会把它们当成 latest。
 - Pages 上的 `install.sh` 是最新正式 Release 附带的那一份，与它下载的二进制和镜像同版本；需要旧版本的安装器时，从对应 Release 下载 `install.sh` 并校验 `.sha256`。
 
 ## 0. 安装 willcord 命令

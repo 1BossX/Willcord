@@ -48,6 +48,7 @@ jobs:
       - run: python3 deploy/test-main-node.py
       - run: python3 deploy/test-worker-join.py
       - run: bash deploy/test-release-publish.sh
+      - run: bash deploy/test-release-version.sh
       - run: pnpm check
       - run: pnpm test
       - run: pnpm build

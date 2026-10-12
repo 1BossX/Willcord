@@ -52,6 +52,7 @@ jobs:
           toolchain: stable
       - run: cargo test --locked --manifest-path worker/Cargo.toml
       - run: python3 deploy/test-install.py
+      - run: bash deploy/test-release-version.sh
       - name: Build worker
         if: runner.os == 'macOS'
         run: |

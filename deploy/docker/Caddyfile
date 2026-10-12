@@ -3,8 +3,10 @@
 #                      PUBLIC_BASE_URL must be https://<this>
 # The internal CA lives in /data: keep that volume, or every worker's CA file
 # stops matching. Workers can fetch root.crt using a trusted CA fingerprint.
+# caddy-entrypoint.sh derives WILLCORD_HOST and WILLCORD_ORIGIN from the site.
 {
 	skip_install_trust
+	# Browsers send no SNI for an IP address; serve this host's certificate.
 	default_sni {$WILLCORD_HOST:localhost}
 	pki {
 		ca local {
@@ -13,9 +15,7 @@
 	}
 }
 
-{$WILLCORD_SITE} {
-	tls internal
-
+(willcord) {
 	# Public certificate only; never expose the CA directory or admin API.
 	@bootstrap {
 		method GET
@@ -42,4 +42,22 @@
 		try_files {path} /index.html
 		file_server
 	}
+}
+
+{$WILLCORD_SITE} {
+	tls internal
+	import willcord
+}
+
+# Plain HTTP for the machine running the node. Compose publishes this port on
+# 127.0.0.1 only, so it is never reachable from the network. The server only
+# accepts the PUBLIC_BASE_URL origin on login and writes, so the loopback
+# origins are rewritten to it (any other Origin passes through and is still
+# refused), and the session cookie loses Secure, which browsers would not
+# store from http (Safari does not exempt localhost).
+http://localhost:8480, http://127.0.0.1:8480 {
+	@loopback header_regexp Origin ^http://(localhost|127\.0\.0\.1):8480$
+	request_header @loopback Origin {$WILLCORD_ORIGIN}
+	header >Set-Cookie "(?i);\s*Secure" ""
+	import willcord
 }

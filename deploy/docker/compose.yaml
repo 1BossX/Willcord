@@ -3,6 +3,7 @@
 #   WILLCORD_VERSION  image tag, e.g. 0.2.0
 #   WILLCORD_SITE     host:port browsers and workers use, e.g. plane.internal:8443
 #   WILLCORD_PORT     the port in WILLCORD_SITE, published on the host
+#   WILLCORD_LOCAL_PORT  optional; host port (loopback only) for http://localhost, default 8480
 # main.env holds PUBLIC_BASE_URL (https://$WILLCORD_SITE), the model key
 # and, on first start only, INITIAL_ADMIN_PASSWORD.
 name: willcord
@@ -30,6 +31,8 @@ services:
       WILLCORD_SITE: ${WILLCORD_SITE:?set WILLCORD_SITE}
     ports:
       - "${WILLCORD_PORT:?set WILLCORD_PORT}:${WILLCORD_PORT}"
+      # Plain HTTP for this machine only: http://localhost:8480
+      - "127.0.0.1:${WILLCORD_LOCAL_PORT:-8480}:8480"
     volumes:
       - caddy-data:/data
       - caddy-config:/config

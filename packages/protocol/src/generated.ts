@@ -108,6 +108,10 @@ export interface ToolCall {
   arguments: {
     [k: string]: unknown;
   };
+  /**
+   * When diagnosis, the worker refuses writes and bash outside the diagnosis allowlist.
+   */
+  execution_mode?: "diagnosis";
 }
 export interface ToolResult {
   protocol_version: 1;

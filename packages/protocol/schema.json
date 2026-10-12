@@ -262,7 +262,8 @@
         "config_version":{"type":"integer","minimum":1},
         "request_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},
         "tool":{"enum":["read","write","bash"]},
-        "arguments":{"type":"object"}
+        "arguments":{"type":"object"},
+        "execution_mode":{"description":"When diagnosis, the worker refuses writes and bash outside the diagnosis allowlist.","enum":["diagnosis"]}
       }
     },
     {

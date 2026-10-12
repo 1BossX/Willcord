@@ -242,14 +242,16 @@ export async function createApp(
   app.get("/api/main", async () => mainSession(db, now));
   app.get("/api/sessions", async () => db.prepare("SELECT * FROM sessions ORDER BY created_at DESC").all());
   app.post("/api/sessions", async (req, reply) => {
-    const body=req.body as {worker_id?:unknown;workspace_id?:unknown;repo_id?:unknown}|null;
+    const body=req.body as {worker_id?:unknown;workspace_id?:unknown;repo_id?:unknown;execution_mode?:unknown}|null;
     if(typeof body?.worker_id!=="string"||typeof body.workspace_id!=="string") return reply.code(400).send({error:"worker_and_workspace_required"});
+    if(body.execution_mode!==undefined&&body.execution_mode!=="diagnosis") return reply.code(400).send({error:"invalid_execution_mode"});
     const workspace=db.prepare("SELECT * FROM workspaces WHERE worker_id=? AND workspace_id=?").get(body.worker_id,body.workspace_id) as any;
     const worker=db.prepare("SELECT 1 FROM workers WHERE worker_id=?").get(body.worker_id);
     if(!worker||!workspace) return reply.code(404).send({error:"worker_or_workspace_not_found"});
     if(body.repo_id!==undefined&&(typeof body.repo_id!=="string"||body.repo_id!==workspace.repo_id)) return reply.code(409).send({error:"repo_mismatch"});
     const session_id=randomBytes(16).toString("hex");
-    db.prepare("INSERT INTO sessions(session_id,kind,worker_id,workspace_id,workspace_version,repo_id,path,created_at) VALUES(?,'worker',?,?,?,?,?,?)").run(session_id,body.worker_id,body.workspace_id,workspace.config_version,workspace.repo_id,workspace.path,now());
+    const executionMode=body.execution_mode==="diagnosis"?"diagnosis":null;
+    db.prepare("INSERT INTO sessions(session_id,kind,worker_id,workspace_id,workspace_version,repo_id,path,created_at,execution_mode) VALUES(?,'worker',?,?,?,?,?,?,?)").run(session_id,body.worker_id,body.workspace_id,workspace.config_version,workspace.repo_id,workspace.path,now(),executionMode);
     return reply.code(201).send(db.prepare("SELECT * FROM sessions WHERE session_id=?").get(session_id));
   });
   app.patch<{ Params: { session_id: string } }>(

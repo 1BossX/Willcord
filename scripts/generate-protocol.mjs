@@ -43,30 +43,35 @@ let rust =
   "// Generated from schema.json. Do not edit.\npub const MAX_FRAME_BYTES: usize = " +
   schema["x-max-frame-bytes"] +
   ";\nuse serde::{Serialize, Deserialize};\nuse serde_json::Value;\n";
-for (const [name, props] of [
-  ["Workspace", workspace.properties],
-  ...nested,
+for (const [name, props, required] of [
+  ["Workspace", workspace.properties, new Set(schema.oneOf[0].properties.workspaces.items.required ?? Object.keys(workspace.properties))],
+  ...nested.map(([n, p]) => [n, p, new Set(Object.keys(p))]),
   ...schema.oneOf.map((s) => [
     s.properties.type.const
       .split("_")
       .map((w) => w[0].toUpperCase() + w.slice(1))
       .join(""),
     s.properties,
+    new Set(s.required),
   ]),
 ]) {
   rust +=
     "#[derive(Clone, Debug, Serialize, Deserialize)]\n#[serde(deny_unknown_fields)]\npub struct " +
     name +
     " {\n";
-  for (const [key, value] of Object.entries(props))
+  for (const [key, value] of Object.entries(props)) {
+    const optional = !required.has(key);
+    const ty = fieldType(value);
+    if (key === "type") rust += '    #[serde(rename="type")]\n';
+    if (key === "final") rust += '    #[serde(rename="final")]\n';
+    if (optional) rust += '    #[serde(default, skip_serializing_if = "Option::is_none")]\n';
     rust +=
-      (key === "type" ? '    #[serde(rename="type")]\n' : "") +
-      (key === "final" ? '    #[serde(rename="final")]\n' : "") +
       "    pub " +
       (key === "type" ? "kind" : key === "final" ? "is_final" : key) +
       ": " +
-      fieldType(value) +
+      (optional ? `Option<${ty}>` : ty) +
       ",\n";
+  }
   rust += "}\n";
 }
 writeFileSync("worker/src/generated.rs", rust);

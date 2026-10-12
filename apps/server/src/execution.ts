@@ -15,7 +15,7 @@ type Socket = { readyState: number; send(data: string): void };
 type Connection = { epoch: number; socket: Socket; tokenDigest: string };
 export type ToolRecord = { ok: boolean; result: any };
 type Pending = { workerId: string; jobId: string; callId: string; promise: Promise<ToolRecord>; resolve(record: ToolRecord): void; reject(error: Error): void; timer: NodeJS.Timeout };
-type CallRow = { job_id: string; turn_key: string; call_id: string; call_seq: number; request_hash: string; tool_name: string; arguments_json: string; status: string; result_json: string | null; completed_at: number | null; worker_id: string; workspace_id: string; workspace_version: number };
+type CallRow = { job_id: string; turn_key: string; call_id: string; call_seq: number; request_hash: string; tool_name: string; arguments_json: string; status: string; result_json: string | null; completed_at: number | null; worker_id: string; workspace_id: string; workspace_version: number; execution_mode: string | null };
 type CallReport = { job_id: string; call_id: string; call_seq: number; request_hash: string; status: string; boot_id: string };
 /** Scripted model turns for isolated acceptance; never a real provider. */
 type ScriptCall = { tool: "read" | "write" | "bash" | "list_workers" | "get_job" | "delegate"; arguments: Record<string, unknown>; id?: string };
@@ -28,6 +28,21 @@ export const DEFAULT_BUDGET: Budget = { maxToolCalls: 200, maxTokens: 2_000_000,
 export type Resolution = { call_id: string; outcome: "executed" | "not_executed" | "terminated" };
 
 const hash = (v: unknown) => createHash("sha256").update(JSON.stringify(v)).digest("hex");
+/** Canonical worker-protocol request for a committed call, including diagnosis mode when set on the session. */
+function workerToolRequest(row: Pick<CallRow, "worker_id" | "job_id" | "call_id" | "call_seq" | "workspace_id" | "workspace_version" | "tool_name" | "arguments_json" | "execution_mode">) {
+  const request: Record<string, unknown> = {
+    worker_id: row.worker_id,
+    job_id: row.job_id,
+    call_id: row.call_id,
+    call_seq: row.call_seq,
+    workspace_id: row.workspace_id,
+    config_version: row.workspace_version,
+    tool: row.tool_name,
+    arguments: JSON.parse(row.arguments_json),
+  };
+  if (row.execution_mode === "diagnosis") request.execution_mode = "diagnosis";
+  return request;
+}
 const TOOL_RESULT_TIMEOUT_MS = 1_800_000;
 /** Beyond a bash time limit: the worker's TERM grace (at most 30 s) and stop confirmation. */
 const STOP_MARGIN_MS = 60_000;
@@ -138,7 +153,7 @@ export class ExecutionCoordinator {
   }
 
   private call(jobId: string, callId: string) {
-    return this.db.prepare(`SELECT c.*,j.worker_id,s.workspace_id,s.workspace_version FROM runtime_calls c JOIN jobs j USING(job_id) JOIN sessions s USING(session_id) WHERE c.job_id=? AND c.call_id=?`).get(jobId, callId) as CallRow | undefined;
+    return this.db.prepare(`SELECT c.*,j.worker_id,s.workspace_id,s.workspace_version,s.execution_mode FROM runtime_calls c JOIN jobs j USING(job_id) JOIN sessions s USING(session_id) WHERE c.job_id=? AND c.call_id=?`).get(jobId, callId) as CallRow | undefined;
   }
 
   /** A connection may carry calls only after this epoch reconciled and while the worker is unblocked. */
@@ -180,18 +195,19 @@ export class ExecutionCoordinator {
 
   private sendCall(conn: Connection, row: CallRow) {
     const args = JSON.parse(row.arguments_json);
-    const request = { worker_id: row.worker_id, job_id: row.job_id, call_id: row.call_id, call_seq: row.call_seq, workspace_id: row.workspace_id, config_version: row.workspace_version, tool: row.tool_name, arguments: args };
+    const request = workerToolRequest(row);
     const digest = requestHash(request);
     if (digest !== row.request_hash) throw new Error("committed_request_hash_mismatch");
+    const mode = row.execution_mode === "diagnosis" ? { execution_mode: "diagnosis" as const } : {};
     const base = { protocol_version: 1, worker_id: row.worker_id, connection_epoch: conn.epoch, job_id: row.job_id, call_id: row.call_id, request_hash: digest };
     if (row.tool_name !== "write") {
-      conn.socket.send(JSON.stringify({ ...base, type: "tool_call", call_seq: row.call_seq, workspace_id: row.workspace_id, config_version: row.workspace_version, tool: row.tool_name, arguments: args }));
+      conn.socket.send(JSON.stringify({ ...base, ...mode, type: "tool_call", call_seq: row.call_seq, workspace_id: row.workspace_id, config_version: row.workspace_version, tool: row.tool_name, arguments: args }));
       return;
     }
     const bytes = Buffer.from(args.content, "utf8");
     const chunks = Math.max(1, Math.ceil(bytes.length / 24000));
     const { content: _content, ...rest } = args;
-    conn.socket.send(JSON.stringify({ ...base, type: "tool_call", call_seq: row.call_seq, workspace_id: row.workspace_id, config_version: row.workspace_version, tool: row.tool_name, arguments: { ...rest, transfer_bytes: bytes.length, transfer_sha256: createHash("sha256").update(bytes).digest("hex"), transfer_chunks: chunks } }));
+    conn.socket.send(JSON.stringify({ ...base, ...mode, type: "tool_call", call_seq: row.call_seq, workspace_id: row.workspace_id, config_version: row.workspace_version, tool: row.tool_name, arguments: { ...rest, transfer_bytes: bytes.length, transfer_sha256: createHash("sha256").update(bytes).digest("hex"), transfer_chunks: chunks } }));
     for (let index = 0; index < chunks; index++) {
       const chunk = bytes.subarray(index * 24000, Math.min(bytes.length, (index + 1) * 24000));
       conn.socket.send(JSON.stringify({ ...base, type: "tool_data", chunk_index: index, data: chunk.toString("base64"), final: index === chunks - 1 }));
@@ -649,7 +665,7 @@ export class ExecutionCoordinator {
       this.db.prepare("UPDATE jobs SET runtime_generation=runtime_generation+1 WHERE job_id=?").run(jobId);
       return (this.db.prepare("SELECT runtime_generation g FROM jobs WHERE job_id=?").get(jobId) as { g: number }).g;
     })();
-    const job = { ...(this.db.prepare("SELECT j.*,s.kind session_kind,s.workspace_id,s.workspace_version,s.repo_id,s.path FROM jobs j JOIN sessions s USING(session_id) WHERE j.job_id=?").get(jobId) as any), runtime_generation: generation };
+    const job = { ...(this.db.prepare("SELECT j.*,s.kind session_kind,s.workspace_id,s.workspace_version,s.repo_id,s.path,s.execution_mode FROM jobs j JOIN sessions s USING(session_id) WHERE j.job_id=?").get(jobId) as any), runtime_generation: generation };
     this.running.add(jobId);
     this.armDeadline(jobId, job.deadline_at);
     let failure: unknown;
@@ -889,7 +905,17 @@ export class ExecutionCoordinator {
       let seq = (this.db.prepare("SELECT COALESCE(MAX(call_seq),0) n FROM runtime_calls WHERE job_id=?").get(job.job_id) as any).n;
       for (const c of calls) {
         seq++;
-        const request = { worker_id: job.worker_id, job_id: job.job_id, call_id: c.id, call_seq: seq, workspace_id: job.workspace_id, config_version: job.workspace_version, tool: c.name, arguments: c.arguments ?? {} };
+        const request = workerToolRequest({
+          worker_id: job.worker_id,
+          job_id: job.job_id,
+          call_id: c.id,
+          call_seq: seq,
+          workspace_id: job.workspace_id,
+          workspace_version: job.workspace_version,
+          tool_name: c.name,
+          arguments_json: JSON.stringify(c.arguments ?? {}),
+          execution_mode: job.execution_mode ?? null,
+        });
         // Main calls never leave this node, so they need no worker-protocol hash.
         add.run(job.job_id, turnKey, c.id, seq, job.session_kind === "main" ? hash(request) : requestHash(request), c.name, JSON.stringify(c.arguments ?? {}));
       }
@@ -921,7 +947,17 @@ export class ExecutionCoordinator {
         const callId = `verify-${job.job_id}`, turnKey = `verify:${job.job_id}`, args = { command: job.verify_command };
         const assistant = { role: "assistant", content: [{ type: "toolCall", id: callId, name: "bash", arguments: args }], timestamp: this.now() };
         const seq = (this.db.prepare("SELECT COALESCE(MAX(call_seq),0)+1 n FROM runtime_calls WHERE job_id=?").get(job.job_id) as { n: number }).n;
-        const request = { worker_id: job.worker_id, job_id: job.job_id, call_id: callId, call_seq: seq, workspace_id: job.workspace_id, config_version: job.workspace_version, tool: "bash", arguments: args };
+        const request = workerToolRequest({
+          worker_id: job.worker_id,
+          job_id: job.job_id,
+          call_id: callId,
+          call_seq: seq,
+          workspace_id: job.workspace_id,
+          workspace_version: job.workspace_version,
+          tool_name: "bash",
+          arguments_json: JSON.stringify(args),
+          execution_mode: job.execution_mode ?? null,
+        });
         this.db.prepare("INSERT INTO runtime_turns VALUES(?,?,?,?,?)").run(job.job_id, turnKey, JSON.stringify(assistant), hash(assistant), this.now());
         this.db.prepare("INSERT INTO runtime_calls(job_id,turn_key,call_id,call_seq,request_hash,tool_name,arguments_json,status) VALUES(?,?,?,?,?,'bash',?,'committed')").run(job.job_id, turnKey, callId, seq, requestHash(request), JSON.stringify(args));
         return true;

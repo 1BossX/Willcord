@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { QUIET_AFTER_MS, callLiveness, duration, jobActivity } from "../src/call-liveness.ts";
+import { QUIET_AFTER_MS, callLiveness, duration, jobActivity, lastOutputOf } from "../src/call-liveness.ts";
 
 const T0 = 1_000_000;
 const on = { online: 1 }, off = { online: 0 };
@@ -91,4 +91,16 @@ test("the job line follows the job and the machine", () => {
   assert.match(jobActivity({ state: "waiting_children" }, undefined).text, /委派的子任务/);
   assert.match(jobActivity({ state: "cancel_requested", worker_id: "w1" }, off).text, /重连后才能终止/);
   assert.match(jobActivity({ state: "cancel_requested", worker_id: "w1" }, on).text, /正在停止/);
+});
+
+test("output on stderr keeps a command from being called quiet", () => {
+  const stdoutOnly = { last_output_at: T0 };
+  const stderr = { last_output_at: T0 + 100_000 };
+  const now = T0 + 130_000;
+  assert.equal(live({ log: lastOutputOf([stdoutOnly, undefined]), now }).phase, "quiet");
+  const both = live({ log: lastOutputOf([stdoutOnly, stderr]), now });
+  assert.equal(both.phase, "running");
+  assert.match(both.detail!, /30秒前有输出/);
+  assert.equal(lastOutputOf([undefined, undefined]), undefined);
+  assert.equal(lastOutputOf([{ last_output_at: null }, undefined]), undefined);
 });

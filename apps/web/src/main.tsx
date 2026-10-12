@@ -6,7 +6,7 @@ import { createRoot } from "react-dom/client";
 import { marked } from "marked";
 import { ApiError, request } from "./api";
 import { AttentionPanel, BudgetRows, CancelButton, DispatchBanner, InlineCancel, LogViewer, RetryButton, endReasonLabel, type JobControl } from "./control";
-import { callLiveness, jobActivity } from "./call-liveness";
+import { callLiveness, jobActivity, lastOutputOf } from "./call-liveness";
 import { useNow } from "./clock";
 import { CaTrustGuide } from "./ca-trust-guide";
 import { useFeed } from "./feed";
@@ -699,10 +699,10 @@ function JobNotes({ job, worker }: { job: Job; worker?: Worker }) {
 }
 
 /** A call that was sent but has no result yet: what it is doing, for how long, and a way to stop it. */
-function PendingCall({ call, log, job, worker, onError }: { call: Call; log?: LogState; job: JobControl; worker?: Worker; onError: (cause: unknown) => void }) {
+function PendingCall({ call, log, stderr, job, worker, onError }: { call: Call; log?: LogState; stderr?: LogState; job: JobControl; worker?: Worker; onError: (cause: unknown) => void }) {
   const [open, setOpen] = useState(false);
   const now = useNow(true);
-  const live = callLiveness({ call, log, worker, job, now });
+  const live = callLiveness({ call, log: lastOutputOf([log, stderr]), worker, job, now });
   return (
     <div className={`pending-call is-${live.phase.replace("_", "-")}`} data-phase={live.phase}>
       <span className={`working-dots tone-dots-${live.tone} ${live.pulsing ? "" : "is-still"}`}><i /><i /><i /></span>
@@ -1717,7 +1717,7 @@ function App() {
                         {(Object.values(feed.state.calls) as Call[])
                           .filter((call) => call.job_id === group.job.job_id && ["committed", "dispatched", "unknown"].includes(call.status))
                           .map((call) => (
-                            <PendingCall key={call.call_id} call={call} log={feed.state.logs[`${call.job_id}/${call.call_id}/stdout`] as LogState | undefined} job={group.job} worker={workers.find((w) => w.worker_id === group.job.worker_id)} onError={report} />
+                            <PendingCall key={call.call_id} call={call} log={feed.state.logs[`${call.job_id}/${call.call_id}/stdout`] as LogState | undefined} stderr={feed.state.logs[`${call.job_id}/${call.call_id}/stderr`] as LogState | undefined} job={group.job} worker={workers.find((w) => w.worker_id === group.job.worker_id)} onError={report} />
                           ))}
                         {(Object.values(feed.state.drafts) as Draft[])
                           .filter((draft) => draft.job_id === group.job.job_id)

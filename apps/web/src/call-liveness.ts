@@ -22,6 +22,12 @@ export type Liveness = {
 
 type CallIn = { status: string; dispatched_at?: number | null; cancel_sent_at?: number | null };
 type LogIn = { last_output_at?: number | null } | undefined;
+
+/** The latest output on any stream: a command that prints progress to stderr is not quiet. */
+export function lastOutputOf(logs: Array<LogIn>): LogIn {
+  const times = logs.map((log) => log?.last_output_at).filter((t): t is number => typeof t === "number");
+  return times.length ? { last_output_at: Math.max(...times) } : undefined;
+}
 type WorkerIn = { online: number } | undefined;
 type JobIn = { state: string };
 

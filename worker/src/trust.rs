@@ -6,7 +6,7 @@ use crate::{
     Error,
     cli::{
         ca_fingerprint, certificate_pem, fetch_published_ca, parse_join_link, private_dir,
-        probe_https_health, root, save, shell_quote, take_value, valid_fingerprint,
+        probe_pinned_https_health, root, save, shell_quote, take_value, valid_fingerprint,
     },
     platform::is_macos,
 };
@@ -146,9 +146,10 @@ fn same_fingerprint(answer: &str, fingerprint: &str) -> bool {
 }
 
 /// The fingerprint printed here came from the same unverified request as the
-/// certificate, so it proves nothing until the administrator's copy is typed in.
+/// certificate, so it proves nothing until a value from a trusted or independent
+/// channel is typed in.
 fn confirm_fingerprint(fingerprint: &str) -> Result<(), Error> {
-    print!("请输入管理员渠道提供的指纹以确认导入（直接回车取消）：");
+    print!("请输入从已信任或独立渠道取得的指纹以确认导入（直接回车取消）：");
     std::io::stdout().flush()?;
     let mut answer = String::new();
     std::io::stdin().read_line(&mut answer)?;
@@ -176,7 +177,7 @@ pub async fn trust_ca(mut args: Vec<String>) -> Result<(), Error> {
         (None, link) => link,
     };
     if expected.is_none() && !std::io::stdin().is_terminal() {
-        return Err("没有 CA 指纹时需要在终端确认。请在加入链接的 # 后或用 --ca-fingerprint 给出管理员渠道提供的指纹。".into());
+        return Err("没有 CA 指纹时只能在终端确认，非交互环境直接拒绝。请从已信任或独立渠道取得指纹，再用加入链接的 # 后或 --ca-fingerprint 给出。".into());
     }
 
     let pem = certificate_pem(&fetch_published_ca(&origin).await?)?;
@@ -190,7 +191,8 @@ pub async fn trust_ca(mut args: Vec<String>) -> Result<(), Error> {
         Some(_) => println!("CA 指纹已核对：{fingerprint}"),
         None => {
             println!("主节点根证书的 CA 指纹（SHA-256）：{fingerprint}");
-            println!("请与管理员渠道（控制台“信任证书”页或管理员）提供的指纹核对。");
+            println!("这个指纹与证书来自同一次未验证的连接，不能证明证书可信。");
+            println!("请从已信任或独立的渠道取得指纹，与上面的值逐位核对后再输入。");
             confirm_fingerprint(&fingerprint)?;
         }
     }
@@ -199,7 +201,7 @@ pub async fn trust_ca(mut args: Vec<String>) -> Result<(), Error> {
     private_dir(&dir)?;
     let path = dir.join(format!("{fingerprint}.pem"));
     save(&path, pem.as_bytes())?;
-    if let Err(e) = probe_https_health(&origin, Some(&path)).await {
+    if let Err(e) = probe_pinned_https_health(&origin, &path).await {
         let _ = fs::remove_file(&path);
         return Err(e);
     }

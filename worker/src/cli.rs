@@ -366,6 +366,22 @@ fn pem_of_der(der: &[u8]) -> Result<String, Error> {
 /// Before anything is installed: does the main node answer HTTPS under this trust?
 pub(crate) async fn probe_https_health(base: &str, ca: Option<&Path>) -> Result<(), Error> {
     let client = client_trusting(ca)?;
+    check_health(&client, base).await
+}
+/// Trust-ca's check: only the root just downloaded and saved. The machine's own roots
+/// are left out, so a publicly or internally trusted certificate on the same origin
+/// cannot pass for the main node's root and get it imported.
+pub(crate) async fn probe_pinned_https_health(base: &str, ca: &Path) -> Result<(), Error> {
+    let client = reqwest::Client::builder()
+        .https_only(true)
+        .tls_built_in_root_certs(false)
+        .add_root_certificate(reqwest::Certificate::from_pem(&fs::read(ca)?)?)
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(15))
+        .build()?;
+    check_health(&client, base).await
+}
+async fn check_health(client: &reqwest::Client, base: &str) -> Result<(), Error> {
     client
         .get(format!("{base}/health"))
         .timeout(std::time::Duration::from_secs(15))

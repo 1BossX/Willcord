@@ -40,6 +40,7 @@ name=pathlib.Path(sys.argv[0]).name
 with (pathlib.Path(os.environ['TEST_ROOT'])/'calls').open('a') as f: f.write(json.dumps([name, sys.argv[1:]])+"\n")
 '''
 
+PROMPT = '请输入从已信任或独立渠道取得的指纹'
 DEBIAN = 'NAME="Ubuntu"\nID=ubuntu\nID_LIKE=debian\n'
 FEDORA = 'NAME="Fedora Linux"\nID=fedora\n'
 
@@ -231,22 +232,38 @@ class TrustCaTests(unittest.TestCase):
     def test_without_a_fingerprint_nothing_is_fetched_unless_a_terminal_can_confirm(self):
         r = self.run_trust()
         self.assertNotEqual(r.returncode, 0)
-        self.assertIn('--ca-fingerprint', r.stderr)
+        self.assertIn('非交互环境直接拒绝', r.stderr)
+        self.assertIn('已信任或独立渠道', r.stderr)
+        self.assertNotIn('管理员渠道', r.stderr)
         self.assertEqual(self.requested(), [])
         self.assert_nothing_imported(r)
 
     def test_a_typed_fingerprint_confirms_the_import_from_a_terminal(self):
-        replies = [('请输入管理员渠道提供的指纹'.encode(), (self.pin.upper() + '\n').encode())]
+        replies = [(PROMPT.encode(), (self.pin.upper() + '\n').encode())]
         code, output = drive([str(BINARY), 'trust-ca', self.origin], self.env, replies)
         self.assertEqual(code, 0, output)
         self.assertIn(self.pin, output)
+        self.assertIn('已信任或独立的渠道', output)
+        self.assertNotIn('管理员渠道', output)
+        self.assertIn('不能证明证书可信', output)
         self.assertEqual(len(self.commands()), 1)
+
+    def test_a_system_trusted_root_cannot_pass_the_check_or_be_imported(self):
+        # The machine trusts the main node's leaf (cert.pem) as a root, while the
+        # published root is other.pem. Adding the saved root on top of the system roots
+        # would let /health pass through the system root; trust-ca must not.
+        self.env['SSL_CERT_FILE'] = str(self.root / 'tls' / 'cert.pem')
+        self.server.mode = 'other'
+        r = self.run_trust('--ca-fingerprint', self.other_pin)
+        self.assertIn('无法通过 CA 验证主节点 HTTPS', r.stderr)
+        self.assert_nothing_imported(r)
+        self.assertEqual(self.requested(), ['/.well-known/willcord/ca.pem'])
 
     def test_a_different_or_empty_typed_fingerprint_imports_nothing(self):
         for answer in [self.other_pin + '\n', '\n']:
             with self.subTest(answer=answer):
                 self.server.log.clear()
-                code, output = drive([str(BINARY), 'trust-ca', self.origin], self.env, [('请输入管理员渠道提供的指纹'.encode(), answer.encode())])
+                code, output = drive([str(BINARY), 'trust-ca', self.origin], self.env, [(PROMPT.encode(), answer.encode())])
                 self.assertNotEqual(code, 0, output)
                 self.assertEqual(self.commands(), [])
                 self.assertEqual(self.trusted_files(), [])

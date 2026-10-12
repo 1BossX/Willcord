@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { caFileName, trustGuides } from "./ca-trust";
+import { caFileName, fingerprintCheckNote, trustGuides, trustLinkCommand } from "./ca-trust";
 import { caPemPath, loadCaFingerprint } from "./install-command";
 
 export function CaTrustGuide() {
@@ -19,10 +19,9 @@ export function CaTrustGuide() {
       <h3 id="ca-trust-title">信任证书</h3>
       <p>主节点使用内部证书。首次使用前，请在这台机器上信任根证书，否则浏览器会提示连接不安全。</p>
       <a className="secondary-button" href={caPemPath} download={caFileName}>下载 ca.pem</a>
-      <p>
-        根证书 SHA-256 指纹。<strong>请与管理员渠道（工单、内部通知或当面）拿到的指纹逐位核对；不一致请勿信任，并联系管理员。</strong>
-      </p>
+      <p>根证书 SHA-256 指纹（与 ca.pem 来自同一次连接）：</p>
       <code>{shown}</code>
+      <p><strong>{fingerprintCheckNote}</strong></p>
       {trustGuides().map(guide => (
         <details key={guide.id}>
           <summary>{guide.title}</summary>
@@ -38,9 +37,9 @@ export function CaTrustGuide() {
         </details>
       ))}
       <p>
-        已装 willcord 命令的机器，可运行下面的命令，它会重新取得根证书并核对指纹后导入：
+        已装 willcord 命令的机器，把从已信任或独立渠道核对过的指纹填入下面的命令；它会重新取得根证书，核对指纹后导入：
       </p>
-      <code>{`willcord trust-ca 'https://<主节点地址>#sha256=${fingerprint || "<上方指纹>"}'`}</code>
+      <code>{trustLinkCommand}</code>
     </section>
   );
 }

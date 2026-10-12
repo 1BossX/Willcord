@@ -1,5 +1,12 @@
 export const caFileName = "willcord-ca.pem";
 
+/** The fingerprint on this page arrives over the same connection as ca.pem, so it is only a value to compare, not a source to trust. */
+export const fingerprintCheckNote =
+  "这个指纹与 ca.pem 来自同一次连接，页面本身不能证明它可信。请先从已信任或独立的渠道（例如管理员另行告知的值）取得指纹，再与上面显示的值逐位核对；不一致请勿信任。";
+
+export const trustLinkCommand =
+  "willcord trust-ca 'https://<主节点地址>#sha256=<已从独立渠道核对的指纹>'";
+
 export type TrustGuide = {
   id: "macos" | "linux" | "windows" | "firefox";
   title: string;

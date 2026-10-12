@@ -97,7 +97,9 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           pattern: digests-*
-          path: digests
+          # Outside the workspace. checkout wipes a non-git workspace, which
+          # would delete digests downloaded into it.
+          path: ${{ runner.temp }}/digests
           merge-multiple: true
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
@@ -105,12 +107,13 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/checkout@v4
       - name: Tag multi-arch images
         run: |
-          version=${GITHUB_REF_NAME#v}
+          version=$(bash deploy/image-tag.sh "$GITHUB_REF_NAME")
           for target in main caddy; do
             image="$REGISTRY/willcord-$target"
             docker buildx imagetools create -t "$image:$version" \
-              "$image@$(cat digests/$target-amd64)" "$image@$(cat digests/$target-arm64)"
+              "$image@$(cat "$RUNNER_TEMP/digests/$target-amd64")" "$image@$(cat "$RUNNER_TEMP/digests/$target-arm64")"
             docker buildx imagetools inspect "$image:$version"
           done

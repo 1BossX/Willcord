@@ -919,6 +919,10 @@ mod tests {
             image_version(Some("1.2.3-rc.1".into())).unwrap(),
             "1.2.3-rc.1"
         );
+        assert_eq!(
+            image_version(Some("v0.1.0-beta.1".into())).unwrap(),
+            "0.1.0-beta.1"
+        );
         for bad in [
             "v1.2",
             "v1.2.3-",

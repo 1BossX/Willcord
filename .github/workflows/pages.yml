@@ -46,7 +46,7 @@ jobs:
         run: |
           dir="$RUNNER_TEMP/installer"
           tag=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)
-          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "latest Release is not a formal version: $tag" >&2; exit 1; }
+          bash deploy/formal-latest-tag.sh "$tag"
           gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern 'install.sh' --pattern 'install.sh.sha256' --dir "$dir"
           (cd "$dir" && shasum -a 256 -c install.sh.sha256)
           bash -n "$dir/install.sh"

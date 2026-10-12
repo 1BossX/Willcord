@@ -40,11 +40,16 @@ resolve_version() {
     resolved=$(curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 60 -o /dev/null -w '%{url_effective}' "https://github.com/BossOptional/Willcord/releases/latest") || resolved=''
     [[ "$resolved" == */releases/tag/* ]] || fail "没有可访问的正式 Release。请等待发布，或用 --version 指定已发布版本。"
     version=${resolved##*/}
-    [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "最新 Release 不是正式版本 vX.Y.Z：${version}。"
+    # vX.Y.Z-beta.N is a formal release (not a GitHub prerelease). rc and other
+    # hyphenated tags are not installed from /releases/latest.
+    [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?$ ]] || fail "最新 Release 不是正式版本 vX.Y.Z 或 vX.Y.Z-beta.N：${version}。"
   fi
   # Pre-releases (vX.Y.Z-rc.N) are installed only when named with --version.
   [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || fail "版本必须是 vX.Y.Z，或显式指定的预发布版本 vX.Y.Z-rc.N。"
-  [[ "$version" != *-* ]] || stable=false
+  # beta.N stays a normal install target so the image tag is that version.
+  if [[ "$version" == *-* && ! "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$ ]]; then
+    stable=false
+  fi
   # /releases/latest only ever names a published, formal Release, so the GitHub
   # API is consulted for an explicit --version alone. Anonymous API requests are
   # limited to 60 per hour per IP and shared NATs and proxies exhaust that, so

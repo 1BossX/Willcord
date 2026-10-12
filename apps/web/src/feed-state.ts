@@ -15,6 +15,7 @@ type Row = Record<string, any>;
 export type Dispatch = { paused: number; reason: string | null; note: string | null; since: number | null };
 export type Snapshot = {
   cursor: number;
+  server_time?: number;
   main_session_id: string;
   workers: Row[];
   /** Whether the main node starts work; paused after a restore, on low disk or by an operator. */

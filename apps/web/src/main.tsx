@@ -5,7 +5,9 @@ import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { marked } from "marked";
 import { ApiError, request } from "./api";
-import { AttentionPanel, BudgetRows, CancelButton, DispatchBanner, LogViewer, RetryButton, endReasonLabel, type JobControl } from "./control";
+import { AttentionPanel, BudgetRows, CancelButton, DispatchBanner, InlineCancel, LogViewer, RetryButton, endReasonLabel, type JobControl } from "./control";
+import { callLiveness, jobActivity } from "./call-liveness";
+import { useNow } from "./clock";
 import { CaTrustGuide } from "./ca-trust-guide";
 import { useFeed } from "./feed";
 import "./style.css";
@@ -620,8 +622,8 @@ function ChatMessage({ message, agent = "Worker Agent", onOpenSession, delegatio
 }
 
 type Draft = { draft_id: string; job_id: string; text: string; state: "streaming" | "interrupted"; created_at: number };
-type Call = { job_id: string; call_id: string; tool_name: string; arguments: { command?: string; path?: string; prompt?: string }; status: string };
-type LogState = { job_id: string; call_id: string; stream: string; bytes_held: number; state: string };
+type Call = { job_id: string; call_id: string; tool_name: string; arguments: { command?: string; path?: string; prompt?: string }; status: string; dispatched_at?: number | null; cancel_sent_at?: number | null };
+type LogState = { job_id: string; call_id: string; stream: string; bytes_held: number; state: string; last_output_at?: number | null };
 
 /**
  * Why a job is where it is and what can be done, in words: queue place, the
@@ -675,6 +677,8 @@ function JobNotes({ job, worker }: { job: Job; worker?: Worker }) {
     notes.push({ tone: "active", text: `等待 ${summary.open + summary.needs_attention} 个子任务结束，期间不调用模型` });
   if (job.state === "cancel_requested")
     notes.push({ tone: "warning", text: job.worker_id ? "已请求取消：正在等待命令确认结束，确认前这台机器不会开始下一个任务" : "已请求取消：正在停止生成，并等待子任务结束" });
+  if (job.state === "running" && job.worker_id && worker && !worker.online)
+    notes.push({ tone: "danger", text: `${job.worker_id} 已离线：命令可能仍在机器上运行，重连后会自动对账。可以先取消任务；终止信号要等机器重连后才能送达` });
   if (job.state === "needs_attention")
     notes.push({ tone: "danger", text: `需要核对：执行情况无法确认，不会自动重跑${job.cancel_requested ? "；取消请求已记录，但不能宣称已安全停止" : ""}。请在任务详情中处理` });
   if (summary && summary.failed + summary.needs_attention > 0 && !activeStates.has(job.state))
@@ -694,19 +698,27 @@ function JobNotes({ job, worker }: { job: Job; worker?: Worker }) {
   );
 }
 
-/** A call that was sent but has no result yet, with its output as it arrives. */
-function PendingCall({ call, log }: { call: Call; log?: LogState }) {
+/** A call that was sent but has no result yet: what it is doing, for how long, and a way to stop it. */
+function PendingCall({ call, log, job, worker, onError }: { call: Call; log?: LogState; job: JobControl; worker?: Worker; onError: (cause: unknown) => void }) {
   const [open, setOpen] = useState(false);
+  const now = useNow(true);
+  const live = callLiveness({ call, log, worker, job, now });
   return (
-    <div className={`pending-call ${call.status === "unknown" ? "is-unknown" : ""}`}>
-      <span className="working-dots"><i /><i /><i /></span>
-      <span>
-        {call.status === "unknown" ? "执行情况未知" : call.status === "committed" ? "等待发送" : "正在执行"} ·{" "}
-        <code>{call.arguments.command ?? call.arguments.path ?? call.tool_name}</code>
+    <div className={`pending-call is-${live.phase.replace("_", "-")}`} data-phase={live.phase}>
+      <span className={`working-dots tone-dots-${live.tone} ${live.pulsing ? "" : "is-still"}`}><i /><i /><i /></span>
+      <span className="pending-main">
+        <span className="pending-title">
+          <b>{live.label}</b> · <code>{call.arguments.command ?? call.arguments.path ?? call.tool_name}</code>
+        </span>
+        {live.detail && <span className={`pending-detail ink-${live.tone}`} role="status">{live.detail}</span>}
       </span>
-      {call.tool_name === "bash" && log && (open
-        ? <LogViewer jobId={call.job_id} callId={call.call_id} version={log.bytes_held} />
-        : <button type="button" className="secondary-button" onClick={() => setOpen(true)}>查看实时输出</button>)}
+      <span className="pending-actions">
+        {call.tool_name === "bash" && log && (open
+          ? <button type="button" className="secondary-button" onClick={() => setOpen(false)}>收起输出</button>
+          : <button type="button" className="secondary-button" onClick={() => setOpen(true)}>查看实时输出</button>)}
+        {live.canCancel && <InlineCancel job={job} onDone={() => undefined} onError={onError} />}
+      </span>
+      {call.tool_name === "bash" && log && open && <LogViewer jobId={call.job_id} callId={call.call_id} version={log.bytes_held} />}
     </div>
   );
 }
@@ -1705,7 +1717,7 @@ function App() {
                         {(Object.values(feed.state.calls) as Call[])
                           .filter((call) => call.job_id === group.job.job_id && ["committed", "dispatched", "unknown"].includes(call.status))
                           .map((call) => (
-                            <PendingCall key={call.call_id} call={call} log={feed.state.logs[`${call.job_id}/${call.call_id}/stdout`] as LogState | undefined} />
+                            <PendingCall key={call.call_id} call={call} log={feed.state.logs[`${call.job_id}/${call.call_id}/stdout`] as LogState | undefined} job={group.job} worker={workers.find((w) => w.worker_id === group.job.worker_id)} onError={report} />
                           ))}
                         {(Object.values(feed.state.drafts) as Draft[])
                           .filter((draft) => draft.job_id === group.job.job_id)
@@ -1718,16 +1730,26 @@ function App() {
                   {orphanMessages.map((message) => (
                     <ChatMessage key={message.message_id} message={message} agent={agentName} onOpenSession={openSessionById} />
                   ))}
-                  {runningJob && (
-                    <div className="agent-working">
-                      <span className="working-dots">
-                        <i />
-                        <i />
-                        <i />
-                      </span>
-                      任务正在执行，结果会持续更新。
-                    </div>
-                  )}
+                  {runningJob && (() => {
+                    const activity = jobActivity(runningJob, workers.find((w) => w.worker_id === runningJob.worker_id));
+                    // A command's own card already carries the cancel button.
+                    const cardHasCancel = (Object.values(feed.state.calls) as Call[]).some(
+                      (call) => call.job_id === runningJob.job_id && ["committed", "dispatched"].includes(call.status),
+                    );
+                    return (
+                      <div className={`agent-working ink-${activity.tone}`} role="status">
+                        <span className={`working-dots tone-dots-${activity.tone} ${activity.tone === "danger" ? "is-still" : ""}`}>
+                          <i />
+                          <i />
+                          <i />
+                        </span>
+                        {activity.text}
+                        {!cardHasCancel && ["running", "waiting_children"].includes(runningJob.state) && (
+                          <InlineCancel job={runningJob} onDone={() => undefined} onError={report} label="取消任务" question="取消这个任务？" />
+                        )}
+                      </div>
+                    );
+                  })()}
                 </div>
               )}
             </div>

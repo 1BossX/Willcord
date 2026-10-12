@@ -227,7 +227,7 @@ export class ExecutionCoordinator {
       return Promise.reject(new Error("deadline_exceeded"));
     }
     this.db.transaction(() => {
-      this.db.prepare("UPDATE runtime_calls SET status='dispatched' WHERE job_id=? AND call_id=? AND status='committed'").run(jobId, callId);
+      this.db.prepare("UPDATE runtime_calls SET status='dispatched',dispatched_at=? WHERE job_id=? AND call_id=? AND status='committed'").run(this.now(), jobId, callId);
       this.db.prepare("INSERT OR IGNORE INTO tool_calls(call_id,job_id,call_seq,request_hash,request_json,state) VALUES(?,?,?,?,?,'running')").run(callId, jobId, row.call_seq, row.request_hash, row.arguments_json);
     })();
     let settle!: Pick<Pending, "resolve" | "reject">;
@@ -372,7 +372,10 @@ export class ExecutionCoordinator {
       return;
     }
     const inserted = this.db.prepare("INSERT OR IGNORE INTO call_logs VALUES(?,?,?,?,?,?)").run(row.job_id, row.call_id, frame.stream, frame.seq, frame.offset, data).changes;
-    if (inserted) this.storedLogBytes = this.logBytes() + data.length;
+    if (inserted) {
+      this.storedLogBytes = this.logBytes() + data.length;
+      this.db.prepare("UPDATE call_log_state SET last_output_at=? WHERE job_id=? AND call_id=? AND stream=?").run(this.now(), row.job_id, row.call_id, frame.stream);
+    }
     this.retryHeld(row);
   }
 

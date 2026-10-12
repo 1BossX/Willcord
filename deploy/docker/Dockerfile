@@ -44,4 +44,7 @@ CMD ["node", "dist/main.js"]
 
 FROM caddy:${CADDY_VERSION} AS caddy
 COPY deploy/docker/Caddyfile /etc/caddy/Caddyfile
+COPY --chmod=0755 deploy/docker/caddy-entrypoint.sh /usr/local/bin/caddy-entrypoint.sh
+ENTRYPOINT ["/usr/local/bin/caddy-entrypoint.sh"]
+CMD ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
 COPY --from=build /src/apps/web/dist /srv/web

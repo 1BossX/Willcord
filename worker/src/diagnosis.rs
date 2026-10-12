@@ -27,15 +27,32 @@ pub fn bash_argv(command: &str) -> Result<Vec<String>, &'static str> {
     for token in &tokens {
         reject_token_metacharacters(token)?;
     }
-    match tokens[0].as_str() {
-        "docker" => allow_docker(&tokens)?,
-        "df" => allow_df(&tokens)?,
-        "du" => allow_du(&tokens)?,
-        "systemctl" => allow_systemctl(&tokens)?,
-        "curl" => allow_curl(&tokens)?,
+    let argv = match tokens[0].as_str() {
+        "docker" => {
+            allow_docker(&tokens)?;
+            tokens
+        }
+        "df" => {
+            allow_df(&tokens)?;
+            tokens
+        }
+        "du" => {
+            allow_du(&tokens)?;
+            tokens
+        }
+        "systemctl" => {
+            allow_systemctl(&tokens)?;
+            tokens
+        }
+        "curl" => {
+            allow_curl(&tokens)?;
+            let mut argv = vec!["curl".to_owned(), "-q".to_owned(), "--globoff".to_owned()];
+            argv.extend(tokens.into_iter().skip(1));
+            argv
+        }
         _ => return Err("invalid"),
-    }
-    Ok(tokens)
+    };
+    Ok(argv)
 }
 
 fn reject_token_metacharacters(token: &str) -> Result<(), &'static str> {
@@ -60,9 +77,10 @@ fn allow_docker(tokens: &[String]) -> Result<(), &'static str> {
     match sub {
         Some("ps") => Ok(()),
         Some("inspect") if tokens.len() >= 3 => Ok(()),
-        Some("logs") if tokens.len() >= 3 => Ok(()),
+        Some("logs") if tokens.len() >= 3 => reject_docker_logs_follow(tokens),
         Some("container") => match tokens.get(2).map(String::as_str) {
-            Some("ps") | Some("inspect") | Some("logs") if tokens.len() >= 3 => Ok(()),
+            Some("ps") | Some("inspect") if tokens.len() >= 3 => Ok(()),
+            Some("logs") if tokens.len() >= 4 => reject_docker_logs_follow(tokens),
             _ => Err("invalid"),
         },
         _ => Err("invalid"),
@@ -174,11 +192,33 @@ fn allow_du(tokens: &[String]) -> Result<(), &'static str> {
 }
 
 fn allow_systemctl(tokens: &[String]) -> Result<(), &'static str> {
-    if tokens.len() < 3 {
+    if tokens.len() != 3 || tokens[1] != "status" {
         return Err("invalid");
     }
-    if tokens[1] != "status" {
+    let unit = &tokens[2];
+    if unit.is_empty() || unit.starts_with('-') {
         return Err("invalid");
+    }
+    Ok(())
+}
+
+fn reject_docker_logs_follow(tokens: &[String]) -> Result<(), &'static str> {
+    let start = if tokens.get(1).map(String::as_str) == Some("logs") {
+        2
+    } else if tokens.get(1).map(String::as_str) == Some("container")
+        && tokens.get(2).map(String::as_str) == Some("logs")
+    {
+        3
+    } else {
+        return Err("invalid");
+    };
+    for t in tokens.iter().skip(start) {
+        if t == "-f" || t == "--follow" || t.starts_with("--follow=") {
+            return Err("invalid");
+        }
+        if t.starts_with('-') && !t.starts_with("--") && t.chars().skip(1).any(|c| c == 'f') {
+            return Err("invalid");
+        }
     }
     Ok(())
 }
@@ -186,6 +226,14 @@ fn allow_systemctl(tokens: &[String]) -> Result<(), &'static str> {
 fn allow_curl(tokens: &[String]) -> Result<(), &'static str> {
     if tokens[0] != "curl" {
         return Err("invalid");
+    }
+    for t in tokens.iter().skip(1) {
+        if *t == "-q" || *t == "--globoff" {
+            return Err("invalid");
+        }
+        if t.starts_with('-') && !t.starts_with("--") && t.chars().skip(1).any(|c| c == 'q') {
+            return Err("invalid");
+        }
     }
     let mut urls = 0usize;
     let mut i = 1usize;
@@ -368,6 +416,50 @@ mod tests {
         ] {
             assert_eq!(bash_allowed(cmd), Err("invalid"), "expected block: {cmd}");
         }
+    }
+
+    #[test]
+    fn systemctl_only_status_one_unit_no_remote_flags() {
+        assert_eq!(bash_allowed("systemctl status nginx"), Ok(()));
+        for cmd in [
+            "systemctl status -H qa@172.30.0.2:2222 nginx",
+            "systemctl status --host=qa@172.30.0.2:2222 nginx",
+            "systemctl status nginx -Hqa@172.30.0.2:2222",
+            "systemctl status -M qa@.host nginx",
+            "systemctl status --machine=qa@.host nginx",
+            "systemctl status --root / nginx",
+            "systemctl status",
+            "systemctl status -",
+        ] {
+            assert_eq!(bash_allowed(cmd), Err("invalid"), "expected block: {cmd}");
+        }
+    }
+
+    #[test]
+    fn docker_logs_rejects_follow() {
+        for cmd in [
+            "docker logs -f web",
+            "docker logs --follow web",
+            "docker logs -sf web",
+        ] {
+            assert_eq!(bash_allowed(cmd), Err("invalid"), "expected block: {cmd}");
+        }
+        assert_eq!(bash_allowed("docker logs --tail 20 web"), Ok(()));
+    }
+
+    #[test]
+    fn curl_exec_argv_includes_forced_q_and_globoff() {
+        let argv = bash_argv("curl -fsS http://127.0.0.1/health").unwrap();
+        assert_eq!(
+            argv,
+            vec![
+                "curl".to_owned(),
+                "-q".to_owned(),
+                "--globoff".to_owned(),
+                "-fsS".to_owned(),
+                "http://127.0.0.1/health".to_owned(),
+            ]
+        );
     }
 
     #[test]

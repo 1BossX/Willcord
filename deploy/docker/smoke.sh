@@ -10,6 +10,8 @@ here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
 tag=${SMOKE_TAG:-smoke}
 port=${SMOKE_PORT:-38443}
+# Not 8480, so the loopback Origin rewrite is checked against the configured host port.
+local_port=${SMOKE_LOCAL_PORT:-38480}
 # An emulated architecture (QEMU) starts much slower.
 ready_secs=${SMOKE_READY_SECS:-90}
 if [ "${SKIP_BUILD:-}" != 1 ]; then
@@ -26,7 +28,7 @@ INITIAL_ADMIN_PASSWORD=smoke-$(date +%s)-password
 ENV
 export WILLCORD_REGISTRY=local WILLCORD_VERSION="$tag" \
   WILLCORD_SITE="localhost:$port" WILLCORD_PORT="$port" \
-  WILLCORD_ENV_FILE="$work/main.env"
+  WILLCORD_LOCAL_PORT="$local_port" WILLCORD_ENV_FILE="$work/main.env"
 dc() { docker compose -p "$project" -f "$here/compose.yaml" "$@"; }
 passed=""
 cleanup() {
@@ -55,6 +57,21 @@ case "$health" in *'"dispatch_paused":null'*) ;; *) echo "dispatch should not be
 dc exec -T main node dist/admin.js backup /var/lib/willcord/smoke-backup.sqlite > "$work/backup.json"
 grep -q '"integrity": "ok"' "$work/backup.json" || { cat "$work/backup.json" >&2; exit 1; }
 echo "backup: ok"
+
+password=$(sed -n 's/^INITIAL_ADMIN_PASSWORD=//p' "$work/main.env")
+loopback_login() {
+  curl -sS -o /dev/null -D "$work/login.headers" -w '%{http_code}' \
+    -H "Origin: $1" -H 'content-type: application/json' \
+    --data "{\"password\":\"$password\"}" "http://127.0.0.1:$local_port/auth/login"
+}
+[ "$(loopback_login "http://localhost:$local_port")" = 200 ] \
+  || { echo "loopback login refused on :$local_port" >&2; exit 1; }
+grep -qi '^set-cookie: session=' "$work/login.headers" \
+  && ! grep -qiE '^set-cookie:.*; ?secure' "$work/login.headers" \
+  || { cat "$work/login.headers" >&2; echo "loopback session cookie: wrong attributes" >&2; exit 1; }
+[ "$(loopback_login "http://localhost:$((local_port + 1))")" = 403 ] \
+  || { echo "another local port was not refused" >&2; exit 1; }
+echo "loopback login: ok"
 
 dc stop main
 code=$(docker inspect -f '{{.State.ExitCode}}' "$(dc ps -aq main)")

@@ -56,7 +56,8 @@
 # refused), and the session cookie loses Secure, which browsers would not
 # store from http (Safari does not exempt localhost).
 http://localhost:8480, http://127.0.0.1:8480 {
-	@loopback header_regexp Origin ^http://(localhost|127\.0\.0\.1):8480$
+	# The browser's Origin carries the host port from WILLCORD_LOCAL_PORT, not 8480.
+	@loopback header_regexp Origin ^http://(localhost|127\.0\.0\.1):{$WILLCORD_LOCAL_PORT:8480}$
 	request_header @loopback Origin {$WILLCORD_ORIGIN}
 	header >Set-Cookie "(?i);\s*Secure" ""
 	import willcord

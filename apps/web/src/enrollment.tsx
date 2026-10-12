@@ -14,6 +14,8 @@ export function usePendingEnrollments(): number {
   // subscribePending is module-level: a new function per render would make React resubscribe each time.
   return useSyncExternalStore(subscribePending, getPendingCount);
 }
+/** Enough rows for the whole command at the dialog's width, so none of it needs scrolling. */
+const commandRows = (text: string) => Math.min(8, Math.ceil(text.length / 45));
 const OPEN_EVENT = "willcord:open-enrollment";
 export const openEnrollment = () => window.dispatchEvent(new Event(OPEN_EVENT));
 const states: Record<string, string> = { pending: "等待授权", approved: "已授权", rejected: "已拒绝", revoked: "已撤销" };
@@ -98,9 +100,9 @@ export function EnrollmentPanel() {
         <p>主节点：<strong>{origin ?? "…"}</strong></p>
         {origin !== null && isLoopbackOrigin(origin) && <p role="alert">这个地址只在本机有效，其他机器连不上。请用主节点的局域网或域名地址打开控制台，再复制命令。</p>}
         {fresh ? <>
-          <label>在执行机器上运行（还没有 willcord 命令）<textarea readOnly value={fresh} rows={3} /></label>
+          <label>在执行机器上运行（还没有 willcord 命令）<textarea readOnly value={fresh} rows={commandRows(fresh)} /></label>
           <button className="primary-button" onClick={() => void copyCommand(fresh)}>复制命令</button>
-          <label>已经装过 willcord 命令的机器<textarea readOnly value={installed} rows={2} /></label>
+          <label>已经装过 willcord 命令的机器<textarea readOnly value={installed} rows={commandRows(installed)} /></label>
           <button className="secondary-button" onClick={() => void copyCommand(installed)}>复制命令</button>
         </> : <p>{commandError || "正在读取主节点地址和 CA 指纹…"}</p>}
         <p role="status">{copyStatus}</p>

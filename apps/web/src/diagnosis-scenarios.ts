@@ -28,6 +28,6 @@ export const diagnosisScenarios: DiagnosisScenario[] = [
     title: "部署后检查",
     summary: "验证你自己部署的服务在部署后是否健康。",
     prompt:
-      "在这台主机上做一次部署后健康检查：针对我自己部署的服务（不是 Willcord 本身），请只做只读检查（例如 systemctl status、访问本机健康检查的 curl），给出结论、证据和建议的下一步；证据不足以确认原因时，结论必须写「无法确认」，不要给出确定原因。",
+      "在这台主机上做一次部署后健康检查：针对我自己部署的服务。不要检查或评判 Willcord 发版、trust-ca 或 Caddy 回环，也不要把全机 Docker 状态或磁盘容量当作本次主题。请只做只读检查（例如 systemctl status、访问该服务本机健康检查的 curl），给出结论、证据和建议的下一步；证据不足以确认原因时，结论必须写「无法确认」，不要给出确定原因。",
   },
 ];

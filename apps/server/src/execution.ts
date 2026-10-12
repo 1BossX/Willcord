@@ -11,7 +11,7 @@ import { freezeContext, omittedNote, priorContext } from "./context.js";
 import { logView } from "./feed.js";
 import { modelFromEnv, type ModelConfig } from "./config.js";
 import { buildDiagnosisReport } from "./diagnosis-report.js";
-import { DIAGNOSIS_ANSWER_FORMAT } from "./diagnosis-scenarios.js";
+import { diagnosisAnswerFormat } from "./diagnosis-scenarios.js";
 
 type Socket = { readyState: number; send(data: string): void };
 type Connection = { epoch: number; socket: Socket; tokenDigest: string };
@@ -667,7 +667,7 @@ export class ExecutionCoordinator {
       this.db.prepare("UPDATE jobs SET runtime_generation=runtime_generation+1 WHERE job_id=?").run(jobId);
       return (this.db.prepare("SELECT runtime_generation g FROM jobs WHERE job_id=?").get(jobId) as { g: number }).g;
     })();
-    const job = { ...(this.db.prepare("SELECT j.*,s.kind session_kind,s.workspace_id,s.workspace_version,s.repo_id,s.path,s.execution_mode FROM jobs j JOIN sessions s USING(session_id) WHERE j.job_id=?").get(jobId) as any), runtime_generation: generation };
+    const job = { ...(this.db.prepare("SELECT j.*,s.kind session_kind,s.workspace_id,s.workspace_version,s.repo_id,s.path,s.execution_mode,s.diagnosis_scenario FROM jobs j JOIN sessions s USING(session_id) WHERE j.job_id=?").get(jobId) as any), runtime_generation: generation };
     this.running.add(jobId);
     this.armDeadline(jobId, job.deadline_at);
     let failure: unknown;
@@ -794,7 +794,7 @@ export class ExecutionCoordinator {
       const userText = job.verify_command
         ? `${job.input_text}\n\nWhen you finish, the main node runs this verification command in this workspace; the step succeeds only if it exits 0:\n${job.verify_command}`
         : job.execution_mode === "diagnosis"
-          ? `${job.input_text}${DIAGNOSIS_ANSWER_FORMAT}`
+          ? `${job.input_text}${diagnosisAnswerFormat(job.diagnosis_scenario)}`
           : job.input_text;
       this.db.prepare("INSERT INTO runtime_history(job_id,entry_key,message_json) VALUES(?,?,?)").run(job.job_id, `user:${job.job_id}`, JSON.stringify({ role: "user", content: [{ type: "text", text: userText }], timestamp: job.created_at }));
     })();

@@ -11,6 +11,7 @@ import { useNow } from "./clock";
 import { CaTrustGuide } from "./ca-trust-guide";
 import { useFeed } from "./feed";
 import { DiagnosisResultPanel, type DiagnosisReport } from "./diagnosis-result";
+import { canReuseDiagnosisSession } from "./diagnosis-session";
 import { diagnosisScenarios, type DiagnosisScenario } from "./diagnosis-scenarios";
 import "./style.css";
 
@@ -944,14 +945,15 @@ function App() {
     setSubmitting(true);
     setError("");
     try {
-      const reuseSession =
-        activeSession?.kind === "worker" &&
-        activeSession.worker_id === workerId &&
-        activeSession.execution_mode === "diagnosis" &&
-        !messages.length &&
-        !jobs.length
-          ? activeSession
-          : null;
+      const reuseSession = canReuseDiagnosisSession(
+        activeSession,
+        workerId,
+        scenario.id,
+        messages.length > 0,
+        jobs.length > 0,
+      )
+        ? activeSession!
+        : null;
       let target = reuseSession;
       if (!target) {
         const listed = await request<{ workspaces: Workspace[] }>(

@@ -5,6 +5,7 @@
 # stops matching. Workers can fetch root.crt using a trusted CA fingerprint.
 {
 	skip_install_trust
+	default_sni {$WILLCORD_HOST:localhost}
 	pki {
 		ca local {
 			name "Willcord"

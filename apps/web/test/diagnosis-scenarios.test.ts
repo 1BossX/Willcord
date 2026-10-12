@@ -13,3 +13,10 @@ test("three diagnosis scenarios are defined", () => {
     assert.match(scenario.prompt, /无法确认/);
   }
 });
+
+test("post-deploy prompt names Willcord release, trust-ca, and Caddy loopback exclusions", () => {
+  const post = diagnosisScenarios.find((s) => s.id === "post-deploy")!;
+  assert.match(post.prompt, /Willcord 发版/);
+  assert.match(post.prompt, /trust-ca/);
+  assert.match(post.prompt, /Caddy 回环/);
+});

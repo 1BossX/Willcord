@@ -34,7 +34,7 @@ export const diagnosisScenarios: DiagnosisScenario[] = [
     title: "部署后检查",
     summary: "验证你自己部署的服务在部署后是否健康。",
     prompt:
-      "在这台主机上做一次部署后健康检查：针对我自己部署的服务（不是 Willcord 本身），请只做只读检查（例如 systemctl status、访问本机健康检查的 curl），给出结论、证据和建议的下一步；证据不足以确认原因时，结论必须写「无法确认」，不要给出确定原因。",
+      "在这台主机上做一次部署后健康检查：针对我自己部署的服务。不要检查或评判 Willcord 发版、trust-ca 或 Caddy 回环，也不要把全机 Docker 状态或磁盘容量当作本次主题。请只做只读检查（例如 systemctl status、访问该服务本机健康检查的 curl），给出结论、证据和建议的下一步；证据不足以确认原因时，结论必须写「无法确认」，不要给出确定原因。",
   },
 ];
 
@@ -46,12 +46,27 @@ export function scenarioById(id: DiagnosisScenarioId): DiagnosisScenario | undef
   return diagnosisScenarios.find((s) => s.id === id);
 }
 
-/** Appended to every diagnosis job user turn so the model keeps the required shape. */
-export const DIAGNOSIS_ANSWER_FORMAT = `
+const DIAGNOSIS_HEADINGS = `
 
 请用以下三个二级标题组织最终答复（不要省略标题）：
 ## 结论
 ## 证据
 ## 建议的下一步
 
-证据须引用本次真实执行过的工具调用，写明 call_id（与执行详情里一致）并摘录关键输出。建议的下一步只写文字，不要执行修复命令。检查的是这台主机上的 Docker 与磁盘，不限于当前工作目录。`;
+证据须引用本次真实执行过的工具调用，写明 call_id（与执行详情里一致）并摘录关键输出。建议的下一步只写文字，不要执行修复命令。`;
+
+/** Appended to each diagnosis job user turn; scope depends on the session scenario. */
+export function diagnosisAnswerFormat(scenarioId: DiagnosisScenarioId | null | undefined): string {
+  let scope: string;
+  if (scenarioId === "post-deploy") {
+    scope =
+      "检查对象是我自己部署的服务是否健康。不要检查或评判 Willcord 发版、trust-ca 或 Caddy 回环，也不要把全机 Docker 与磁盘容量当作本次主题。";
+  } else if (scenarioId === "disk-usage") {
+    scope = "检查的是这台主机上的磁盘用量，不限于当前工作目录。";
+  } else if (scenarioId === "docker-service") {
+    scope = "检查的是这台主机上的 Docker 服务与容器，不限于当前工作目录。";
+  } else {
+    scope = "检查的是这台主机，不限于当前工作目录。";
+  }
+  return `${DIAGNOSIS_HEADINGS}${scope}`;
+}

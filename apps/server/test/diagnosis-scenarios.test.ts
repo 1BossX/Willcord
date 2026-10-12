@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { finalResult } from "../src/execution.js";
 import { openDatabase } from "../src/storage.js";
-import { diagnosisScenarios, isDiagnosisScenarioId } from "../src/diagnosis-scenarios.js";
+import { diagnosisAnswerFormat, diagnosisScenarios, isDiagnosisScenarioId } from "../src/diagnosis-scenarios.js";
 
 test("finalResult attaches diagnosis block for diagnosis sessions", () => {
   const db = openDatabase(":memory:");
@@ -38,4 +38,24 @@ test("isDiagnosisScenarioId validates catalog ids", () => {
   assert.equal(isDiagnosisScenarioId("docker-service"), true);
   assert.equal(isDiagnosisScenarioId("nope"), false);
   assert.equal(diagnosisScenarios.length, 3);
+});
+
+test("post-deploy prompt and answer format exclude Willcord infra", () => {
+  const post = diagnosisScenarios.find((s) => s.id === "post-deploy")!;
+  assert.match(post.prompt, /Willcord 发版/);
+  assert.match(post.prompt, /trust-ca/);
+  assert.match(post.prompt, /Caddy 回环/);
+  assert.match(post.prompt, /不要把全机 Docker/);
+  const format = diagnosisAnswerFormat("post-deploy");
+  assert.match(format, /Willcord 发版/);
+  assert.match(format, /trust-ca/);
+  assert.match(format, /Caddy 回环/);
+  assert.doesNotMatch(format, /检查的是这台主机上的 Docker 与磁盘/);
+  assert.match(format, /不要把全机 Docker 与磁盘容量/);
+});
+
+test("host scenarios steer at docker or disk, not post-deploy exclusions", () => {
+  assert.match(diagnosisAnswerFormat("docker-service"), /Docker 服务与容器/);
+  assert.match(diagnosisAnswerFormat("disk-usage"), /磁盘用量/);
+  assert.doesNotMatch(diagnosisAnswerFormat("docker-service"), /Caddy 回环/);
 });

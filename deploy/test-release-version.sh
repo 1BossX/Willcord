@@ -28,5 +28,8 @@ fi
 
 grep -F 'bash deploy/formal-latest-tag.sh "$tag"' "$pages" >/dev/null
 grep -F 'version=$(bash deploy/image-tag.sh "$GITHUB_REF_NAME")' "$docker" >/dev/null
+grep -F 'path: ${{ runner.temp }}/digests' "$docker" >/dev/null
+grep -F '"$RUNNER_TEMP/digests/$target-amd64"' "$docker" >/dev/null
+python3 "$root/deploy/check-artifact-checkout-order.py" "$root"/.github/workflows/*.yml
 
 printf 'release version tag tests passed\n'

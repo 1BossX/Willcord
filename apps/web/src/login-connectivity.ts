@@ -1,9 +1,17 @@
-import { ApiError } from "./api";
-import { blockerMessage, installBlockers } from "./install-blockers";
+import { blockerMessage, installBlockers } from "./install-blockers.ts";
+
+function isUnauthorized(cause: unknown): boolean {
+  return (
+    typeof cause === "object" &&
+    cause !== null &&
+    "status" in cause &&
+    (cause as { status: number }).status === 401
+  );
+}
 
 /** Map a failed login or session probe to an outsider-facing blocker when TLS is the issue. */
 export function loginFailureMessage(cause: unknown): string {
-  if (cause instanceof ApiError && cause.status === 401) return "密码不正确，请重试。";
+  if (isUnauthorized(cause)) return "密码不正确，请重试。";
   if (isTlsOrNetworkFailure(cause)) return blockerMessage(installBlockers.caUntrusted);
   if (cause instanceof Error) return cause.message;
   return "登录失败，请稍后重试。";

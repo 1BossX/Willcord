@@ -54,6 +54,10 @@ elif name=='curl':
   if asset.endswith('.sha256') and os.environ.get('TEST_BAD_HASH')=='1':data=b'0'*64+b'  wrong\n'
  if dest is not None:dest.write_bytes(data)
  else:sys.stdout.buffer.write(data)
+elif name=='docker':
+ if len(args)>=2 and args[0]=='compose' and args[1]=='version':sys.exit(0)
+ if args==['info']:sys.exit(0)
+ sys.exit(1)
 elif name in ['sleep','systemctl','launchctl']:pass
 else:
  if args[:2]==['main','init']:
@@ -78,7 +82,7 @@ class InstallerTests(unittest.TestCase):
   self.bin=self.root/'bin';self.bin.mkdir()
   self.assets=self.root/'assets';self.assets.mkdir()
   stub=f'#!{sys.executable}\n'+STUB
-  for name in ['uname','curl','id','sudo','sleep','systemctl','launchctl']:
+  for name in ['uname','curl','id','sudo','sleep','systemctl','launchctl','docker']:
    path=self.bin/name;path.write_text(stub);path.chmod(0o700)
   for os_name,arch in [('linux','x86_64'),('linux','aarch64'),('darwin','x86_64'),('darwin','arm64')]:
    self.asset(f'willcord-v1.2.3-{os_name}-{arch}',stub.encode())
@@ -210,6 +214,16 @@ class InstallerTests(unittest.TestCase):
  def run_main(self,*extra,env=None):
   return subprocess.run([BASH,str(SCRIPT),'main','--dir',str(self.root/'deployment'),*extra],env={**self.env,**(env or {})},capture_output=True,text=True)
  def handed_over(self):return [a for n,a in self.calls() if n.startswith('willcord-')]
+ def test_main_refuses_when_docker_is_missing(self):
+  (self.bin/'docker').unlink()
+  path=f"{self.bin}:/usr/bin:/bin"
+  if shutil.which('docker',path=path):
+   self.skipTest('a system docker on PATH would pass the precheck')
+  r=self.run_main(env={**self.env,'PATH':path})
+  self.assertNotEqual(r.returncode,0)
+  self.assertIn('不会替你安装 Docker',r.stderr)
+  self.assertEqual(self.handed_over(),[])
+  self.clean_tmp()
  def test_main_hands_over_to_the_verified_binary(self):
   # The wizard itself is `willcord main init` (test-main-node.py); the script
   # only fetches the release binary, checks its SHA-256 and passes the options on.

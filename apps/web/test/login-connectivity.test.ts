@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ApiError } from "../src/api.ts";
 import { isTlsOrNetworkFailure, loginFailureMessage } from "../src/login-connectivity.ts";
 
 test("login maps TLS failures to the CA trust blocker", () => {
@@ -10,7 +9,7 @@ test("login maps TLS failures to the CA trust blocker", () => {
 });
 
 test("login keeps a normal wrong-password message", () => {
-  assert.equal(loginFailureMessage(new ApiError(401, "x")), "密码不正确，请重试。");
+  assert.equal(loginFailureMessage({ status: 401 }), "密码不正确，请重试。");
 });
 
 test("network heuristics cover common browser errors", () => {

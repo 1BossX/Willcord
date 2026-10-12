@@ -1,5 +1,5 @@
-import type { InstallBlocker } from "./install-blockers";
-import { installBlockers } from "./install-blockers";
+import type { InstallBlocker } from "./install-blockers.ts";
+import { installBlockers } from "./install-blockers.ts";
 
 export type WorkerSnapshot = {
   worker_id: string;

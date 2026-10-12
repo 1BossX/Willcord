@@ -130,8 +130,14 @@ worker_install() {
 # The setup wizard is `willcord main init`: this script only fetches a verified
 # binary and hands over. The wizard reads /dev/tty itself, so it also works when
 # the script arrives through `curl | bash`.
+require_docker_for_main() {
+  command -v docker >/dev/null 2>&1 || fail "本机未找到 docker 命令。主节点需要 Docker Engine 与 Compose v2；请先安装 Docker，再运行 install.sh main。安装器不会替你安装 Docker。"
+  docker compose version >/dev/null 2>&1 || fail "本机未检测到 Docker Compose v2。请安装 Compose v2 后重新运行 install.sh main。"
+  docker info >/dev/null 2>&1 || fail "无法访问 Docker 守护进程。请启动 Docker 服务，并确认当前账户有权访问，然后重新运行 install.sh main。"
+}
 main_install() {
   [[ "$system" == false && -z "$account" && -z "$ca" && -z "$fingerprint" ]] || fail "main 不接受 --system、--user 或 CA 参数。"
+  require_docker_for_main
   local name="willcord-$version-$os-$arch"
   verified "$name"
   chmod 700 "$tmp/$name"

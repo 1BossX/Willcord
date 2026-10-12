@@ -215,7 +215,8 @@ fn env_value(text: &str, key: &str) -> Option<String> {
 
 fn docker_missing(e: std::io::Error) -> Error {
     if e.kind() == std::io::ErrorKind::NotFound {
-        "缺少 docker，请安装后重试。".into()
+        "本机未找到 docker 命令。主节点需要 Docker Engine 与 Compose v2；请按官方文档安装 Docker 后重新运行 willcord main init。向导不会替你安装 Docker。"
+            .into()
     } else {
         e.into()
     }
@@ -541,10 +542,16 @@ async fn init(mut args: Vec<String>) -> Result<(), Error> {
             .map(|s| s.success())
     };
     if !docker(&["compose", "version"])? {
-        return Err("请先安装 Docker Compose v2。".into());
+        return Err(
+            "本机未检测到 Docker Compose v2（docker compose version 失败）。请安装 Compose v2 插件或 Docker Desktop，然后重新运行 willcord main init。向导不会替你安装 Docker。"
+                .into(),
+        );
     }
     if !docker(&["info"])? {
-        return Err("无法访问 Docker，请检查 Docker 服务及当前账户权限。".into());
+        return Err(
+            "无法访问 Docker 守护进程。请确认 Docker 服务已启动，且当前账户有权访问（例如已加入 docker 组，或使用 sudo）。向导不会修改系统权限。"
+                .into(),
+        );
     }
     let mut tty = Tty::open()?;
     let dir = PathBuf::from(dir);

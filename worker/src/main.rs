@@ -1064,7 +1064,19 @@ async fn run_bash(
     let cwd = std::path::Path::new(&workspace.path);
     let outcome = if diagnosis::is_diagnosis(call.execution_mode.as_deref()) {
         match diagnosis::bash_argv(command) {
-            Ok(argv) => process::run_direct(&argv, cwd, timeout, cancel, log.clone(), limits).await,
+            Ok(argv) => {
+                let hold_stdout = diagnosis::docker_inspect_argv(&argv);
+                process::run_direct(
+                    &argv,
+                    cwd,
+                    timeout,
+                    cancel,
+                    log.clone(),
+                    limits,
+                    hold_stdout,
+                )
+                .await
+            }
             Err(e) => return failed(&e),
         }
     } else {

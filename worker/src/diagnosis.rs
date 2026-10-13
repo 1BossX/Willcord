@@ -56,6 +56,9 @@ pub fn bash_argv(command: &str) -> Result<Vec<String>, &'static str> {
 }
 
 fn reject_token_metacharacters(token: &str) -> Result<(), &'static str> {
+    if token.starts_with('@') {
+        return Err("invalid");
+    }
     if token.starts_with("http://") || token.starts_with("https://") {
         if token.contains('\\') || token.contains('@') {
             return Err("invalid");
@@ -143,6 +146,16 @@ fn allow_du(tokens: &[String]) -> Result<(), &'static str> {
             i += 1;
             continue;
         }
+        if t == "-a" || t == "--all" {
+            i += 1;
+            continue;
+        }
+        if t == "-X" {
+            return Err("invalid");
+        }
+        if t.starts_with("--") && (t.contains("-from") || t.starts_with("--exclude-from")) {
+            return Err("invalid");
+        }
         if t == "-d" {
             let depth = tokens
                 .get(i + 1)
@@ -169,15 +182,20 @@ fn allow_du(tokens: &[String]) -> Result<(), &'static str> {
             continue;
         }
         if t.starts_with('-') {
-            if !t
-                .chars()
-                .skip(1)
-                .all(|c| c.is_ascii_alphabetic() || c == '-')
-            {
+            if t.starts_with("--") {
                 return Err("invalid");
             }
-            i += 1;
-            continue;
+            if t.chars().skip(1).any(|c| c == 'X') {
+                return Err("invalid");
+            }
+            if t.chars().skip(1).all(|c| c == 'a' || c == 's' || c == 'h') {
+                if t.contains('s') {
+                    summary_only = true;
+                }
+                i += 1;
+                continue;
+            }
+            return Err("invalid");
         }
         if t.contains("..") {
             return Err("invalid");
@@ -267,10 +285,11 @@ fn consume_curl_flag(tokens: &[String], i: &mut usize) -> Result<(), &'static st
             }
             "--max-time" | "--connect-timeout" | "--header" | "--user-agent" => {
                 *i += 1;
-                let _ = tokens
+                let value = tokens
                     .get(*i)
                     .filter(|v| !v.starts_with('-'))
                     .ok_or("invalid")?;
+                reject_curl_flag_value(value)?;
                 *i += 1;
                 Ok(())
             }
@@ -287,10 +306,11 @@ fn consume_curl_flag(tokens: &[String], i: &mut usize) -> Result<(), &'static st
         }
         *i += 1;
         if needs_value {
-            let _ = tokens
+            let value = tokens
                 .get(*i)
                 .filter(|v| !v.starts_with('-'))
                 .ok_or("invalid")?;
+            reject_curl_flag_value(value)?;
             *i += 1;
         }
         Ok(())
@@ -323,6 +343,105 @@ pub fn is_diagnosis(execution_mode: Option<&str>) -> bool {
     execution_mode == Some("diagnosis")
 }
 
+fn reject_curl_flag_value(value: &str) -> Result<(), &'static str> {
+    if value.starts_with('@') {
+        return Err("invalid");
+    }
+    Ok(())
+}
+
+/// True when argv is an allowed `docker inspect` invocation (output may contain secrets).
+pub fn docker_inspect_argv(argv: &[String]) -> bool {
+    match argv.first().map(String::as_str) {
+        Some("docker") if argv.len() >= 3 => match argv.get(1).map(String::as_str) {
+            Some("inspect") => true,
+            Some("container") if argv.get(2).map(String::as_str) == Some("inspect") => true,
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+const REDACTED_ENV: &str = "<redacted>";
+
+/// Remove container environment variables from `docker inspect` stdout before it is logged.
+pub fn redact_docker_inspect_stdout(text: &str) -> String {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return text.to_string();
+    }
+    match serde_json::from_str::<serde_json::Value>(trimmed) {
+        Ok(mut value) => {
+            redact_env_fields(&mut value);
+            serde_json::to_string(&value).unwrap_or_else(|_| text.to_string())
+        }
+        Err(_) => redact_docker_inspect_stdout_fallback(text),
+    }
+}
+
+fn redact_env_fields(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, child) in map.iter_mut() {
+                if key == "Env" {
+                    *child = serde_json::Value::Array(vec![serde_json::Value::String(
+                        REDACTED_ENV.to_owned(),
+                    )]);
+                } else {
+                    redact_env_fields(child);
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items.iter_mut() {
+                redact_env_fields(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn redact_docker_inspect_stdout_fallback(text: &str) -> String {
+    let needle = "\"Env\"";
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(idx) = rest.find(needle) {
+        out.push_str(&rest[..idx]);
+        out.push_str(&format!("\"Env\": [\"{REDACTED_ENV}\"]"));
+        rest = rest[idx + needle.len()..].trim_start();
+        if rest.starts_with(':') {
+            rest = rest[1..].trim_start();
+        }
+        if rest.starts_with('[') {
+            if let Some(end) = env_array_close(rest) {
+                rest = &rest[end + 1..];
+                continue;
+            }
+        }
+        out.push_str(rest);
+        return out;
+    }
+    out.push_str(rest);
+    out
+}
+
+fn env_array_close(s: &str) -> Option<usize> {
+    let mut depth = 0;
+    for (i, ch) in s.char_indices() {
+        match ch {
+            '[' => depth += 1,
+            ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -347,6 +466,7 @@ mod tests {
             "du -sh /var",
             "du -d 2 /var/log",
             "du --max-depth=3 /home",
+            "du -a --max-depth=1 /var",
             "systemctl status nginx",
             "curl -fsS http://127.0.0.1/health",
             "curl http://localhost:8080/ready",
@@ -460,6 +580,38 @@ mod tests {
                 "http://127.0.0.1/health".to_owned(),
             ]
         );
+    }
+
+    #[test]
+    fn curl_rejects_header_and_data_file_indirection() {
+        for cmd in [
+            "curl -H @/etc/passwd http://127.0.0.1/health",
+            "curl --header @/tmp/h http://127.0.0.1/health",
+            "curl -H @headers.txt http://127.0.0.1/health",
+        ] {
+            assert_eq!(bash_allowed(cmd), Err("invalid"), "expected block: {cmd}");
+        }
+    }
+
+    #[test]
+    fn du_rejects_file_backed_flags() {
+        for cmd in [
+            "du --exclude-from=/tmp/list -sh /var",
+            "du -X /tmp/list -sh /var",
+            "du --files0-from=/tmp/list -sh /var",
+            "du -sh /var --exclude-from=/tmp/list",
+        ] {
+            assert_eq!(bash_allowed(cmd), Err("invalid"), "expected block: {cmd}");
+        }
+    }
+
+    #[test]
+    fn docker_inspect_output_redacts_env() {
+        let raw = r#"[{"Config":{"Env":["SECRET_TOKEN=abc","PATH=/usr/bin"],"Image":"x"}}]"#;
+        let redacted = redact_docker_inspect_stdout(raw);
+        assert!(!redacted.contains("SECRET_TOKEN"));
+        assert!(redacted.contains(REDACTED_ENV));
+        assert!(redacted.contains("\"Image\":\"x\""));
     }
 
     #[test]

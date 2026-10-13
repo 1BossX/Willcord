@@ -114,15 +114,29 @@ class DiagnosisFixtureTests(unittest.TestCase):
                     f"{slug} probe {probe['call_id']} must not use shell operators: {cmd}",
                 )
 
+    def test_fixture_runtime_dependencies(self) -> None:
+        if sys.platform != "linux":
+            self.skipTest("fixture reproduction is defined for Linux")
+        needs_docker = any(
+            "docker" in (case.get("requires") or []) for _, case in load_cases()
+        )
+        needs_sudo = any(
+            "sudo" in (case.get("requires") or []) for _, case in load_cases()
+        )
+        if needs_docker and not docker_ok():
+            self.skipTest(
+                "diagnosis fixture cases require a working docker daemon (docker info)"
+            )
+        if needs_sudo and not passwordless_sudo():
+            self.skipTest(
+                "diagnosis fixture cases require passwordless sudo (sudo -n true)"
+            )
+
     def test_fixtures_on_linux(self) -> None:
         if sys.platform != "linux":
             self.skipTest("fixture reproduction is defined for Linux")
+        self.test_fixture_runtime_dependencies()
         for slug, case in load_cases():
-            requires = set(case.get("requires") or [])
-            if "docker" in requires and not docker_ok():
-                continue
-            if "sudo" in requires and not passwordless_sudo():
-                continue
             self._run_case(slug, case)
 
     def _run_case(self, slug: str, case: dict) -> None:

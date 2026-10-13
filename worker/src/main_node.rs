@@ -346,6 +346,7 @@ async fn health(server: &str, ca: &Path) -> Health {
     }
 }
 async fn wait_ready(dir: &Path, server: &str, fetch_ca: bool) -> bool {
+    #[cfg(debug_assertions)]
     if std::env::var_os("WILLCORD_TEST_HTTPS_NOT_READY").is_some() {
         return false;
     }

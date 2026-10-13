@@ -73,6 +73,47 @@ grep -qi '^set-cookie: session=' "$work/login.headers" \
   || { echo "another local port was not refused" >&2; exit 1; }
 echo "loopback login: ok"
 
+main_id=$(dc ps -aq main)
+docker kill -s SIGKILL "$main_id" > /dev/null
+sleep 1
+status=$(docker inspect -f '{{.State.Status}}' "$main_id")
+[ "$status" = "exited" ] || { echo "main not exited after SIGKILL: $status" >&2; exit 1; }
+policy=$(docker inspect -f '{{.HostConfig.RestartPolicy.Name}}' "$main_id")
+[ "$policy" = "no" ] || { echo "main restart policy expected no, got $policy" >&2; exit 1; }
+dc run --rm --no-deps -T main node -e \
+  "process.exit(require('fs').existsSync('/var/lib/willcord/main.lock') ? 0 : 1)" \
+  || { echo "main.lock missing after SIGKILL" >&2; exit 1; }
+started_before=$(docker inspect -f '{{.State.StartedAt}}' "$main_id")
+dc start main
+refused=0
+for _ in $(seq 1 15); do
+  started_now=$(docker inspect -f '{{.State.StartedAt}}' "$main_id")
+  status=$(docker inspect -f '{{.State.Status}}' "$main_id")
+  if [ -s "$work/ca.pem" ]; then
+    health=$(curl -fsS --cacert "$work/ca.pem" "https://localhost:$port/health" 2>/dev/null || true)
+    case "$health" in *'"scheduling_ready":true'*)
+      echo "main served /health with stale main.lock" >&2
+      exit 1
+    ;; esac
+  fi
+  if [ "$started_now" != "$started_before" ] && [ "$status" = "exited" ]; then
+    refused=1
+    break
+  fi
+  sleep 1
+done
+[ "$refused" = 1 ] || { echo "main did not run and exit after start with stale main.lock" >&2; exit 1; }
+status=$(docker inspect -f '{{.State.Status}}' "$main_id")
+[ "$status" = "exited" ] || { echo "main still $status after stale-lock start" >&2; exit 1; }
+dc run --rm --no-deps -T main node -e \
+  "process.exit(require('fs').existsSync('/var/lib/willcord/main.lock') ? 0 : 1)" \
+  || { echo "main.lock missing before operator clear" >&2; exit 1; }
+dc run --rm --no-deps -T main node -e \
+  "require('fs').rmSync('/var/lib/willcord/main.lock',{recursive:true})"
+dc start main
+ready
+echo "crash lock: SIGKILL left main.lock, start refused until cleared"
+
 dc stop main
 code=$(docker inspect -f '{{.State.ExitCode}}' "$(dc ps -aq main)")
 [ "$code" = 0 ] || { echo "main exited $code after SIGTERM" >&2; exit 1; }

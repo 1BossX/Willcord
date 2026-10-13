@@ -38,7 +38,7 @@
    curl --cacert ca.pem https://plane.internal:8443/health
    ```
 
-   预期 `alive` 和 `scheduling_ready` 均为 true、`dispatch_paused` 为 null。启动失败看 `docker compose logs main`，配置问题会一次全部列出。
+   预期 `alive` 和 `scheduling_ready` 均为 true、`dispatch_paused` 为 null。启动失败看 `docker compose logs main`，配置问题会一次全部列出。若向导曾在 HTTPS 未就绪时退出且管理员尚未创建，需在部署目录把 `INITIAL_ADMIN_PASSWORD` 写回 `main.env`（见 `deploy/main.env.example`），再执行 `docker compose up -d main`。
 
 4. 让浏览器所在机器信任 `ca.pem`。worker 默认从已信任控制台复制带 CA 指纹的安装命令；安装器会验证并保存根证书，无需先把文件交给每台 worker。手动 CA 和旧版本兼容流程仍可使用 `ca.pem`。
 

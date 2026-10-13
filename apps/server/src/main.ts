@@ -20,7 +20,9 @@ try {
     const password = process.env.INITIAL_ADMIN_PASSWORD;
     if (!password || password.length < 16)
       throw new Error(
-        "INITIAL_ADMIN_PASSWORD (at least 16 characters) required for first start",
+        "INITIAL_ADMIN_PASSWORD (at least 16 characters) required for first start. " +
+          "If the install wizard removed it from main.env before the administrator was created, " +
+          'add a line INITIAL_ADMIN_PASSWORD="..." (see deploy/main.env.example) in the deployment directory, then run: docker compose up -d main (or willcord main up).',
       );
     db.prepare("INSERT INTO administrators VALUES (1,?)").run(
       await argon2.hash(password, { type: argon2.argon2id }),

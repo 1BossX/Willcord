@@ -267,6 +267,17 @@ class MainNodeTests(unittest.TestCase):
         self.assertIn('docker compose logs', out)
         self.assertIn('INITIAL_ADMIN_PASSWORD=', (self.deploy / 'main.env').read_text())
 
+    def test_https_not_ready_strips_password_and_mentions_bridge_netfilter(self):
+        code, out = self.init(env={'WILLCORD_TEST_HTTPS_NOT_READY': '1'})
+        self.assertNotEqual(code, 0, out)
+        self.assertIn('HTTPS 未就绪', out)
+        self.assertIn('bridge-nf-call-iptables', out)
+        self.assertIn('docker compose logs', out)
+        self.assertIn('docker compose up -d main', out)
+        main_env = (self.deploy / 'main.env').read_text()
+        self.assertNotIn('INITIAL_ADMIN_PASSWORD', main_env)
+        self.assertIn(f'PUBLIC_BASE_URL="{self.origin}"', main_env)
+
     # ------------------------------------------------------ day-to-day
 
     def deployed(self):

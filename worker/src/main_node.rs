@@ -346,6 +346,9 @@ async fn health(server: &str, ca: &Path) -> Health {
     }
 }
 async fn wait_ready(dir: &Path, server: &str, fetch_ca: bool) -> bool {
+    if std::env::var_os("WILLCORD_TEST_HTTPS_NOT_READY").is_some() {
+        return false;
+    }
     for _ in 0..60 {
         let ca = dir.join("ca.pem");
         let have_ca = !fetch_ca
@@ -740,17 +743,25 @@ async fn init(mut args: Vec<String>) -> Result<(), Error> {
     Ok(())
 }
 
+fn strip_initial_admin_password(dir: &Path) -> Result<(), Error> {
+    let main_env = dir.join("main.env");
+    let text = fs::read_to_string(&main_env)?;
+    fs::write(&main_env, without_env(&text, "INITIAL_ADMIN_PASSWORD"))?;
+    Ok(())
+}
+
+const HTTPS_NOT_READY: &str = "HTTPS 未就绪。检查主机名解析、端口和 docker compose logs main caddy；另可检查宿主机 bridge-nf-call-iptables（iptables 处理 bridge 流量时，Caddy 访问 main 可能拨号超时）。";
+
 async fn start(dir: &Path, server: &str) -> Result<(), Error> {
     compose(dir, &["pull"])?;
     compose(dir, &["up", "-d"])?;
     if !wait_ready(dir, server, true).await {
-        return Err("HTTPS 未就绪。检查主机名解析、端口和 docker compose logs main caddy。".into());
+        strip_initial_admin_password(dir)?;
+        return Err(HTTPS_NOT_READY.into());
     }
     fs::set_permissions(dir.join("ca.pem"), fs::Permissions::from_mode(0o644))?;
     // The first password is only needed once: drop it and restart main.
-    let main_env = dir.join("main.env");
-    let text = fs::read_to_string(&main_env)?;
-    fs::write(&main_env, without_env(&text, "INITIAL_ADMIN_PASSWORD"))?;
+    strip_initial_admin_password(dir)?;
     compose(dir, &["up", "-d", "main"])?;
     if !wait_ready(dir, server, false).await {
         return Err("移除首次密码后的主节点未就绪，请查看 docker compose logs main。".into());

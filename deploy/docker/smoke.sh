@@ -73,6 +73,26 @@ grep -qi '^set-cookie: session=' "$work/login.headers" \
   || { echo "another local port was not refused" >&2; exit 1; }
 echo "loopback login: ok"
 
+main_id=$(dc ps -aq main)
+docker kill -s SIGKILL "$main_id" > /dev/null
+sleep 1
+status=$(docker inspect -f '{{.State.Status}}' "$main_id")
+[ "$status" = "exited" ] || { echo "main not exited after SIGKILL: $status" >&2; exit 1; }
+policy=$(docker inspect -f '{{.HostConfig.RestartPolicy.Name}}' "$main_id")
+[ "$policy" = "no" ] || { echo "main restart policy expected no, got $policy" >&2; exit 1; }
+dc run --rm --no-deps -T main node -e \
+  "process.exit(require('fs').existsSync('/var/lib/willcord/main.lock') ? 0 : 1)" \
+  || { echo "main.lock missing after SIGKILL" >&2; exit 1; }
+dc start main > /dev/null 2>&1 || true
+sleep 2
+crash_code=$(docker inspect -f '{{.State.ExitCode}}' "$main_id")
+[ "$crash_code" != 0 ] || { echo "main started cleanly with stale main.lock" >&2; exit 1; }
+dc run --rm --no-deps -T main node -e \
+  "require('fs').rmSync('/var/lib/willcord/main.lock',{recursive:true})"
+dc start main
+ready
+echo "crash lock: SIGKILL left main.lock, start refused until cleared"
+
 dc stop main
 code=$(docker inspect -f '{{.State.ExitCode}}' "$(dc ps -aq main)")
 [ "$code" = 0 ] || { echo "main exited $code after SIGTERM" >&2; exit 1; }

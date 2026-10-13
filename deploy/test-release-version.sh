@@ -27,6 +27,11 @@ if bash "$image" v0.1 >/dev/null 2>&1; then
 fi
 
 grep -F 'bash deploy/formal-latest-tag.sh "$tag"' "$pages" >/dev/null
+grep -F 'gh release download "$tag"' "$pages" >/dev/null
+if grep -Fq 'cp deploy/install.sh site/install.sh' "$pages"; then
+  echo 'pages workflow must not copy install.sh from main' >&2
+  exit 1
+fi
 grep -F 'version=$(bash deploy/image-tag.sh "$GITHUB_REF_NAME")' "$docker" >/dev/null
 grep -F 'path: ${{ runner.temp }}/digests' "$docker" >/dev/null
 grep -F '"$RUNNER_TEMP/digests/$target-amd64"' "$docker" >/dev/null

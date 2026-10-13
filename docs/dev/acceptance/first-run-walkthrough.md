@@ -11,7 +11,7 @@
 
 ## 准备
 
-- **公开安装脚本已更新**：`curl -fsSL https://bossoptional.github.io/Willcord/install.sh | cmp - deploy/install.sh` 应无差异；`gh release view <tag>` 显示非草稿、附件 16 个。
+- **公开安装脚本已更新**：Pages 上的 `install.sh` 应来自该次 Release 的附件（`gh release download <tag> --pattern install.sh` 后与线上 `curl` 结果一致），而不是 `main` 上的 `deploy/install.sh`；`gh release view <tag>` 显示非草稿、附件 16 个。
 - **临时凭据**：管理员密码自己生成，仅用于这次部署，不写入仓库。模型 key 需要一个**临时、可作废**的 key；没有真实 key 时，只能验证到“任务因 key 无效而失败”并检查失败提示，不能证明主路径。走查结束后让持有人在 provider 作废该 key。
 - **本机环境**：Docker Desktop（macOS）或 Docker + Compose v2（Linux）；端口 8443 空闲（先清理上一次走查的部署）。
 - **隔离目录**：部署目录放在会话临时目录，不放进工作区，以免把含密钥的 `main.env` 带进提交。

@@ -261,7 +261,7 @@ async fn run_child(
             } else {
                 held
             };
-            log.append(0, &out);
+            log.append_chunked(0, &out);
         }
     }
     let (logs, _) = log.summary();

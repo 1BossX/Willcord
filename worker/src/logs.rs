@@ -143,6 +143,13 @@ impl CallLog {
         });
     }
 
+    /// Append in `CHUNK_BYTES`-sized pieces so live `tool_log` frames and `read` stay aligned.
+    pub fn append_chunked(&self, stream: usize, bytes: &[u8]) {
+        for part in bytes.chunks(CHUNK_BYTES) {
+            self.append(stream, part);
+        }
+    }
+
     /// What the result reports about stored output, and the per-stream chunk
     /// counts the ledger keeps until the main node acknowledges them.
     pub fn summary(&self) -> (Value, Vec<LogStream>) {
@@ -277,6 +284,37 @@ mod tests {
         assert!(usage(&root) >= CALL_LOG_LIMIT);
         prune(&root, &[]).unwrap();
         assert!(read(&root, "call", "stdout", 0, 1).unwrap().is_none());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn redacted_docker_inspect_larger_than_chunk_round_trips() {
+        use crate::diagnosis;
+
+        let filler = "z".repeat(CHUNK_BYTES + 4096);
+        let raw = format!(
+            r#"[{{"Config":{{"Env":["TOP_SECRET=leak"],"Image":"img"}},"Filler":"{filler}","State":{{"Status":"exited","ExitCode":42}}}}]"#
+        );
+        let redacted = diagnosis::redact_docker_inspect_stdout(&raw);
+        assert!(redacted.len() > CHUNK_BYTES);
+        assert!(!redacted.contains("TOP_SECRET"));
+
+        let root = std::env::temp_dir().join(format!("worker-logs-{}", uuid::Uuid::new_v4()));
+        let (tx, _rx) = mpsc::channel(4);
+        let log = CallLog::create(&root, "job", "call", tx).unwrap();
+        log.append_chunked(0, redacted.as_bytes());
+
+        let (_, total) = read(&root, "call", "stdout", 0, 1).unwrap().unwrap();
+        let (chunks, _) = read(&root, "call", "stdout", 0, total).unwrap().unwrap();
+        for (_, _, data) in &chunks {
+            assert!(data.len() <= CHUNK_BYTES);
+        }
+        let assembled: Vec<u8> = chunks.into_iter().flat_map(|(_, _, data)| data).collect();
+        let text = String::from_utf8(assembled).unwrap();
+        assert!(text.contains("\"ExitCode\":42"));
+        assert!(text.contains("\"Status\":\"exited\""));
+        assert!(!text.contains("TOP_SECRET"));
+        assert!(text.contains("<redacted>"));
         let _ = fs::remove_dir_all(root);
     }
 }

@@ -80,7 +80,11 @@ willcord main init --server 'https://plane.internal:8443' --bind '192.168.1.10' 
 
 **成功标志**：向导显示“主节点已就绪”、控制台地址及 `ca.pem` 路径，HTTPS `/health` 的 `scheduling_ready` 为 true。成功后环境文件不再保留首次管理员密码；登录使用刚才输入的密码。
 
-**启动失败**：配置和数据卷会保留。在部署目录执行 `docker compose logs main caddy`，检查主机名解析、端口及模型配置；修复后 `docker compose up -d`。确认 HTTPS 就绪后从 `main.env` 删除 `INITIAL_ADMIN_PASSWORD`，再执行 `docker compose up -d main`。不要通过重跑向导覆盖既有部署。
+**启动失败**：配置和数据卷会保留。在部署目录执行 `docker compose logs main caddy`，检查主机名解析、端口及模型配置；修复后 `docker compose up -d`。不要通过重跑向导覆盖既有部署。
+
+向导在 **HTTPS 未就绪** 退出时会从 `main.env` 移除 `INITIAL_ADMIN_PASSWORD`（与成功路径的密钥清理一致）。若此时管理员尚未创建，修复 HTTPS 后需在**部署目录**把该行加回（至少 16 个字符，引号与转义规则见 `deploy/main.env.example`），再执行 `docker compose up -d main` 或 `willcord main up`。`docker compose logs main` 若提示缺少 `INITIAL_ADMIN_PASSWORD`，按同样步骤处理。
+
+首次启动**成功**且已登录后，才从 `main.env` 删除 `INITIAL_ADMIN_PASSWORD` 并执行 `docker compose up -d main`（向导成功时会自动完成）。
 
 **日常管理**：在任意目录直接运行 `willcord main …`。向导记住了它刚创建的部署目录；在另一个部署目录里运行，或用 `--dir` 指定，则以那个为准。
 

@@ -273,6 +273,7 @@ class MainNodeTests(unittest.TestCase):
         self.assertIn('HTTPS 未就绪', out)
         self.assertIn('bridge-nf-call-iptables', out)
         self.assertIn('docker compose logs', out)
+        self.assertIn('docker compose up -d main', out)
         main_env = (self.deploy / 'main.env').read_text()
         self.assertNotIn('INITIAL_ADMIN_PASSWORD', main_env)
         self.assertIn(f'PUBLIC_BASE_URL="{self.origin}"', main_env)

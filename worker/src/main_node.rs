@@ -751,7 +751,7 @@ fn strip_initial_admin_password(dir: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-const HTTPS_NOT_READY: &str = "HTTPS 未就绪。检查主机名解析、端口和 docker compose logs main caddy；另可检查宿主机 bridge-nf-call-iptables（iptables 处理 bridge 流量时，Caddy 访问 main 可能拨号超时）。";
+const HTTPS_NOT_READY: &str = "HTTPS 未就绪。检查主机名解析、端口和 docker compose logs main caddy；另可检查宿主机 bridge-nf-call-iptables（iptables 处理 bridge 流量时，Caddy 访问 main 可能拨号超时）。若此时管理员尚未创建，main.env 已移除 INITIAL_ADMIN_PASSWORD；修复后在部署目录按 deploy/main.env.example 写回该变量并执行 docker compose up -d main（或 willcord main up）。";
 
 async fn start(dir: &Path, server: &str) -> Result<(), Error> {
     compose(dir, &["pull"])?;

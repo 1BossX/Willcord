@@ -1,8 +1,7 @@
 //! O2-KR2 worker gate for `execution_mode = approved`.
 //!
-//! Wire-up: `main.rs` `tool_call` must call these checks before the ledger accepts
-//! a call. That file is owned by O2-KR1 PR #82 until merge; this module holds the
-//! policy so KR2 does not touch `diagnosis.rs` or the KR1 read allowlist.
+//! Post-approval execution policy (O2-KR2). `main.rs` `tool_call` delegates here so
+//! KR2 does not extend the diagnosis read allowlist in `diagnosis.rs`.
 
 use crate::generated::ToolCall;
 use super::{approved_action, approved_write};

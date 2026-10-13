@@ -1,8 +1,11 @@
 // Remote tool implementations. Paths resolve through directory handles so a
 // workspace can never be escaped through `..` or symbolic links.
 
+#[path = "approved_action.rs"]
 pub mod approved_action;
+#[path = "approved_tool_gate.rs"]
 pub mod approved_tool_gate;
+#[path = "approved_write.rs"]
 pub mod approved_write;
 
 use crate::generated::{ToolCall, Workspace};

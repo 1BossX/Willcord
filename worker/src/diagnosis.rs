@@ -363,6 +363,9 @@ pub fn docker_inspect_argv(argv: &[String]) -> bool {
 }
 
 const REDACTED_ENV: &str = "<redacted>";
+const INSPECT_WITHHELD: &str = r#"[{"_willcord_redaction":"truncated or incomplete docker inspect output; container environment values withheld"}]"#;
+const INSPECT_TAIL_WITHHELD: &str =
+    r#",{"_willcord_redaction":"remaining docker inspect output withheld due to truncation"}]"#;
 
 /// Remove container environment variables from `docker inspect` stdout before it is logged.
 pub fn redact_docker_inspect_stdout(text: &str) -> String {
@@ -373,9 +376,12 @@ pub fn redact_docker_inspect_stdout(text: &str) -> String {
     match serde_json::from_str::<serde_json::Value>(trimmed) {
         Ok(mut value) => {
             redact_env_fields(&mut value);
-            serde_json::to_string(&value).unwrap_or_else(|_| text.to_string())
+            match serde_json::to_string(&value) {
+                Ok(serialized) => serialized,
+                Err(_) => INSPECT_WITHHELD.to_string(),
+            }
         }
-        Err(_) => redact_docker_inspect_stdout_fallback(text),
+        Err(_) => redact_docker_inspect_stdout_partial(trimmed),
     }
 }
 
@@ -401,28 +407,59 @@ fn redact_env_fields(value: &mut serde_json::Value) {
     }
 }
 
-fn redact_docker_inspect_stdout_fallback(text: &str) -> String {
-    let needle = "\"Env\"";
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(idx) = rest.find(needle) {
-        out.push_str(&rest[..idx]);
-        out.push_str(&format!("\"Env\": [\"{REDACTED_ENV}\"]"));
-        rest = rest[idx + needle.len()..].trim_start();
-        if rest.starts_with(':') {
-            rest = rest[1..].trim_start();
+fn redact_docker_inspect_stdout_partial(text: &str) -> String {
+    const NEEDLE: &str = "\"Env\"";
+    let mut out = String::new();
+    let mut pos = 0usize;
+    while let Some(rel) = text[pos..].find(NEEDLE) {
+        let key = pos + rel;
+        out.push_str(&text[pos..key]);
+        let mut i = key + NEEDLE.len();
+        if !consume_json_colon(text, &mut i) {
+            return finalize_partial_inspect(out);
         }
-        if rest.starts_with('[') {
-            if let Some(end) = env_array_close(rest) {
-                rest = &rest[end + 1..];
+        let value = text[i..].trim_start();
+        let ws = text.len() - value.len() - i;
+        i += ws;
+        if value.starts_with("null") && json_value_terminates(&value[4..]) {
+            out.push_str(&format!("\"Env\":[\"{REDACTED_ENV}\"]"));
+            i += 4;
+            pos = i;
+            continue;
+        }
+        if value.starts_with('[') {
+            if let Some(end) = env_array_close(value) {
+                out.push_str(&format!("\"Env\":[\"{REDACTED_ENV}\"]"));
+                pos = i + end + 1;
                 continue;
             }
+            return finalize_partial_inspect(out);
         }
-        out.push_str(rest);
-        return out;
+        return finalize_partial_inspect(out);
     }
-    out.push_str(rest);
-    out
+    finalize_partial_inspect(out)
+}
+
+fn finalize_partial_inspect(prefix: String) -> String {
+    if prefix.is_empty() {
+        INSPECT_WITHHELD.to_string()
+    } else {
+        format!("{}{}", prefix, INSPECT_TAIL_WITHHELD)
+    }
+}
+
+fn consume_json_colon(text: &str, i: &mut usize) -> bool {
+    let rest = text[*i..].trim_start();
+    if !rest.starts_with(':') {
+        return false;
+    }
+    *i = text.len() - rest.len() + 1;
+    true
+}
+
+fn json_value_terminates(after: &str) -> bool {
+    let rest = after.trim_start();
+    rest.is_empty() || rest.starts_with(',') || rest.starts_with('}') || rest.starts_with(']')
 }
 
 fn env_array_close(s: &str) -> Option<usize> {
@@ -612,6 +649,32 @@ mod tests {
         assert!(!redacted.contains("SECRET_TOKEN"));
         assert!(redacted.contains(REDACTED_ENV));
         assert!(redacted.contains("\"Image\":\"x\""));
+    }
+
+    #[test]
+    fn truncated_inside_env_array_does_not_leak_later_secrets() {
+        let mut raw = String::from("[");
+        for _ in 0..12 {
+            raw.push_str(r#"{"Config":{"Env":["DB_PASSWORD=hunter2","MORE=x"]}},"#);
+        }
+        raw.push_str(r#"{"Config":{"Env":["DB_PASSWORD=hunter2","TAIL=x"#);
+        let cut = raw.len() - 7;
+        let truncated = raw[..cut].to_string();
+        let redacted = redact_docker_inspect_stdout(&truncated);
+        assert!(!redacted.contains("hunter2"));
+    }
+
+    #[test]
+    fn truncated_after_env_null_does_not_leak_later_secrets() {
+        let mut raw = String::from(r#"[{"Config":{"Env":null}},"#);
+        for _ in 0..8 {
+            raw.push_str(r#"{"Config":{"Env":["DB_PASSWORD=hunter2","MORE=x"]}},"#);
+        }
+        raw.push_str(r#"{"Config":{"Env":["DB_PASSWORD=hunter2","ZZZZZZZZZZ"#);
+        let cut = raw.len() - 4;
+        let truncated = raw[..cut].to_string();
+        let redacted = redact_docker_inspect_stdout(&truncated);
+        assert!(!redacted.contains("hunter2"));
     }
 
     #[test]

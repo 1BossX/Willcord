@@ -3,8 +3,8 @@
 //! Post-approval execution policy (O2-KR2). `main.rs` `tool_call` delegates here so
 //! KR2 does not extend the diagnosis read allowlist in `diagnosis.rs`.
 
-use crate::generated::ToolCall;
 use super::{approved_action, approved_write};
+use crate::generated::ToolCall;
 use serde_json::Value;
 
 /// Fields that must be included in the canonical request before hashing.

@@ -12,7 +12,7 @@ import { logView } from "./feed.js";
 import { modelFromEnv, type ModelConfig } from "./config.js";
 import { buildDiagnosisReport } from "./diagnosis-report.js";
 import { diagnosisAnswerFormat } from "./diagnosis-scenarios.js";
-import { assertCallMatchesApproval } from "./approved-action.js";
+import { assertCallMatchesApproval, settleApprovedExecuteJob } from "./approved-action.js";
 import { workerToolRequestFields } from "./approved-action-wire.js";
 
 type Socket = { readyState: number; send(data: string): void };
@@ -796,7 +796,33 @@ export class ExecutionCoordinator {
     return messages;
   }
 
+  /** Approved-action execute jobs run exactly one pre-committed call; the model is not invoked. */
+  private async runApprovedExecuteJob(job: any) {
+    const actionId = job.approved_action_id as string;
+    const callId = `approved-${actionId}`;
+    this.db.transaction(() => {
+      if (!this.db.prepare("SELECT 1 FROM runtime_history WHERE job_id=? AND entry_key=?").get(job.job_id, `user:${job.job_id}`)) {
+        this.db.prepare("INSERT INTO runtime_history(job_id,entry_key,message_json) VALUES(?,?,?)").run(
+          job.job_id,
+          `user:${job.job_id}`,
+          JSON.stringify({ role: "user", content: [{ type: "text", text: job.input_text }], timestamp: job.created_at }),
+        );
+      }
+    })();
+    const record = await this.dispatch(job.job_id, callId);
+    settleApprovedExecuteJob(this.db, job.job_id, actionId, record, this.now());
+    this.db.prepare("INSERT INTO runtime_history(job_id,entry_key,message_json) VALUES(?,?,?)").run(
+      job.job_id,
+      `final:${job.job_id}`,
+      JSON.stringify({ role: "assistant", content: [{ type: "text", text: "Approved action finished." }], timestamp: this.now() }),
+    );
+  }
+
   async runPi(job: any) {
+    if (job.approved_action_id && !job.verify_command) {
+      await this.runApprovedExecuteJob(job);
+      return;
+    }
     const dataDir = this.options.dataDir ?? "./data";
     const fakeMode = Boolean(this.options.fakeScript) || process.env.P2_FAKE_MODEL === "1";
     // Read per run: a change made in the console applies to the next job, not to one already running.
@@ -925,6 +951,7 @@ export class ExecutionCoordinator {
     let inserted = false, overBudget = false;
     const committed = this.db.transaction(() => {
       if (!this.current(job)) return false;
+      if (job.approved_action_id && !job.verify_command) throw new Error("approved_execute_no_model_turns");
       const old = this.db.prepare("SELECT content_hash FROM runtime_turns WHERE job_id=? AND turn_key=?").get(job.job_id, turnKey) as any;
       if (old) { if (old.content_hash !== fingerprint) throw new Error("turn_checkpoint_conflict"); return true; }
       inserted = true;

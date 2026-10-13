@@ -1084,16 +1084,7 @@ async fn run_bash(
     } else {
         match tools::approved_tool_gate::approved_bash_argv(call) {
             tools::approved_tool_gate::ApprovedBash::Allowed(argv) => {
-                process::run_direct(
-                    &argv,
-                    cwd,
-                    timeout,
-                    cancel,
-                    log.clone(),
-                    limits,
-                    false,
-                )
-                .await
+                process::run_direct(&argv, cwd, timeout, cancel, log.clone(), limits, false).await
             }
             tools::approved_tool_gate::ApprovedBash::Denied => return failed(&"invalid"),
             tools::approved_tool_gate::ApprovedBash::NotApproved => {

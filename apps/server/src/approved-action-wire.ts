@@ -1,3 +1,8 @@
+/** Pre-committed execute call for an approved action (not verify or model turns). */
+export function isApprovedBoundExecuteCall(row: { approved_action_id?: string | null; call_id: string }) {
+  return Boolean(row.approved_action_id && row.call_id === `approved-${row.approved_action_id}`);
+}
+
 /** Worker-protocol request fields for approved-action tool calls (shared with execution dispatch). */
 export function workerToolRequestFields(row: {
   worker_id: string;
@@ -22,6 +27,8 @@ export function workerToolRequestFields(row: {
     arguments: row.arguments,
   };
   if (row.execution_mode) request.execution_mode = row.execution_mode;
-  if (row.approved_binding_hash) request.approved_binding_hash = row.approved_binding_hash;
+  if (row.execution_mode === "approved" && row.approved_binding_hash) {
+    request.approved_binding_hash = row.approved_binding_hash;
+  }
   return request;
 }

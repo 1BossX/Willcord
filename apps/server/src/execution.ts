@@ -13,7 +13,7 @@ import { modelFromEnv, type ModelConfig } from "./config.js";
 import { buildDiagnosisReport } from "./diagnosis-report.js";
 import { diagnosisAnswerFormat } from "./diagnosis-scenarios.js";
 import { assertCallMatchesApproval, settleApprovedExecuteJob } from "./approved-action.js";
-import { workerToolRequestFields } from "./approved-action-wire.js";
+import { isApprovedBoundExecuteCall, workerToolRequestFields } from "./approved-action-wire.js";
 
 type Socket = { readyState: number; send(data: string): void };
 type Connection = { epoch: number; socket: Socket; tokenDigest: string };
@@ -52,7 +52,7 @@ function workerToolRequest(row: CallWireRow) {
     tool: row.tool_name,
     arguments: JSON.parse(row.arguments_json),
     execution_mode,
-    approved_binding_hash: row.approved_binding_hash ?? null,
+    approved_binding_hash: execution_mode === "approved" ? (row.approved_binding_hash ?? null) : null,
   });
 }
 const TOOL_RESULT_TIMEOUT_MS = 1_800_000;
@@ -209,7 +209,7 @@ export class ExecutionCoordinator {
     const args = JSON.parse(row.arguments_json);
     const wire = {
       ...row,
-      execution_mode: row.approved_action_id ? "approved" : row.execution_mode,
+      execution_mode: isApprovedBoundExecuteCall(row) ? "approved" : row.execution_mode,
     };
     const request = workerToolRequest(wire);
     const digest = requestHash(request);
@@ -218,7 +218,7 @@ export class ExecutionCoordinator {
       wire.execution_mode === "diagnosis"
         ? { execution_mode: "diagnosis" as const }
         : wire.execution_mode === "approved"
-          ? { execution_mode: "approved" as const, approved_binding_hash: row.approved_binding_hash }
+          ? { execution_mode: "approved" as const, approved_binding_hash: row.approved_binding_hash ?? undefined }
           : {};
     const base = { protocol_version: 1, worker_id: row.worker_id, connection_epoch: conn.epoch, job_id: row.job_id, call_id: row.call_id, request_hash: digest };
     if (row.tool_name !== "write") {
@@ -973,10 +973,11 @@ export class ExecutionCoordinator {
           workspace_version: job.workspace_version,
           tool_name: c.name,
           arguments_json: JSON.stringify(c.arguments ?? {}),
-          execution_mode: job.approved_action_id ? "approved" : job.execution_mode ?? null,
-          approved_binding_hash: job.approved_action_id
-            ? (this.db.prepare("SELECT binding_hash FROM approved_actions WHERE approved_action_id=?").get(job.approved_action_id) as { binding_hash: string }).binding_hash
-            : null,
+          execution_mode: job.approved_action_id && !job.verify_command ? "approved" : job.execution_mode ?? null,
+          approved_binding_hash:
+            job.approved_action_id && !job.verify_command
+              ? (this.db.prepare("SELECT binding_hash FROM approved_actions WHERE approved_action_id=?").get(job.approved_action_id) as { binding_hash: string }).binding_hash
+              : null,
         });
         // Main calls never leave this node, so they need no worker-protocol hash.
         add.run(job.job_id, turnKey, c.id, seq, job.session_kind === "main" ? hash(request) : requestHash(request), c.name, JSON.stringify(c.arguments ?? {}));

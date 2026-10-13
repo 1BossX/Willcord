@@ -255,13 +255,16 @@ async fn run_child(
     if let Some(buf) = hold_stdout {
         let held = buf.lock().unwrap();
         if !held.bytes().is_empty() {
+            let (total, truncated) = (held.total, held.truncated);
             let out = if redact_docker_inspect_stdout {
-                diagnosis::redact_docker_inspect_stdout(&String::from_utf8_lossy(held.bytes()))
-                    .into_bytes()
+                diagnosis::redact_docker_inspect_stdout(
+                    &String::from_utf8_lossy(held.bytes()),
+                    truncated,
+                )
+                .into_bytes()
             } else {
                 held.bytes().to_vec()
             };
-            let (total, truncated) = (held.total, held.truncated);
             drop(held);
             log.append_chunked(0, &out);
             log.finish_inspect_stdout_hold(0, total, truncated);

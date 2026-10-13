@@ -343,7 +343,7 @@ mod tests {
         let raw = format!(
             r#"[{{"Config":{{"Env":["TOP_SECRET=leak"],"Image":"img"}},"Filler":"{filler}","State":{{"Status":"exited","ExitCode":42}}}}]"#
         );
-        let redacted = diagnosis::redact_docker_inspect_stdout(&raw);
+        let redacted = diagnosis::redact_docker_inspect_stdout(&raw, false);
         assert!(redacted.len() > CHUNK_BYTES);
         assert!(!redacted.contains("TOP_SECRET"));
 
@@ -380,8 +380,10 @@ mod tests {
         assert!(hold.truncated);
         assert!(hold.total as usize > HOLD_CAP);
 
-        let redacted =
-            diagnosis::redact_docker_inspect_stdout(&String::from_utf8_lossy(hold.bytes()));
+        let redacted = diagnosis::redact_docker_inspect_stdout(
+            &String::from_utf8_lossy(hold.bytes()),
+            hold.truncated,
+        );
         assert!(!redacted.contains("CONTAINER_SECRET"));
 
         let root = std::env::temp_dir().join(format!("worker-logs-{}", uuid::Uuid::new_v4()));
@@ -397,7 +399,7 @@ mod tests {
         let (chunks, _) = read(&root, "call", "stdout", 0, total).unwrap().unwrap();
         let text = String::from_utf8(chunks.into_iter().flat_map(|(_, _, d)| d).collect()).unwrap();
         assert!(!text.contains("CONTAINER_SECRET"));
-        assert!(text.contains("<redacted>"));
+        assert!(text.contains("_willcord_redaction"));
         let _ = fs::remove_dir_all(root);
     }
 }

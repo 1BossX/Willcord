@@ -13,12 +13,14 @@ use sha2::{Digest, Sha256};
 use std::{
     fs,
     io::{Read, Write},
+    net::{Ipv4Addr, Ipv6Addr},
     os::unix::{
         fs::{OpenOptionsExt, PermissionsExt},
         io::AsRawFd,
     },
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    str::FromStr,
     time::Duration,
 };
 
@@ -27,7 +29,8 @@ const DEFAULT_PORT: u16 = 8443;
 const DEFAULT_SERVER: &str = "https://plane.internal:8443";
 /// Where a machine without the `willcord` command fetches it; the console shows the same URL.
 const INSTALLER_URL: &str = "https://bossoptional.github.io/Willcord/install.sh";
-const MAIN_USAGE: &str = "usage: willcord main init [--dir DIR] [--server HTTPS_ORIGIN] [--image-version vX.Y.Z] | up | down | status | logs [SERVICE...] | upgrade --image-version vX.Y.Z  (add --dir DIR outside the deployment directory)";
+const MAIN_USAGE: &str = "usage: willcord main init [--dir DIR] [--server HTTPS_ORIGIN] [--bind HOST_IP] [--image-version vX.Y.Z] | up | down | status | logs [SERVICE...] | upgrade --image-version vX.Y.Z  (add --dir DIR outside the deployment directory)";
+const BIND_HELP: &str = "发布地址必须是本机 IPv4、IPv6，或 0.0.0.0（所有网卡；Docker 会绕过 ufw，内网部署慎用）。IPv6 可写 [fd00::1] 或 fd00::1。";
 
 /// Shown when an upgrade fails after the database may have migrated; must not suggest
 /// reverting WILLCORD_VERSION alone.
@@ -516,6 +519,99 @@ fn choose_server(tty: &mut Tty) -> Result<String, Error> {
     pick_server(&answer, &offered)
 }
 
+/// Host part of `site` (`host:port` or `[ipv6]:port`).
+fn site_host(site: &str) -> &str {
+    if let Some(rest) = site.strip_prefix('[') {
+        return rest.split_once(']').map(|(h, _)| h).unwrap_or(rest);
+    }
+    site.split_once(':').map(|(h, _)| h).unwrap_or(site)
+}
+
+/// How Compose publishes the HTTPS port on the host (IPv6 keeps brackets).
+fn format_bind_ip(ip: &str) -> String {
+    if ip.starts_with('[') {
+        return ip.to_string();
+    }
+    if Ipv6Addr::from_str(ip).is_ok() {
+        return format!("[{ip}]");
+    }
+    ip.to_string()
+}
+
+fn normalize_bind_ip(input: &str) -> Result<String, Error> {
+    let input = input.trim();
+    if input.is_empty() {
+        return Err(BIND_HELP.into());
+    }
+    let bare = input
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .unwrap_or(input);
+    if bare == "0.0.0.0" || bare == "::" {
+        return Ok(format_bind_ip(bare));
+    }
+    if let Ok(v4) = Ipv4Addr::from_str(bare) {
+        if v4.is_unspecified() {
+            return Ok("0.0.0.0".into());
+        }
+        return Ok(v4.to_string());
+    }
+    if let Ok(v6) = Ipv6Addr::from_str(bare) {
+        if v6.is_unspecified() {
+            return Ok("[::]".into());
+        }
+        return Ok(format_bind_ip(&v6.to_string()));
+    }
+    Err(BIND_HELP.into())
+}
+
+fn default_bind_for_site(site: &str) -> Option<String> {
+    let host = site_host(site);
+    if host == "localhost" {
+        return Some("127.0.0.1".into());
+    }
+    if Ipv4Addr::from_str(host).is_ok() || Ipv6Addr::from_str(host).is_ok() {
+        return Some(format_bind_ip(host));
+    }
+    None
+}
+
+/// Which local address Docker should publish the HTTPS port on.
+fn choose_bind_ip(tty: &mut Tty, site: &str) -> Result<String, Error> {
+    let found = netaddr::candidates();
+    let default = default_bind_for_site(site).or_else(|| {
+        found.first().map(|c| c.address.to_string())
+    });
+    println!(
+        "Docker 会把端口直接发布到宿主机，通常绕过 ufw。请指定只在本机使用的 IP，避免绑定到 0.0.0.0 暴露到公网网卡。"
+    );
+    if found.is_empty() {
+        let fallback = default.as_deref().unwrap_or("");
+        return normalize_bind_ip(&tty.prompt("发布 HTTPS 端口的本机 IP", fallback, false)?);
+    }
+    println!("本机地址（HTTPS 端口将只监听所选 IP）：");
+    for (n, c) in found.iter().enumerate() {
+        let overlay = c.overlay.map(|k| format!("（{k}）")).unwrap_or_default();
+        println!("  {}) {}   {}{overlay}", n + 1, c.address, c.interface);
+    }
+    let fallback = default.unwrap_or_else(|| found[0].address.to_string());
+    let answer = tty.prompt(
+        "发布 HTTPS 端口（输入序号，或本机 IP；0.0.0.0 表示所有网卡）",
+        &fallback,
+        false,
+    )?;
+    let answer = answer.trim();
+    if !answer.is_empty() && answer.bytes().all(|b| b.is_ascii_digit()) {
+        match answer.parse::<usize>() {
+            Ok(n) if (1..=found.len()).contains(&n) => {
+                return Ok(found[n - 1].address.to_string());
+            }
+            _ => return Err(format!("没有序号 {answer}，可选 1–{}。", found.len()).into()),
+        }
+    }
+    normalize_bind_ip(answer)
+}
+
 /// A number picks from the offered list; anything else is taken as typed.
 fn pick_server(answer: &str, offered: &[String]) -> Result<String, Error> {
     let answer = answer.trim();
@@ -531,11 +627,34 @@ fn pick_server(answer: &str, offered: &[String]) -> Result<String, Error> {
 async fn init(mut args: Vec<String>) -> Result<(), Error> {
     let dir = take_value(&mut args, "--dir")?.unwrap_or_else(|| "willcord".into());
     let server_flag = take_value(&mut args, "--server")?;
+    let bind_flag = take_value(&mut args, "--bind")?;
     let version_flag = take_value(&mut args, "--image-version")?;
     if let Some(extra) = args.first() {
         return Err(format!("未知参数：{extra}\n{MAIN_USAGE}").into());
     }
     let version = image_version(version_flag)?;
+    let mut tty = Tty::open()?;
+    let dir = PathBuf::from(dir);
+    fs::create_dir_all(&dir)?;
+    let dir = fs::canonicalize(&dir)?;
+    for existing in ["compose.yaml", ".env", "main.env", "ca.pem"] {
+        if fs::symlink_metadata(dir.join(existing)).is_ok() {
+            return Err(format!("目录已有 {existing}，拒绝覆盖，请使用新的 --dir。").into());
+        }
+    }
+    let server = match server_flag {
+        Some(s) => s,
+        None => choose_server(&mut tty)?,
+    };
+    let origin = parse_origin(&server)?;
+    let bind_ip = match bind_flag {
+        Some(ip) => normalize_bind_ip(&ip)?,
+        None => choose_bind_ip(&mut tty, &origin.site)?,
+    };
+    let password = tty.prompt("首次管理员密码（至少 16 字符）", "", true)?;
+    if password.chars().count() < 16 {
+        return Err("管理员密码至少需要 16 字符。".into());
+    }
     let docker = |args: &[&str]| {
         Command::new("docker")
             .args(args)
@@ -557,24 +676,6 @@ async fn init(mut args: Vec<String>) -> Result<(), Error> {
                 .into(),
         );
     }
-    let mut tty = Tty::open()?;
-    let dir = PathBuf::from(dir);
-    fs::create_dir_all(&dir)?;
-    let dir = fs::canonicalize(&dir)?;
-    for existing in ["compose.yaml", ".env", "main.env", "ca.pem"] {
-        if fs::symlink_metadata(dir.join(existing)).is_ok() {
-            return Err(format!("目录已有 {existing}，拒绝覆盖，请使用新的 --dir。").into());
-        }
-    }
-    let server = match server_flag {
-        Some(s) => s,
-        None => choose_server(&mut tty)?,
-    };
-    let origin = parse_origin(&server)?;
-    let password = tty.prompt("首次管理员密码（至少 16 字符）", "", true)?;
-    if password.chars().count() < 16 {
-        return Err("管理员密码至少需要 16 字符。".into());
-    }
     // Exclusive creation also protects against another initializer racing us.
     create_new(&dir.join("compose.yaml"), COMPOSE)?;
     create_new(
@@ -584,6 +685,7 @@ async fn init(mut args: Vec<String>) -> Result<(), Error> {
             env_line("WILLCORD_VERSION", &version)?,
             env_line("WILLCORD_SITE", &origin.site)?,
             env_line("WILLCORD_PORT", &origin.port.to_string())?,
+            env_line("WILLCORD_BIND_IP", &bind_ip)?,
         ]
         .concat(),
     )?;
@@ -946,6 +1048,20 @@ mod tests {
         ] {
             assert!(image_version(Some(bad.into())).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn bind_addresses_are_normalized_for_compose() {
+        assert_eq!(normalize_bind_ip("192.168.1.5").unwrap(), "192.168.1.5");
+        assert_eq!(normalize_bind_ip("0.0.0.0").unwrap(), "0.0.0.0");
+        assert_eq!(normalize_bind_ip("[fd00::1]").unwrap(), "[fd00::1]");
+        assert_eq!(normalize_bind_ip("fd00::1").unwrap(), "[fd00::1]");
+        assert_eq!(default_bind_for_site("10.8.0.2:8443").as_deref(), Some("10.8.0.2"));
+        assert_eq!(
+            default_bind_for_site("plane.internal:8443"),
+            None
+        );
+        assert!(normalize_bind_ip("not-an-ip").is_err());
     }
 
     #[test]

@@ -122,6 +122,7 @@ class MainNodeTests(unittest.TestCase):
         self.assertNotIn('MODEL_', main_env, 'the model is bound later, in the console')
         self.assertIn(f'PUBLIC_BASE_URL="{self.origin}"', main_env)
         self.assertIn(f'WILLCORD_PORT="{self.server.server_port}"', dot_env)
+        self.assertIn('WILLCORD_BIND_IP="127.0.0.1"', dot_env)
         self.assertIn(f'WILLCORD_SITE="127.0.0.1:{self.server.server_port}"', dot_env)
         self.assertIn('WILLCORD_VERSION="1.2.3"', dot_env)
         self.assertIn('COMPOSE_PROJECT_NAME="willcord-', dot_env)
@@ -190,6 +191,7 @@ class MainNodeTests(unittest.TestCase):
         self.assertNotIn('172.17.0.1', out)
         self.assertIn('DHCP', out)
         self.assertIn('WILLCORD_SITE="10.8.0.2:8443"', (self.deploy / '.env').read_text())
+        self.assertIn('WILLCORD_BIND_IP="10.8.0.2"', (self.deploy / '.env').read_text())
         self.assertIn('PUBLIC_BASE_URL="https://10.8.0.2:8443"', (self.deploy / 'main.env').read_text())
 
     def test_tailscale_zerotier_and_netbird_addresses_are_named(self):
@@ -219,7 +221,11 @@ class MainNodeTests(unittest.TestCase):
         self.assertEqual(list(self.deploy.iterdir()), [])
 
     def test_without_a_detected_address_the_placeholder_is_the_default(self):
-        code, out = self.init(server=False, answers=[(SERVER, b'\n'), *self.answers()], env={'TEST_START_FAIL': '1'})
+        code, out = self.init(
+            server=False,
+            answers=[(SERVER, b'\n'), ('发布 HTTPS'.encode(), b'127.0.0.1\n'), *self.answers()[1:]],
+            env={'TEST_START_FAIL': '1'},
+        )
         self.assertNotEqual(code, 0, out)
         self.assertIn('[https://plane.internal:8443]', out)
         self.assertIn('WILLCORD_SITE="plane.internal:8443"', (self.deploy / '.env').read_text())

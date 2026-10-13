@@ -608,7 +608,8 @@ mod tests {
 
     #[test]
     fn truncated_env_bracket_inside_value_does_not_leak_later_secrets() {
-        let raw = r#"[{"Config":{"Env":["REGEX=^a]","DB_PASSWORD=hunter2","TEST_FIXTURE_TOKEN=fake"#;
+        let raw =
+            r#"[{"Config":{"Env":["REGEX=^a]","DB_PASSWORD=hunter2","TEST_FIXTURE_TOKEN=fake"#;
         let redacted = redact_docker_inspect_stdout(raw, true);
         assert!(!redacted.contains("hunter2"));
         assert!(!redacted.contains("TEST_FIXTURE_TOKEN=fake"));

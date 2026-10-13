@@ -3,7 +3,7 @@
 // counts the command as stopped only once the group is observed empty. A
 // process that deliberately leaves the group (setsid) is outside this control.
 use crate::diagnosis;
-use crate::logs::{CHUNK_BYTES, CallLog};
+use crate::logs::{CHUNK_BYTES, CallLog, InspectStdoutHold};
 use serde_json::{Value, json};
 use std::{
     os::unix::process::ExitStatusExt,
@@ -91,7 +91,7 @@ async fn drain(
     mut pipe: impl AsyncReadExt + Unpin,
     log: Arc<CallLog>,
     stream: usize,
-    hold: Option<Arc<Mutex<Vec<u8>>>>,
+    hold: Option<Arc<Mutex<InspectStdoutHold>>>,
 ) {
     let mut buffer = Vec::with_capacity(CHUNK_BYTES);
     let mut read = vec![0u8; CHUNK_BYTES];
@@ -129,11 +129,11 @@ fn flush_drain_buffer(
     stream: usize,
     buffer: &[u8],
     log: &Arc<CallLog>,
-    hold: &Option<Arc<Mutex<Vec<u8>>>>,
+    hold: &Option<Arc<Mutex<InspectStdoutHold>>>,
 ) {
     if stream == 0 {
         if let Some(buf) = hold {
-            buf.lock().unwrap().extend_from_slice(buffer);
+            buf.lock().unwrap().push(buffer);
             return;
         }
     }
@@ -152,7 +152,7 @@ pub async fn run_direct(
 ) -> Result<Outcome, Error> {
     let program = argv.first().ok_or("empty argv")?.as_str();
     let hold_stdout = if redact_docker_inspect_stdout {
-        Some(Arc::new(std::sync::Mutex::new(Vec::new())))
+        Some(Arc::new(Mutex::new(InspectStdoutHold::new())))
     } else {
         None
     };
@@ -214,7 +214,7 @@ async fn run_child(
     cancel: watch::Receiver<bool>,
     log: Arc<CallLog>,
     limits: &Limits,
-    hold_stdout: Option<Arc<Mutex<Vec<u8>>>>,
+    hold_stdout: Option<Arc<Mutex<InspectStdoutHold>>>,
     redact_docker_inspect_stdout: bool,
 ) -> Result<Outcome, Error> {
     let pgid = child
@@ -253,15 +253,18 @@ async fn run_child(
         }
     }
     if let Some(buf) = hold_stdout {
-        let held = buf.lock().unwrap().clone();
-        if !held.is_empty() {
+        let held = buf.lock().unwrap();
+        if !held.bytes().is_empty() {
             let out = if redact_docker_inspect_stdout {
-                diagnosis::redact_docker_inspect_stdout(&String::from_utf8_lossy(&held))
+                diagnosis::redact_docker_inspect_stdout(&String::from_utf8_lossy(held.bytes()))
                     .into_bytes()
             } else {
-                held
+                held.bytes().to_vec()
             };
+            let (total, truncated) = (held.total, held.truncated);
+            drop(held);
             log.append_chunked(0, &out);
+            log.finish_inspect_stdout_hold(0, total, truncated);
         }
     }
     let (logs, _) = log.summary();

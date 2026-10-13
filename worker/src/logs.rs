@@ -20,6 +20,45 @@ pub const CHUNK_BYTES: usize = 16 * 1024;
 /// drained from the pipes and counted, never stored.
 pub const CALL_LOG_LIMIT: u64 = 10 * 1024 * 1024;
 pub const STREAMS: [&str; 2] = ["stdout", "stderr"];
+
+/// Buffers `docker inspect` stdout for redaction without exceeding the per-call log cap.
+pub struct InspectStdoutHold {
+    buffer: Vec<u8>,
+    pub total: u64,
+    pub truncated: bool,
+    limit: usize,
+}
+
+impl InspectStdoutHold {
+    pub fn new() -> Self {
+        Self::with_limit(CALL_LOG_LIMIT as usize)
+    }
+
+    pub fn with_limit(limit: usize) -> Self {
+        Self {
+            buffer: Vec::new(),
+            total: 0,
+            truncated: false,
+            limit,
+        }
+    }
+
+    pub fn push(&mut self, bytes: &[u8]) {
+        self.total += bytes.len() as u64;
+        let room = self.limit.saturating_sub(self.buffer.len());
+        if room > 0 {
+            let take = room.min(bytes.len());
+            self.buffer.extend_from_slice(&bytes[..take]);
+        }
+        if bytes.len() > room {
+            self.truncated = true;
+        }
+    }
+
+    pub fn bytes(&self) -> &[u8] {
+        &self.buffer
+    }
+}
 const INDEX_ENTRY: u64 = 16;
 
 /// A stored chunk: sequence number, byte offset in its stream, data.
@@ -147,6 +186,15 @@ impl CallLog {
     pub fn append_chunked(&self, stream: usize, bytes: &[u8]) {
         for part in bytes.chunks(CHUNK_BYTES) {
             self.append(stream, part);
+        }
+    }
+
+    /// After a held inspect stdout is logged, record pipe totals and truncation.
+    pub fn finish_inspect_stdout_hold(&self, stream: usize, bytes_total: u64, truncated: bool) {
+        let mut state = self.state.lock().unwrap();
+        state.streams[stream].total = bytes_total;
+        if truncated {
+            state.truncated = true;
         }
     }
 
@@ -314,6 +362,41 @@ mod tests {
         assert!(text.contains("\"ExitCode\":42"));
         assert!(text.contains("\"Status\":\"exited\""));
         assert!(!text.contains("TOP_SECRET"));
+        assert!(text.contains("<redacted>"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn redacted_inspect_over_hold_cap_is_truncated_and_has_no_env_secrets() {
+        use crate::diagnosis;
+
+        const HOLD_CAP: usize = 64 * 1024;
+        let filler = "y".repeat(HOLD_CAP + 32_768);
+        let raw = format!(
+            r#"[{{"Config":{{"Env":["CONTAINER_SECRET=leak"],"Image":"img"}},"Filler":"{filler}"}}]"#
+        );
+        let mut hold = InspectStdoutHold::with_limit(HOLD_CAP);
+        hold.push(raw.as_bytes());
+        assert!(hold.truncated);
+        assert!(hold.total as usize > HOLD_CAP);
+
+        let redacted =
+            diagnosis::redact_docker_inspect_stdout(&String::from_utf8_lossy(hold.bytes()));
+        assert!(!redacted.contains("CONTAINER_SECRET"));
+
+        let root = std::env::temp_dir().join(format!("worker-logs-{}", uuid::Uuid::new_v4()));
+        let (tx, _rx) = mpsc::channel(4);
+        let log = CallLog::create(&root, "job", "call", tx).unwrap();
+        log.append_chunked(0, redacted.as_bytes());
+        log.finish_inspect_stdout_hold(0, hold.total, hold.truncated);
+
+        let (summary, _) = log.summary();
+        assert_eq!(summary["truncated"], json!(true));
+        assert!(summary["stdout"]["bytes_total"].as_u64().unwrap() > HOLD_CAP as u64);
+        let (_, total) = read(&root, "call", "stdout", 0, 1).unwrap().unwrap();
+        let (chunks, _) = read(&root, "call", "stdout", 0, total).unwrap().unwrap();
+        let text = String::from_utf8(chunks.into_iter().flat_map(|(_, _, d)| d).collect()).unwrap();
+        assert!(!text.contains("CONTAINER_SECRET"));
         assert!(text.contains("<redacted>"));
         let _ = fs::remove_dir_all(root);
     }

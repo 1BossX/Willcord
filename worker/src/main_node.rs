@@ -28,6 +28,10 @@ const DEFAULT_SERVER: &str = "https://plane.internal:8443";
 /// Where a machine without the `willcord` command fetches it; the console shows the same URL.
 const INSTALLER_URL: &str = "https://bossoptional.github.io/Willcord/install.sh";
 const MAIN_USAGE: &str = "usage: willcord main init [--dir DIR] [--server HTTPS_ORIGIN] [--image-version vX.Y.Z] | up | down | status | logs [SERVICE...] | upgrade --image-version vX.Y.Z  (add --dir DIR outside the deployment directory)";
+
+/// Shown when an upgrade fails after the database may have migrated; must not suggest
+/// reverting WILLCORD_VERSION alone.
+const UPGRADE_ROLLBACK_HINT: &str = "若需回滚：不能只改 WILLCORD_VERSION 或 --image-version。先 docker compose stop main，用旧版本镜像执行 node dist/admin.js restore 恢复数据卷中的 pre-migrate-<版本>-<时间>.sqlite，再改回 WILLCORD_VERSION 并 willcord main up。详见 docs/operations.md §6、§8 与 docs/docker.md。";
 const RECOVERY: &str = "启动未完成，配置和数据已保留。请在部署目录执行 docker compose logs main caddy 查看原因；修复后执行 docker compose up -d。";
 
 /// The release this binary was built for, set by the release workflow.
@@ -774,8 +778,9 @@ async fn upgrade(mut args: Vec<String>) -> Result<(), Error> {
         return Err(match fs::write(&env, &original) {
             Ok(()) => format!("{pull}\n{} 已恢复原样，部署没有改动。", env.display()),
             Err(restore) => format!(
-                "{pull}\n恢复 {} 失败（{restore}）：请手动把 WILLCORD_VERSION 改回升级前的值。",
-                env.display()
+                "{pull}\n恢复 {} 失败（{restore}）：请手动把该文件恢复为升级前的内容。若主节点曾就绪并完成迁移，{hint}",
+                env.display(),
+                hint = UPGRADE_ROLLBACK_HINT
             ),
         }
         .into());
@@ -783,7 +788,10 @@ async fn upgrade(mut args: Vec<String>) -> Result<(), Error> {
     compose(&dir, &["up", "-d"])?;
     let server = deployment_server(&dir)?;
     if !wait_ready(&dir, &server, false).await {
-        return Err("升级后主节点未就绪，请查看 willcord main logs。回滚时把 .env 里的 WILLCORD_VERSION 改回旧值，再执行 willcord main up；数据库迁移不可逆，需要旧版本的 admin restore（见 docs/operations.md）。".into());
+        return Err(format!(
+            "升级后主节点未就绪，请查看 willcord main logs。{UPGRADE_ROLLBACK_HINT}"
+        )
+        .into());
     }
     println!("主节点已就绪：{server}");
     Ok(())

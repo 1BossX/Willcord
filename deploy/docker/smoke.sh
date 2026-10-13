@@ -83,10 +83,31 @@ policy=$(docker inspect -f '{{.HostConfig.RestartPolicy.Name}}' "$main_id")
 dc run --rm --no-deps -T main node -e \
   "process.exit(require('fs').existsSync('/var/lib/willcord/main.lock') ? 0 : 1)" \
   || { echo "main.lock missing after SIGKILL" >&2; exit 1; }
-dc start main > /dev/null 2>&1 || true
-sleep 2
-crash_code=$(docker inspect -f '{{.State.ExitCode}}' "$main_id")
-[ "$crash_code" != 0 ] || { echo "main started cleanly with stale main.lock" >&2; exit 1; }
+started_before=$(docker inspect -f '{{.State.StartedAt}}' "$main_id")
+dc start main
+refused=0
+for _ in $(seq 1 15); do
+  started_now=$(docker inspect -f '{{.State.StartedAt}}' "$main_id")
+  status=$(docker inspect -f '{{.State.Status}}' "$main_id")
+  if [ -s "$work/ca.pem" ]; then
+    health=$(curl -fsS --cacert "$work/ca.pem" "https://localhost:$port/health" 2>/dev/null || true)
+    case "$health" in *'"scheduling_ready":true'*)
+      echo "main served /health with stale main.lock" >&2
+      exit 1
+    ;; esac
+  fi
+  if [ "$started_now" != "$started_before" ] && [ "$status" = "exited" ]; then
+    refused=1
+    break
+  fi
+  sleep 1
+done
+[ "$refused" = 1 ] || { echo "main did not run and exit after start with stale main.lock" >&2; exit 1; }
+status=$(docker inspect -f '{{.State.Status}}' "$main_id")
+[ "$status" = "exited" ] || { echo "main still $status after stale-lock start" >&2; exit 1; }
+dc run --rm --no-deps -T main node -e \
+  "process.exit(require('fs').existsSync('/var/lib/willcord/main.lock') ? 0 : 1)" \
+  || { echo "main.lock missing before operator clear" >&2; exit 1; }
 dc run --rm --no-deps -T main node -e \
   "require('fs').rmSync('/var/lib/willcord/main.lock',{recursive:true})"
 dc start main

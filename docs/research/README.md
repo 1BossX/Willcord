@@ -15,3 +15,4 @@
 | --- | --- | --- |
 | 2026-10-10 | [Worker CA 自动初始化](2026-10-10-worker-ca-bootstrap.md) | 指纹引导自动取 CA、公有域名 DNS-01 与 Tailscale 对比；省掉人工复制证书，保留独立信任起点 |
 | 2026-10-09 | [Cursor agent worker / 自托管执行](2026-10-09-cursor-agent-worker.md) | 云端 loop + 本地执行的同构方案（仅一手来源核实）：健康/就绪分离、token 文件轮换、debug 预检、数据外流边界、Temporal 经验；operator 已弃用、idle 默认值矛盾 |
+

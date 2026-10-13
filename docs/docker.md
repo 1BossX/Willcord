@@ -91,9 +91,19 @@ docker compose start main
 
 ## 升级
 
-1. 按 [运维手册 §6](operations.md#6-升级) 暂停调度、等待任务结束并备份。
-2. 修改 `.env` 里的 `WILLCORD_VERSION`，执行 `docker compose pull && docker compose up -d`（向导生成的部署可用 `willcord main upgrade --image-version vX.Y.Z` 代劳，它不备份，也不改写 `compose.yaml`）。有新迁移时主节点先在数据卷里保存迁移前快照。
-3. 检查 `/health`，再恢复调度。回滚时把版本改回旧值，并用旧版本镜像的 `admin.js restore` 恢复迁移前快照。
+1. **先升级所有 worker**（见 [运维手册 §6](operations.md#6-升级)）：主节点已升到新版本而 worker 仍是旧版本时，worker 会连接失败并退出，systemd 会反复重启。
+2. 按 [运维手册 §6](operations.md#6-升级) 暂停调度、等待任务结束并备份。
+3. 修改 `.env` 里的 `WILLCORD_VERSION`，执行 `docker compose pull && docker compose up -d`（向导生成的部署可用 `willcord main upgrade --image-version vX.Y.Z` 代劳，它不备份，也不改写 `compose.yaml`）。有新迁移时主节点先在 `main-data` 卷里保存 `pre-migrate-<旧版本>-<时间>.sqlite`。
+4. 检查 `/health`，再恢复调度。
+
+回滚：**不能只改 `WILLCORD_VERSION` 或只执行 `willcord main upgrade --image-version vX.Y.Z` 指回旧版本。** 若此次升级跑过迁移，必须：
+
+1. `docker compose stop main`
+2. 用**旧版本**主节点镜像恢复快照，例如：`docker compose run --rm --no-deps -T main node dist/admin.js restore /var/lib/willcord/pre-migrate-<旧版本>-<时间>.sqlite`（快照文件名在数据卷里；恢复细节见 [运维手册 §8](operations.md#8-从备份恢复)）
+3. 把 `.env` 里的 `WILLCORD_VERSION` 改回旧版本，`docker compose pull && docker compose up -d`
+4. 按 §8 核对 worker 账本并恢复调度
+
+若只回退镜像版本而不 `restore` 迁移前快照，而 worker 仍是较新构建，正在进行的诊断会话可能在 worker 上变成不受限 shell：旧主节点不下发 `execution_mode`，新 worker 对无 mode 的 bash 调用使用 `bash -c`。API 仍可能显示 diagnosis，但诸如 `touch /tmp/qa-e2e-pwn6` 的命令可以成功。回滚时快照与版本必须一起恢复；必要时将 worker 降到与主节点一致的版本，或保持调度暂停直至对齐。
 
 ## 安全设置
 

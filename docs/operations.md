@@ -167,6 +167,14 @@ rm -f "$JAR"
 
 ## 6. 升级
 
+**顺序：先升级所有 worker，再升级主节点。** 主节点已升到新版本而 worker 仍是旧版本时，worker 无法完成注册并会以非零状态退出；Linux 上 systemd 会按单元配置反复重启（例如 beta.2 的 worker 连 beta.3 的主节点时，日志里反复出现连接失败和退出）。等每台机器的 worker 都已换成与新主节点匹配的版本后，再执行下面的主节点步骤。
+
+worker（先于主节点）：
+
+1. 执行 `systemctl stop willcord-worker`（或 `launchctl bootout`），等它停下（正在运行的命令会通过取消路径停止，结果写入账本）。
+2. 替换二进制（或重新运行控制台生成的 `willcord worker join` 安装命令），再启动服务。
+3. 在 UI 确认机器在线、可执行。重连后先对账，再继续接任务。
+
 主节点：
 
 1. 暂停调度：用 §3 的方式登录后调用 `POST /api/ops/pause`，附说明，例如 `{"note":"升级到 <新版本>"}`。UI 里只有恢复按钮，没有暂停按钮。
@@ -177,9 +185,11 @@ rm -f "$JAR"
    - 未结清的调用、去重水位和父子等待在升级后都保留。
 5. 检查 `/health`，然后 `POST /api/ops/resume` 并附说明。升级前的暂停在重启后仍然有效，必须手动恢复。
 
-回滚：停止主节点，把 `current` 指回旧版本，再用**旧版本**的 `admin.js restore` 恢复迁移前的快照（见 §8）。恢复后调度处于暂停状态，按 §8 的步骤核对后再恢复。
+回滚（主节点）：**不能只把版本指回旧值。** 若升级过程中执行过数据库迁移，必须把 `DATA_DIR` 里对应的 `pre-migrate-<旧版本>-<时间>.sqlite` 用**旧版本**产物的 `admin.js restore` 恢复（步骤见 §8），再把 `current` 指回旧版本并重启。仅执行 `ln -sfn` 回到旧版本、或只改 Docker 的 `WILLCORD_VERSION` / `willcord main upgrade --image-version`，而不恢复快照，数据库仍停留在新版本结构，与旧主节点代码不匹配，且会造成更严重的版本错配。
 
-worker：先执行 `systemctl stop`（或 `launchctl bootout`），等它停下（正在运行的命令会通过取消路径停止，结果写入账本），然后替换二进制并启动。重连后先对账，再继续接任务。
+**版本错配风险（务必先恢复快照）：** 若主节点被回退到 v0.1.0-beta.2（例如 `willcord main upgrade --image-version v0.1.0-beta.2` 或只改 `WILLCORD_VERSION`），但**没有**恢复迁移前快照，而各 worker 仍是较新的构建，则已在进行中的诊断会话会在执行层失去限制：旧主节点不会在 `tool_call` 里下发 `execution_mode`，新 worker 收到没有 mode 的 bash 调用时会走 `bash -c` 全 shell，而不是诊断模式下的 argv 白名单。控制台和 API 仍可能显示会话处于诊断模式，但机器上已可执行任意命令。验收中曾出现：API 仍显示 diagnosis，而 `touch /tmp/qa-e2e-pwn6` 在 worker 上成功。因此回滚主节点时，快照恢复与版本回退必须一起做；必要时先把 worker 也降到与主节点一致的版本，或暂停调度直至全部对齐。
+
+Docker 部署的回滚步骤见 [用 Docker 部署主节点 §升级](docker.md#升级)。
 
 ## 7. 备份
 

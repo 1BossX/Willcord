@@ -1,6 +1,10 @@
 # 从 worker-plane 迁移到 willcord
 
-v0.5.0 把所有仍叫 `worker-plane` / `WorkerPlane` 的名称统一为 `willcord`，**且不兼容旧名称**。旧版本安装的主节点和执行机器不会被新版本识别，需要按下面的步骤重新部署。
+## 版本号说明
+
+文中出现的 **v0.5.0**、**v0.6.0** 指改名时期的**历史版次**（早于当前公开发布的 **v0.1.0-beta** 线）。**当前** GitHub Latest 为 **v0.1.0-beta.3**；全新部署请安装 [最新 Release](https://github.com/BossOptional/Willcord/releases/latest)，不要把文中的旧号当成“今天要装的版本”。
+
+历史上 **v0.5.0** 把所有仍叫 `worker-plane` / `WorkerPlane` 的名称统一为 `willcord`，**且不兼容旧名称**。旧版本安装的主节点和执行机器不会被新版本识别，需要按下面的步骤重新部署。
 
 ## 变了什么
 
@@ -31,7 +35,7 @@ v0.5.0 把所有仍叫 `worker-plane` / `WorkerPlane` 的名称统一为 `willco
 | 安装脚本与产品页 | `https://1bossx.github.io/Willcord/` | `https://bossoptional.github.io/Willcord/` |
 | 镜像 | `ghcr.io/1bossx/willcord-{main,caddy}` | `ghcr.io/bossoptional/willcord-{main,caddy}` |
 
-v0.5.0 和 v0.6.0 的镜像已经在新路径下可拉取，旧路径 `ghcr.io/1bossx/*` 不再可用。这两个版本的 `willcord` 二进制内置的 `compose.yaml` 默认仍指向旧路径。
+历史版次 **v0.5.0** 和 **v0.6.0** 的镜像已经在新路径下可拉取，旧路径 `ghcr.io/1bossx/*` 不再可用。这两个版本的 `willcord` 二进制内置的 `compose.yaml` 默认仍指向旧路径。
 
 - **已部署的主节点**：升级**之前**先在部署目录的 `.env` 里加一行 `WILLCORD_REGISTRY=ghcr.io/bossoptional`，否则升级会因为拉不到镜像而失败。包含本次改名的下一个版本起，默认值已是新路径。
 - **已安装的 worker**：不受影响，它们经 GitHub 的 301 重定向继续下载，无需操作。
@@ -58,7 +62,7 @@ v0.5.0 和 v0.6.0 的镜像已经在新路径下可拉取，旧路径 `ghcr.io/1
 
 1. 停止并禁用旧单元：`systemctl disable --now worker-plane-main worker-plane-backup.timer`。
 2. 用旧版本的 `admin.js backup` 备份 `/var/lib/worker-plane/main.sqlite`。
-3. 按[运维手册](operations.md)全新部署 v0.5.0（路径为 `/etc/willcord`、`/var/lib/willcord`、`/opt/willcord`，账户 `willcord`，单元 `willcord-main.service`、`willcord-backup.timer`）。
+3. 按[运维手册](operations.md)用 [当前 Latest Release](https://github.com/BossOptional/Willcord/releases/latest) 全新部署（路径为 `/etc/willcord`、`/var/lib/willcord`、`/opt/willcord`，账户 `willcord`，单元 `willcord-main.service`、`willcord-backup.timer`）。
 4. 用新版本的 `admin.js restore` 恢复备份，再按 §8 核对并恢复调度。
 5. 清理旧的单元文件、`/etc/worker-plane`、`/var/lib/worker-plane` 和旧账户。
 

@@ -92,7 +92,7 @@ willcord main up
 willcord main upgrade --image-version vX.Y.Z   # 改 .env 里的镜像版本，pull 并重启
 ```
 
-v0.5.0/v0.6.0 部署的 `compose.yaml` 默认仍指向已失效的旧镜像路径 `ghcr.io/1bossx`。`upgrade` 发现这种情况会在改动任何文件之前报错退出（拉取镜像失败时也会把 `.env` 恢复成升级前的样子）；先在 `.env` 里设置 `WILLCORD_REGISTRY=ghcr.io/bossoptional` 再升级（见[迁移说明](migrating-to-willcord.md)）。判断与 Compose 一致：shell 环境变量优先，其次是 `.env` 里**最后一次**赋值，最后才是 `compose.yaml` 的默认值，所以文件里残留的旧行只要后面有新值就不影响。
+若环境来自**历史版次 v0.5.0 / v0.6.0**（旧编号，非当前 **v0.1.0-beta** 线），其 `compose.yaml` 默认仍指向已失效的旧镜像路径 `ghcr.io/1bossx`。`upgrade` 发现这种情况会在改动任何文件之前报错退出（拉取镜像失败时也会把 `.env` 恢复成升级前的样子）；先在 `.env` 里设置 `WILLCORD_REGISTRY=ghcr.io/bossoptional` 再升级（见[迁移说明](migrating-to-willcord.md)）。判断与 Compose 一致：shell 环境变量优先，其次是 `.env` 里**最后一次**赋值，最后才是 `compose.yaml` 的默认值，所以文件里残留的旧行只要后面有新值就不影响。
 
 查找顺序：`--dir`，然后是 `willcord` 所在目录、当前目录，最后是上次 `main init` 记下的目录（保存在 `~/.config/willcord/main-dir`）。记下的目录不存在时会直接指出路径，而不是悄悄换一个。
 
@@ -204,7 +204,7 @@ curl -fsSL https://bossoptional.github.io/Willcord/install.sh | bash -s -- worke
 
 ## 5. 第一次诊断
 
-> **版本说明**：下列控制台里的「首次诊断」、诊断模式会话和结构化诊断结果已在 `main` 合入（#74、#75、#76），将在 **v0.1.0-beta.3** 随正式发布提供。当前 GitHub Latest（例如 v0.1.0-beta.2）的控制台可能尚未包含这些入口。
+> **版本说明**：下列控制台里的「首次诊断」、诊断模式会话和结构化诊断结果自 **v0.1.0-beta.3**（当前 GitHub Latest）起提供。若你安装的是更早的 beta 构建，请升级后再使用这些入口。
 
 机器显示“可执行”且控制台已绑定模型 API key 后，工作台首页会出现**首次诊断**入口，三个场景任选其一：
 

@@ -900,9 +900,7 @@ async fn tool_call(
         args.insert("content".into(), Value::String(content));
     }
     let mut canonical = serde_json::json!({"worker_id":call.worker_id,"job_id":call.job_id,"call_id":call.call_id,"call_seq":call.call_seq,"workspace_id":call.workspace_id,"config_version":call.config_version,"tool":call.tool,"arguments":call.arguments});
-    if let Some(mode) = call.execution_mode.as_ref() {
-        canonical["execution_mode"] = Value::String(mode.clone());
-    }
+    tools::approved_tool_gate::extend_canonical_request(&call, &mut canonical);
     if format!("{:x}", sha2::Sha256::digest(serde_jcs::to_vec(&canonical)?)) != call.request_hash {
         return Err("request hash mismatch".into());
     }
@@ -924,6 +922,10 @@ async fn tool_call(
     };
     // A request this worker would never run is refused before the ledger sees it.
     if call.tool == "write" && !diagnosis::write_allowed(call.execution_mode.as_deref()) {
+        send(socket, &rejected_frame(worker, epoch, &identity, "invalid")).await?;
+        return Ok(());
+    }
+    if tools::approved_tool_gate::reject_before_ledger(&call) {
         send(socket, &rejected_frame(worker, epoch, &identity, "invalid")).await?;
         return Ok(());
     }
@@ -1080,7 +1082,15 @@ async fn run_bash(
             Err(e) => return failed(&e),
         }
     } else {
-        process::run_bash(command, cwd, timeout, cancel, log.clone(), limits).await
+        match tools::approved_tool_gate::approved_bash_argv(call) {
+            tools::approved_tool_gate::ApprovedBash::Allowed(argv) => {
+                process::run_direct(&argv, cwd, timeout, cancel, log.clone(), limits, false).await
+            }
+            tools::approved_tool_gate::ApprovedBash::Denied => return failed(&"invalid"),
+            tools::approved_tool_gate::ApprovedBash::NotApproved => {
+                process::run_bash(command, cwd, timeout, cancel, log.clone(), limits).await
+            }
+        }
     };
     let (_, streams) = log.summary();
     match outcome {

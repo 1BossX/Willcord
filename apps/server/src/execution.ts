@@ -12,6 +12,8 @@ import { logView } from "./feed.js";
 import { modelFromEnv, type ModelConfig } from "./config.js";
 import { buildDiagnosisReport } from "./diagnosis-report.js";
 import { diagnosisAnswerFormat } from "./diagnosis-scenarios.js";
+import { assertCallMatchesApproval, settleApprovedExecuteJob } from "./approved-action.js";
+import { isApprovedBoundExecuteCall, workerToolRequestFields } from "./approved-action-wire.js";
 
 type Socket = { readyState: number; send(data: string): void };
 type Connection = { epoch: number; socket: Socket; tokenDigest: string };
@@ -30,20 +32,28 @@ export const DEFAULT_BUDGET: Budget = { maxToolCalls: 200, maxTokens: 2_000_000,
 export type Resolution = { call_id: string; outcome: "executed" | "not_executed" | "terminated" };
 
 const hash = (v: unknown) => createHash("sha256").update(JSON.stringify(v)).digest("hex");
-/** Canonical worker-protocol request for a committed call, including diagnosis mode when set on the session. */
-function workerToolRequest(row: Pick<CallRow, "worker_id" | "job_id" | "call_id" | "call_seq" | "workspace_id" | "workspace_version" | "tool_name" | "arguments_json" | "execution_mode">) {
-  const request: Record<string, unknown> = {
+type CallWireRow = Pick<
+  CallRow,
+  "worker_id" | "job_id" | "call_id" | "call_seq" | "workspace_id" | "workspace_version" | "tool_name" | "arguments_json" | "execution_mode"
+> & { approved_binding_hash?: string | null };
+
+/** Canonical worker-protocol request for a committed call, including diagnosis or approved mode when set. */
+function workerToolRequest(row: CallWireRow) {
+  let execution_mode: "diagnosis" | "approved" | null = null;
+  if (row.execution_mode === "diagnosis") execution_mode = "diagnosis";
+  if (row.execution_mode === "approved") execution_mode = "approved";
+  return workerToolRequestFields({
     worker_id: row.worker_id,
     job_id: row.job_id,
     call_id: row.call_id,
     call_seq: row.call_seq,
     workspace_id: row.workspace_id,
-    config_version: row.workspace_version,
+    workspace_version: row.workspace_version,
     tool: row.tool_name,
     arguments: JSON.parse(row.arguments_json),
-  };
-  if (row.execution_mode === "diagnosis") request.execution_mode = "diagnosis";
-  return request;
+    execution_mode,
+    approved_binding_hash: execution_mode === "approved" ? (row.approved_binding_hash ?? null) : null,
+  });
 }
 const TOOL_RESULT_TIMEOUT_MS = 1_800_000;
 /** Beyond a bash time limit: the worker's TERM grace (at most 30 s) and stop confirmation. */
@@ -155,7 +165,7 @@ export class ExecutionCoordinator {
   }
 
   private call(jobId: string, callId: string) {
-    return this.db.prepare(`SELECT c.*,j.worker_id,s.workspace_id,s.workspace_version,s.execution_mode FROM runtime_calls c JOIN jobs j USING(job_id) JOIN sessions s USING(session_id) WHERE c.job_id=? AND c.call_id=?`).get(jobId, callId) as CallRow | undefined;
+    return this.db.prepare(`SELECT c.*,j.worker_id,j.approved_action_id,s.workspace_id,s.workspace_version,s.execution_mode,a.binding_hash AS approved_binding_hash FROM runtime_calls c JOIN jobs j USING(job_id) JOIN sessions s USING(session_id) LEFT JOIN approved_actions a ON a.approved_action_id=j.approved_action_id WHERE c.job_id=? AND c.call_id=?`).get(jobId, callId) as (CallRow & { approved_action_id?: string | null; approved_binding_hash?: string | null }) | undefined;
   }
 
   /** A connection may carry calls only after this epoch reconciled and while the worker is unblocked. */
@@ -195,12 +205,21 @@ export class ExecutionCoordinator {
     if (p) { clearTimeout(p.timer); this.pending.delete(key(row.job_id, row.call_id)); p.reject(new Error(reason)); }
   }
 
-  private sendCall(conn: Connection, row: CallRow) {
+  private sendCall(conn: Connection, row: CallRow & { approved_action_id?: string | null; approved_binding_hash?: string | null }) {
     const args = JSON.parse(row.arguments_json);
-    const request = workerToolRequest(row);
+    const wire = {
+      ...row,
+      execution_mode: isApprovedBoundExecuteCall(row) ? "approved" : row.execution_mode,
+    };
+    const request = workerToolRequest(wire);
     const digest = requestHash(request);
     if (digest !== row.request_hash) throw new Error("committed_request_hash_mismatch");
-    const mode = row.execution_mode === "diagnosis" ? { execution_mode: "diagnosis" as const } : {};
+    const mode =
+      wire.execution_mode === "diagnosis"
+        ? { execution_mode: "diagnosis" as const }
+        : wire.execution_mode === "approved"
+          ? { execution_mode: "approved" as const, approved_binding_hash: row.approved_binding_hash ?? undefined }
+          : {};
     const base = { protocol_version: 1, worker_id: row.worker_id, connection_epoch: conn.epoch, job_id: row.job_id, call_id: row.call_id, request_hash: digest };
     if (row.tool_name !== "write") {
       conn.socket.send(JSON.stringify({ ...base, ...mode, type: "tool_call", call_seq: row.call_seq, workspace_id: row.workspace_id, config_version: row.workspace_version, tool: row.tool_name, arguments: args }));
@@ -777,7 +796,33 @@ export class ExecutionCoordinator {
     return messages;
   }
 
+  /** Approved-action execute jobs run exactly one pre-committed call; the model is not invoked. */
+  private async runApprovedExecuteJob(job: any) {
+    const actionId = job.approved_action_id as string;
+    const callId = `approved-${actionId}`;
+    this.db.transaction(() => {
+      if (!this.db.prepare("SELECT 1 FROM runtime_history WHERE job_id=? AND entry_key=?").get(job.job_id, `user:${job.job_id}`)) {
+        this.db.prepare("INSERT INTO runtime_history(job_id,entry_key,message_json) VALUES(?,?,?)").run(
+          job.job_id,
+          `user:${job.job_id}`,
+          JSON.stringify({ role: "user", content: [{ type: "text", text: job.input_text }], timestamp: job.created_at }),
+        );
+      }
+    })();
+    const record = await this.dispatch(job.job_id, callId);
+    settleApprovedExecuteJob(this.db, job.job_id, actionId, record, this.now());
+    this.db.prepare("INSERT INTO runtime_history(job_id,entry_key,message_json) VALUES(?,?,?)").run(
+      job.job_id,
+      `final:${job.job_id}`,
+      JSON.stringify({ role: "assistant", content: [{ type: "text", text: "Approved action finished." }], timestamp: this.now() }),
+    );
+  }
+
   async runPi(job: any) {
+    if (job.approved_action_id && !job.verify_command) {
+      await this.runApprovedExecuteJob(job);
+      return;
+    }
     const dataDir = this.options.dataDir ?? "./data";
     const fakeMode = Boolean(this.options.fakeScript) || process.env.P2_FAKE_MODEL === "1";
     // Read per run: a change made in the console applies to the next job, not to one already running.
@@ -895,6 +940,9 @@ export class ExecutionCoordinator {
       const record = JSON.parse(row.result_json!) as ToolRecord;
       const passed = row.status === "completed" && record.ok && record.result?.exit_code === 0;
       this.db.prepare("UPDATE jobs SET state=?,end_reason=? WHERE job_id=? AND state='running'").run(passed ? "succeeded" : "failed", passed ? "completed" : "verification_failed", job.job_id);
+      if (job.approved_action_id && passed) {
+        this.db.prepare("UPDATE approved_actions SET state='verified',verified_at=? WHERE approved_action_id=? AND state='executed'").run(this.now(), job.approved_action_id);
+      }
     })();
   }
 
@@ -903,6 +951,7 @@ export class ExecutionCoordinator {
     let inserted = false, overBudget = false;
     const committed = this.db.transaction(() => {
       if (!this.current(job)) return false;
+      if (job.approved_action_id && !job.verify_command) throw new Error("approved_execute_no_model_turns");
       const old = this.db.prepare("SELECT content_hash FROM runtime_turns WHERE job_id=? AND turn_key=?").get(job.job_id, turnKey) as any;
       if (old) { if (old.content_hash !== fingerprint) throw new Error("turn_checkpoint_conflict"); return true; }
       inserted = true;
@@ -912,6 +961,9 @@ export class ExecutionCoordinator {
       let seq = (this.db.prepare("SELECT COALESCE(MAX(call_seq),0) n FROM runtime_calls WHERE job_id=?").get(job.job_id) as any).n;
       for (const c of calls) {
         seq++;
+        if (job.approved_action_id && !job.verify_command) {
+          assertCallMatchesApproval(this.db, job, c.name, c.arguments ?? {});
+        }
         const request = workerToolRequest({
           worker_id: job.worker_id,
           job_id: job.job_id,
@@ -921,7 +973,11 @@ export class ExecutionCoordinator {
           workspace_version: job.workspace_version,
           tool_name: c.name,
           arguments_json: JSON.stringify(c.arguments ?? {}),
-          execution_mode: job.execution_mode ?? null,
+          execution_mode: job.approved_action_id && !job.verify_command ? "approved" : job.execution_mode ?? null,
+          approved_binding_hash:
+            job.approved_action_id && !job.verify_command
+              ? (this.db.prepare("SELECT binding_hash FROM approved_actions WHERE approved_action_id=?").get(job.approved_action_id) as { binding_hash: string }).binding_hash
+              : null,
         });
         // Main calls never leave this node, so they need no worker-protocol hash.
         add.run(job.job_id, turnKey, c.id, seq, job.session_kind === "main" ? hash(request) : requestHash(request), c.name, JSON.stringify(c.arguments ?? {}));

@@ -17,6 +17,11 @@ import { startScenario } from "./support/main-node.js";
 import { repoRoot } from "./support/worker-harness.js";
 
 type Scenario = Awaited<ReturnType<typeof startScenario>>;
+const latestMigrationVersion = () =>
+  readdirSync(MIGRATIONS)
+    .filter((name) => name.endsWith(".sql"))
+    .sort()
+    .at(-1)!;
 const bash = (id: string, command: string): ScriptStep[] => [{ tool: "bash", arguments: { command }, id }, { text: `${id} done` }];
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const health = async (s: Scenario) => (await s.main.app.inject({ method: "GET", url: "/health" })).json();
@@ -76,7 +81,7 @@ async function midCallRestore(ackAfter: boolean) {
   // Online: the main node keeps running and writing while the copy is taken.
   const summary = await backup(s.dir, copy);
   assert.equal(summary.integrity, "ok");
-  assert.equal(summary.schema, "017_diagnosis_scenario.sql");
+  assert.equal(summary.schema, latestMigrationVersion());
   assert.equal(summary.unsettled_calls, 1, "the copy holds the call as dispatched");
   assert.deepEqual(inspect(copy), summary);
   await s.until(() => s.state(slow) === "succeeded");
@@ -174,7 +179,7 @@ test("P7-A an upgrade keeps unsettled calls, dedupe watermarks and parent waits,
     db = openDatabase(path);
     db.close();
     const after = inspect(path);
-    assert.equal(after.schema, "017_diagnosis_scenario.sql");
+    assert.equal(after.schema, latestMigrationVersion());
     const { schema: _a, ...kept } = after, { schema: _b, ...was } = before;
     assert.deepEqual(kept, was);
     assert.deepEqual([after.unsettled_calls, after.call_seq_watermark, after.queue_seq_watermark, after.waiting_parents, after.open_children], [1, 2, 7, 1, 1]);

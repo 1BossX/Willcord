@@ -201,7 +201,10 @@ pub async fn run_bash(
         .stderr(std::process::Stdio::piped())
         .process_group(0)
         .spawn()?;
-    run_child(&mut child, started, timeout, cancel, log, limits, None, false).await
+    run_child(
+        &mut child, started, timeout, cancel, log, limits, None, false,
+    )
+    .await
 }
 
 async fn run_child(
@@ -219,7 +222,12 @@ async fn run_child(
         .ok_or("process exited before its process group was known")? as i32;
     let stdout_hold = hold_stdout.clone();
     let readers = [
-        tokio::spawn(drain(child.stdout.take().unwrap(), log.clone(), 0, stdout_hold)),
+        tokio::spawn(drain(
+            child.stdout.take().unwrap(),
+            log.clone(),
+            0,
+            stdout_hold,
+        )),
         tokio::spawn(drain(child.stderr.take().unwrap(), log.clone(), 1, None)),
     ];
     let mut termination = "exited";

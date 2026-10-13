@@ -579,9 +579,8 @@ fn default_bind_for_site(site: &str) -> Option<String> {
 /// Which local address Docker should publish the HTTPS port on.
 fn choose_bind_ip(tty: &mut Tty, site: &str) -> Result<String, Error> {
     let found = netaddr::candidates();
-    let default = default_bind_for_site(site).or_else(|| {
-        found.first().map(|c| c.address.to_string())
-    });
+    let default =
+        default_bind_for_site(site).or_else(|| found.first().map(|c| c.address.to_string()));
     println!(
         "Docker 会把端口直接发布到宿主机，通常绕过 ufw。请指定只在本机使用的 IP，避免绑定到 0.0.0.0 暴露到公网网卡。"
     );
@@ -1056,11 +1055,11 @@ mod tests {
         assert_eq!(normalize_bind_ip("0.0.0.0").unwrap(), "0.0.0.0");
         assert_eq!(normalize_bind_ip("[fd00::1]").unwrap(), "[fd00::1]");
         assert_eq!(normalize_bind_ip("fd00::1").unwrap(), "[fd00::1]");
-        assert_eq!(default_bind_for_site("10.8.0.2:8443").as_deref(), Some("10.8.0.2"));
         assert_eq!(
-            default_bind_for_site("plane.internal:8443"),
-            None
+            default_bind_for_site("10.8.0.2:8443").as_deref(),
+            Some("10.8.0.2")
         );
+        assert_eq!(default_bind_for_site("plane.internal:8443"), None);
         assert!(normalize_bind_ip("not-an-ip").is_err());
     }
 

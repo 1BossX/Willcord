@@ -1066,7 +1066,7 @@ async fn join_installing(args: &[String], name: Option<&str>) -> Result<bool, Er
     std::process::exit(status.code().unwrap_or(1));
 }
 const USAGE: &str = "usage:
-  willcord main init [--dir DIR] [--server HTTPS_ORIGIN] [--image-version vX.Y.Z]
+  willcord main init [--dir DIR] [--server HTTPS_ORIGIN] [--bind HOST_IP] [--image-version vX.Y.Z]
   willcord main up | down | status | logs [SERVICE...] | upgrade --image-version vX.Y.Z   (add --dir DIR outside the deployment directory)
   willcord worker install [--system [--user ACCOUNT]] | join LINK [--name NAME] [--ca FILE | --ca-fingerprint SHA256] [--system [--user ACCOUNT]] [--no-service] | status [--json] | workspace add ID PATH | workspace list | run [--config FILE] | uninstall [--delete-data]   (add --system to manage the system service; LINK is https://HOST:PORT, optionally followed by #sha256=CA_FINGERPRINT)
   willcord self-install | self-uninstall [--system]   (put this program on PATH, or take it off again)

@@ -28,7 +28,8 @@ INITIAL_ADMIN_PASSWORD=smoke-$(date +%s)-password
 ENV
 export WILLCORD_REGISTRY=local WILLCORD_VERSION="$tag" \
   WILLCORD_SITE="localhost:$port" WILLCORD_PORT="$port" \
-  WILLCORD_LOCAL_PORT="$local_port" WILLCORD_ENV_FILE="$work/main.env"
+  WILLCORD_BIND_IP=127.0.0.1 WILLCORD_LOCAL_PORT="$local_port" \
+  WILLCORD_ENV_FILE="$work/main.env"
 dc() { docker compose -p "$project" -f "$here/compose.yaml" "$@"; }
 passed=""
 cleanup() {

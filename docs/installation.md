@@ -66,10 +66,10 @@ CA 指纹接入从 v0.3.0 起提供，主节点与 worker 须同为 v0.3.0 或�
 willcord main init
 ```
 
-`willcord main init` 完成配置（安装的是同一个二进制，之后也用它管理主节点；镜像版本取自这个二进制自身的版本）。向导通过终端只收集两项：主节点的 HTTPS 地址，以及至少 16 字符的管理员密码（输入不回显）。地址会自动探测本机网卡，按“私有网段（192.168/16、10/8、172.16/12）→ 100.64/10（含 Tailscale）→ 其他”列出候选，已排除回环、链路本地、Docker 等容器网卡、虚拟机网桥（如 macOS 的 `bridge*`）和代理软件的虚拟网卡（198.18.0.0/15）。Tailscale、ZeroTier、NetBird 的地址会保留并标注：`tailscale0`、`wt0`（NetBird）、`zt*` 和 macOS 上 ZeroTier 使用的 `feth*` 按名字识别，macOS 上落在 100.64.0.0/10 的 `utun*` 标为“Tailscale / NetBird”（二者默认同一网段，无法区分）。同一网段内真实网卡（`en*`、`eth*`、`wl*`）排在前面，其次是覆盖网络；输入序号选择，直接回车取第 1 项，也可以输入完整的 `https://` 地址或域名。探测不到任何地址时默认 `https://plane.internal:8443`。DHCP 分配的 IP 换网络后会变，长期使用建议改用固定 IP 或域名；覆盖网络地址通常稳定，但执行机器必须加入同一个覆盖网络才能访问它。模型不在向导里设置，登录后在控制台绑定（见下文）。向导结束时会先给出 `willcord trust-ca` 命令（信任根证书，见[下文](#2-信任内部-ca)），并把 `willcord` 命令装到 PATH（见[下文](#willcord-命令放在哪里)）。也可以预先指定地址和目录：
+`willcord main init` 完成配置（安装的是同一个二进制，之后也用它管理主节点；镜像版本取自这个二进制自身的版本）。向导通过终端收集：主节点的 HTTPS 地址、要把 HTTPS 端口绑定到哪个**本机 IP**（Docker 会绕过 ufw，默认避开 `0.0.0.0`），以及至少 16 字符的管理员密码（输入不回显）。**只有在上述问答全部完成后**才会写入部署文件并 `docker compose up` 启动容器。地址会自动探测本机网卡，按“私有网段（192.168/16、10/8、172.16/12）→ 100.64/10（含 Tailscale）→ 其他”列出候选，已排除回环、链路本地、Docker 等容器网卡、虚拟机网桥（如 macOS 的 `bridge*`）和代理软件的虚拟网卡（198.18.0.0/15）。Tailscale、ZeroTier、NetBird 的地址会保留并标注：`tailscale0`、`wt0`（NetBird）、`zt*` 和 macOS 上 ZeroTier 使用的 `feth*` 按名字识别，macOS 上落在 100.64.0.0/10 的 `utun*` 标为“Tailscale / NetBird”（二者默认同一网段，无法区分）。同一网段内真实网卡（`en*`、`eth*`、`wl*`）排在前面，其次是覆盖网络；输入序号选择，直接回车取第 1 项，也可以输入完整的 `https://` 地址或域名。探测不到任何地址时默认 `https://plane.internal:8443`。DHCP 分配的 IP 换网络后会变，长期使用建议改用固定 IP 或域名；覆盖网络地址通常稳定，但执行机器必须加入同一个覆盖网络才能访问它。模型不在向导里设置，登录后在控制台绑定（见下文）。向导结束时会先给出 `willcord trust-ca` 命令（信任根证书，见[下文](#2-信任内部-ca)），并把 `willcord` 命令装到 PATH（见[下文](#willcord-命令放在哪里)）。也可以预先指定地址和目录：
 
 ```sh
-willcord main init --server 'https://plane.internal:8443' --dir '/opt/my-plane'
+willcord main init --server 'https://plane.internal:8443' --bind '192.168.1.10' --dir '/opt/my-plane'
 ```
 
 没有先装命令时，也可以一步完成：`curl -fsSL https://bossoptional.github.io/Willcord/install.sh | bash -s -- main`（参数与上面相同）。

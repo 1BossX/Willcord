@@ -23,9 +23,10 @@
    WILLCORD_VERSION=0.1.0-beta.3
    WILLCORD_SITE=plane.internal:8443
    WILLCORD_PORT=8443
+   WILLCORD_BIND_IP=192.168.1.10
    ```
 
-   `WILLCORD_SITE` 是浏览器和 worker 访问的地址，端口必须等于 `WILLCORD_PORT`，宿主机上发布的也是这个端口。
+   `WILLCORD_SITE` 是浏览器和 worker 访问的地址，端口必须等于 `WILLCORD_PORT`，宿主机上发布的也是这个端口。`WILLCORD_BIND_IP` 是**本机**上监听该端口的 IP（例如内网网卡地址）；Compose 会把端口直接发布到宿主机，通常**绕过 ufw**，不要把 `WILLCORD_BIND_IP` 留成 `0.0.0.0` 除非确需所有网卡。仅本机试用可写 `127.0.0.1`。向导会根据所选服务地址自动填入合适的默认值。
 
 2. 复制 `deploy/main.env.example` 为同目录的 `main.env`，权限 0600，填入值。`PUBLIC_BASE_URL` 必须是 `https://` 加 `WILLCORD_SITE`；`DATA_DIR`、`HOST`、`PORT` 已由镜像设置，不要填。`INITIAL_ADMIN_PASSWORD` 只在第一次启动时需要，启动成功后删掉这一行。
 
@@ -107,7 +108,7 @@ docker compose start main
 
 ## 安全设置
 
-compose 中主节点以非 root 用户运行，根文件系统只读（`/tmp` 为 tmpfs），去掉全部 capability 并设置 `no-new-privileges`；容器 3000 端口只在 compose 内部网络开放，对外只有 Caddy 的 HTTPS 端口。模型 key 只在 `main.env` 里，不进入镜像。
+compose 中主节点以非 root 用户运行，根文件系统只读（`/tmp` 为 tmpfs），去掉全部 capability 并设置 `no-new-privileges`；容器 3000 端口只在 compose 内部网络开放，对外只有 Caddy 的 HTTPS 端口，且通过 `WILLCORD_BIND_IP` 绑定到指定宿主机 IP 而非默认的所有网卡。模型 key 只在 `main.env` 里，不进入镜像。
 
 ## 验收
 

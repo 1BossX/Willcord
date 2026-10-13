@@ -33,7 +33,7 @@ SERVER_CHOICE = '服务地址（输入序号'.encode()
 
 
 def answers(password=b"long'password$with#literal\n"):
-    return [('管理员密码'.encode(), password)]
+    return [('发布 HTTPS'.encode(), b'\n'), ('管理员密码'.encode(), password)]
 
 
 def drive(argv, env, replies, timeout=30):

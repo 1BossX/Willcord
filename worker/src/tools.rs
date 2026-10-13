@@ -1,5 +1,10 @@
 // Remote tool implementations. Paths resolve through directory handles so a
 // workspace can never be escaped through `..` or symbolic links.
+
+pub mod approved_action;
+pub mod approved_tool_gate;
+pub mod approved_write;
+
 use crate::generated::{ToolCall, Workspace};
 use serde_json::Value;
 use sha2::Digest;

@@ -263,7 +263,8 @@
         "request_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},
         "tool":{"enum":["read","write","bash"]},
         "arguments":{"type":"object"},
-        "execution_mode":{"description":"When diagnosis, the worker refuses writes and bash outside the diagnosis allowlist.","enum":["diagnosis"]}
+        "execution_mode":{"description":"diagnosis: read-only inspection allowlist. approved: post-approval write allowlist; tool and arguments must match an operator-approved binding carried in request_hash.","enum":["diagnosis","approved"]},
+        "approved_binding_hash":{"description":"When execution_mode is approved, the SHA-256 binding of worker_id, tool, and arguments that the operator approved.","type":"string","pattern":"^[0-9a-f]{64}$"}
       }
     },
     {

@@ -48,8 +48,28 @@ export class Peer {
   }
 
   /** Send a tool call for job-1 and return its identity. */
-  call(epoch: number, callId: string, seq: number, tool: string, args: object, workerId = "w", executionMode?: "diagnosis") {
-    const request = { worker_id: workerId, job_id: "job-1", call_id: callId, call_seq: seq, workspace_id: "repo", config_version: 1, tool, arguments: args, ...(executionMode ? { execution_mode: executionMode } : {}) };
+  call(
+    epoch: number,
+    callId: string,
+    seq: number,
+    tool: string,
+    args: object,
+    workerId = "w",
+    executionMode?: "diagnosis" | "approved",
+    approvedBindingHash?: string,
+  ) {
+    const request = {
+      worker_id: workerId,
+      job_id: "job-1",
+      call_id: callId,
+      call_seq: seq,
+      workspace_id: "repo",
+      config_version: 1,
+      tool,
+      arguments: args,
+      ...(executionMode ? { execution_mode: executionMode } : {}),
+      ...(approvedBindingHash ? { approved_binding_hash: approvedBindingHash } : {}),
+    };
     const hash = requestHash(request);
     this.send({ type: "tool_call", connection_epoch: epoch, request_hash: hash, ...request });
     return { worker_id: workerId, connection_epoch: epoch, job_id: "job-1", call_id: callId, call_seq: seq, request_hash: hash };

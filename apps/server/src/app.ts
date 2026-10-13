@@ -23,6 +23,7 @@ import {
 } from "@willcord/protocol";
 import type { WorkerFrame } from "@willcord/protocol";
 import { isDiagnosisScenarioId } from "./diagnosis-scenarios.js";
+import { registerApprovedActionRoutes } from "./approved-action.js";
 const digest = (value: string) =>
   createHash("sha256").update(value).digest("hex");
 const secret = () => randomBytes(32).toString("base64url");
@@ -330,6 +331,7 @@ export async function createApp(
   });
   app.get<{Params:{job_id:string}}>("/api/jobs/:job_id/usage",async(req,reply)=>coordinator.usage(req.params.job_id)??reply.code(404).send({error:"job_not_found"}));
   app.get("/api/attention",async()=>coordinator.attentionView());
+  registerApprovedActionRoutes(app, db, now, coordinator, wake);
   app.post<{Params:{job_id:string}}>("/api/jobs/:job_id/abandon",async(req,reply)=>{
     const note=(req.body as {note?:unknown}|null)?.note;
     if(typeof note!=="string"||!note.trim()||note.length>4000) return reply.code(400).send({error:"note_required"});

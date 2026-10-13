@@ -109,9 +109,13 @@ export interface ToolCall {
     [k: string]: unknown;
   };
   /**
-   * When diagnosis, the worker refuses writes and bash outside the diagnosis allowlist.
+   * diagnosis: read-only inspection allowlist. approved: post-approval write allowlist; tool and arguments must match an operator-approved binding carried in request_hash.
    */
-  execution_mode?: "diagnosis";
+  execution_mode?: "diagnosis" | "approved";
+  /**
+   * When execution_mode is approved, the SHA-256 binding of worker_id, tool, and arguments that the operator approved.
+   */
+  approved_binding_hash?: string;
 }
 export interface ToolResult {
   protocol_version: 1;

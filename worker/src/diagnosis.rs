@@ -56,6 +56,9 @@ pub fn bash_argv(command: &str) -> Result<Vec<String>, &'static str> {
 }
 
 fn reject_token_metacharacters(token: &str) -> Result<(), &'static str> {
+    if token.starts_with('@') {
+        return Err("invalid");
+    }
     if token.starts_with("http://") || token.starts_with("https://") {
         if token.contains('\\') || token.contains('@') {
             return Err("invalid");
@@ -143,6 +146,16 @@ fn allow_du(tokens: &[String]) -> Result<(), &'static str> {
             i += 1;
             continue;
         }
+        if t == "-a" || t == "--all" {
+            i += 1;
+            continue;
+        }
+        if t == "-X" {
+            return Err("invalid");
+        }
+        if t.starts_with("--") && (t.contains("-from") || t.starts_with("--exclude-from")) {
+            return Err("invalid");
+        }
         if t == "-d" {
             let depth = tokens
                 .get(i + 1)
@@ -169,15 +182,20 @@ fn allow_du(tokens: &[String]) -> Result<(), &'static str> {
             continue;
         }
         if t.starts_with('-') {
-            if !t
-                .chars()
-                .skip(1)
-                .all(|c| c.is_ascii_alphabetic() || c == '-')
-            {
+            if t.starts_with("--") {
                 return Err("invalid");
             }
-            i += 1;
-            continue;
+            if t.chars().skip(1).any(|c| c == 'X') {
+                return Err("invalid");
+            }
+            if t.chars().skip(1).all(|c| c == 'a' || c == 's' || c == 'h') {
+                if t.contains('s') {
+                    summary_only = true;
+                }
+                i += 1;
+                continue;
+            }
+            return Err("invalid");
         }
         if t.contains("..") {
             return Err("invalid");
@@ -267,10 +285,11 @@ fn consume_curl_flag(tokens: &[String], i: &mut usize) -> Result<(), &'static st
             }
             "--max-time" | "--connect-timeout" | "--header" | "--user-agent" => {
                 *i += 1;
-                let _ = tokens
+                let value = tokens
                     .get(*i)
                     .filter(|v| !v.starts_with('-'))
                     .ok_or("invalid")?;
+                reject_curl_flag_value(value)?;
                 *i += 1;
                 Ok(())
             }
@@ -287,10 +306,11 @@ fn consume_curl_flag(tokens: &[String], i: &mut usize) -> Result<(), &'static st
         }
         *i += 1;
         if needs_value {
-            let _ = tokens
+            let value = tokens
                 .get(*i)
                 .filter(|v| !v.starts_with('-'))
                 .ok_or("invalid")?;
+            reject_curl_flag_value(value)?;
             *i += 1;
         }
         Ok(())
@@ -323,6 +343,71 @@ pub fn is_diagnosis(execution_mode: Option<&str>) -> bool {
     execution_mode == Some("diagnosis")
 }
 
+fn reject_curl_flag_value(value: &str) -> Result<(), &'static str> {
+    if value.starts_with('@') {
+        return Err("invalid");
+    }
+    Ok(())
+}
+
+/// True when argv is an allowed `docker inspect` invocation (output may contain secrets).
+pub fn docker_inspect_argv(argv: &[String]) -> bool {
+    match argv.first().map(String::as_str) {
+        Some("docker") if argv.len() >= 3 => match argv.get(1).map(String::as_str) {
+            Some("inspect") => true,
+            Some("container") if argv.get(2).map(String::as_str) == Some("inspect") => true,
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+const REDACTED_ENV: &str = "<redacted>";
+const INSPECT_WITHHELD: &str = r#"[{"_willcord_redaction":"truncated or incomplete docker inspect output; container environment values withheld"}]"#;
+
+/// Remove container environment variables from `docker inspect` stdout before it is logged.
+pub fn redact_docker_inspect_stdout(text: &str, output_was_truncated: bool) -> String {
+    if output_was_truncated {
+        return INSPECT_WITHHELD.to_string();
+    }
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return text.to_string();
+    }
+    match serde_json::from_str::<serde_json::Value>(trimmed) {
+        Ok(mut value) => {
+            redact_env_fields(&mut value);
+            match serde_json::to_string(&value) {
+                Ok(serialized) => serialized,
+                Err(_) => INSPECT_WITHHELD.to_string(),
+            }
+        }
+        Err(_) => INSPECT_WITHHELD.to_string(),
+    }
+}
+
+fn redact_env_fields(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, child) in map.iter_mut() {
+                if key == "Env" {
+                    *child = serde_json::Value::Array(vec![serde_json::Value::String(
+                        REDACTED_ENV.to_owned(),
+                    )]);
+                } else {
+                    redact_env_fields(child);
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items.iter_mut() {
+                redact_env_fields(item);
+            }
+        }
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -347,6 +432,7 @@ mod tests {
             "du -sh /var",
             "du -d 2 /var/log",
             "du --max-depth=3 /home",
+            "du -a --max-depth=1 /var",
             "systemctl status nginx",
             "curl -fsS http://127.0.0.1/health",
             "curl http://localhost:8080/ready",
@@ -460,6 +546,91 @@ mod tests {
                 "http://127.0.0.1/health".to_owned(),
             ]
         );
+    }
+
+    #[test]
+    fn curl_rejects_header_and_data_file_indirection() {
+        for cmd in [
+            "curl -H @/etc/passwd http://127.0.0.1/health",
+            "curl --header @/tmp/h http://127.0.0.1/health",
+            "curl -H @headers.txt http://127.0.0.1/health",
+        ] {
+            assert_eq!(bash_allowed(cmd), Err("invalid"), "expected block: {cmd}");
+        }
+    }
+
+    #[test]
+    fn du_rejects_file_backed_flags() {
+        for cmd in [
+            "du --exclude-from=/tmp/list -sh /var",
+            "du -X /tmp/list -sh /var",
+            "du --files0-from=/tmp/list -sh /var",
+            "du -sh /var --exclude-from=/tmp/list",
+        ] {
+            assert_eq!(bash_allowed(cmd), Err("invalid"), "expected block: {cmd}");
+        }
+    }
+
+    #[test]
+    fn docker_inspect_output_redacts_env() {
+        let raw = r#"[{"Config":{"Env":["SECRET_TOKEN=abc","PATH=/usr/bin"],"Image":"x"}}]"#;
+        let redacted = redact_docker_inspect_stdout(raw, false);
+        assert!(!redacted.contains("SECRET_TOKEN"));
+        assert!(redacted.contains(REDACTED_ENV));
+        assert!(redacted.contains("\"Image\":\"x\""));
+    }
+
+    #[test]
+    fn truncated_inside_env_array_does_not_leak_later_secrets() {
+        let mut raw = String::from("[");
+        for _ in 0..12 {
+            raw.push_str(r#"{"Config":{"Env":["DB_PASSWORD=hunter2","MORE=x"]}},"#);
+        }
+        raw.push_str(r#"{"Config":{"Env":["DB_PASSWORD=hunter2","TAIL=x"#);
+        let cut = raw.len() - 7;
+        let truncated = raw[..cut].to_string();
+        let redacted = redact_docker_inspect_stdout(&truncated, true);
+        assert!(!redacted.contains("hunter2"));
+    }
+
+    #[test]
+    fn truncated_after_env_null_does_not_leak_later_secrets() {
+        let mut raw = String::from(r#"[{"Config":{"Env":null}},"#);
+        for _ in 0..8 {
+            raw.push_str(r#"{"Config":{"Env":["DB_PASSWORD=hunter2","MORE=x"]}},"#);
+        }
+        raw.push_str(r#"{"Config":{"Env":["DB_PASSWORD=hunter2","ZZZZZZZZZZ"#);
+        let cut = raw.len() - 4;
+        let truncated = raw[..cut].to_string();
+        let redacted = redact_docker_inspect_stdout(&truncated, true);
+        assert!(!redacted.contains("hunter2"));
+    }
+
+    #[test]
+    fn truncated_env_bracket_inside_value_does_not_leak_later_secrets() {
+        let raw =
+            r#"[{"Config":{"Env":["REGEX=^a]","DB_PASSWORD=hunter2","TEST_FIXTURE_TOKEN=fake"#;
+        let redacted = redact_docker_inspect_stdout(raw, true);
+        assert!(!redacted.contains("hunter2"));
+        assert!(!redacted.contains("TEST_FIXTURE_TOKEN=fake"));
+        assert_eq!(redacted, INSPECT_WITHHELD);
+    }
+
+    #[test]
+    fn truncated_secret_containing_bracket_does_not_leak_remainder() {
+        let raw = r#"[{"Config":{"Env":["DB_PASSWORD=hun]ter2","TEST_FIXTURE_TOKEN=fake"#;
+        let redacted = redact_docker_inspect_stdout(raw, true);
+        assert!(!redacted.contains("ter2"));
+        assert!(!redacted.contains("TEST_FIXTURE_TOKEN=fake"));
+        assert_eq!(redacted, INSPECT_WITHHELD);
+    }
+
+    #[test]
+    fn incomplete_json_without_truncation_flag_is_withheld() {
+        let raw = r#"[{"Config":{"Env":["REGEX=^a]","DB_PASSWORD=hunter2"#;
+        let redacted = redact_docker_inspect_stdout(raw, false);
+        assert!(!redacted.contains("hunter2"));
+        assert_eq!(redacted, INSPECT_WITHHELD);
     }
 
     #[test]

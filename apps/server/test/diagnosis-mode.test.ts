@@ -71,6 +71,8 @@ test("O2-KR1 diagnosis mode refuses writes and unauthorized bash before executio
       ["b2", 3, "rm -rf /tmp/x"],
       ["b3", 4, "cat /etc/shadow"],
       ["b-chain", 6, "docker ps & touch pr75-chain-marker"],
+      ["b-curl-file", 7, "curl -H @/etc/passwd http://127.0.0.1/health"],
+      ["b-du-file", 8, "du --exclude-from=/tmp/x -sh /var"],
     ] as const) {
       peer.call(1, callId, seq, "bash", { command }, "diag-w", "diagnosis");
       assert.equal((await peer.next("tool_rejected", 15000, (f) => f.call_id === callId)).reason, "invalid");

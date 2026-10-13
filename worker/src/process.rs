@@ -2,12 +2,13 @@
 // timeout or cancel sends TERM to the group, KILL after the grace period, and
 // counts the command as stopped only once the group is observed empty. A
 // process that deliberately leaves the group (setsid) is outside this control.
-use crate::logs::{CHUNK_BYTES, CallLog};
+use crate::diagnosis;
+use crate::logs::{CHUNK_BYTES, CallLog, InspectStdoutHold};
 use serde_json::{Value, json};
 use std::{
     os::unix::process::ExitStatusExt,
     path::Path,
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 use tokio::{
@@ -86,7 +87,12 @@ async fn cancelled(mut cancel: watch::Receiver<bool>) {
 
 /// Copy one pipe into the call log until EOF. Reading never waits for the
 /// connection, so a slow consumer cannot stall the command.
-async fn drain(mut pipe: impl AsyncReadExt + Unpin, log: Arc<CallLog>, stream: usize) {
+async fn drain(
+    mut pipe: impl AsyncReadExt + Unpin,
+    log: Arc<CallLog>,
+    stream: usize,
+    hold: Option<Arc<Mutex<InspectStdoutHold>>>,
+) {
     let mut buffer = Vec::with_capacity(CHUNK_BYTES);
     let mut read = vec![0u8; CHUNK_BYTES];
     loop {
@@ -97,7 +103,7 @@ async fn drain(mut pipe: impl AsyncReadExt + Unpin, log: Arc<CallLog>, stream: u
             match tokio::time::timeout(FLUSH_DELAY, pipe.read(&mut read[..room])).await {
                 Ok(next) => next,
                 Err(_) => {
-                    log.append(stream, &buffer);
+                    flush_drain_buffer(stream, &buffer, &log, &hold);
                     buffer.clear();
                     continue;
                 }
@@ -108,15 +114,30 @@ async fn drain(mut pipe: impl AsyncReadExt + Unpin, log: Arc<CallLog>, stream: u
             Ok(n) => {
                 buffer.extend_from_slice(&read[..n]);
                 if buffer.len() == CHUNK_BYTES {
-                    log.append(stream, &buffer);
+                    flush_drain_buffer(stream, &buffer, &log, &hold);
                     buffer.clear();
                 }
             }
         }
     }
     if !buffer.is_empty() {
-        log.append(stream, &buffer);
+        flush_drain_buffer(stream, &buffer, &log, &hold);
     }
+}
+
+fn flush_drain_buffer(
+    stream: usize,
+    buffer: &[u8],
+    log: &Arc<CallLog>,
+    hold: &Option<Arc<Mutex<InspectStdoutHold>>>,
+) {
+    if stream == 0 {
+        if let Some(buf) = hold {
+            buf.lock().unwrap().push(buffer);
+            return;
+        }
+    }
+    log.append(stream, buffer);
 }
 
 /// Run a program directly (no shell). Used in diagnosis mode after argv validation.
@@ -127,8 +148,14 @@ pub async fn run_direct(
     cancel: watch::Receiver<bool>,
     log: Arc<CallLog>,
     limits: &Limits,
+    redact_docker_inspect_stdout: bool,
 ) -> Result<Outcome, Error> {
     let program = argv.first().ok_or("empty argv")?.as_str();
+    let hold_stdout = if redact_docker_inspect_stdout {
+        Some(Arc::new(Mutex::new(InspectStdoutHold::new())))
+    } else {
+        None
+    };
     let started = Instant::now();
     let mut child = Command::new(program)
         .args(&argv[1..])
@@ -141,7 +168,17 @@ pub async fn run_direct(
         .stderr(std::process::Stdio::piped())
         .process_group(0)
         .spawn()?;
-    run_child(&mut child, started, timeout, cancel, log, limits).await
+    run_child(
+        &mut child,
+        started,
+        timeout,
+        cancel,
+        log,
+        limits,
+        hold_stdout,
+        redact_docker_inspect_stdout,
+    )
+    .await
 }
 
 pub async fn run_bash(
@@ -164,7 +201,10 @@ pub async fn run_bash(
         .stderr(std::process::Stdio::piped())
         .process_group(0)
         .spawn()?;
-    run_child(&mut child, started, timeout, cancel, log, limits).await
+    run_child(
+        &mut child, started, timeout, cancel, log, limits, None, false,
+    )
+    .await
 }
 
 async fn run_child(
@@ -174,13 +214,21 @@ async fn run_child(
     cancel: watch::Receiver<bool>,
     log: Arc<CallLog>,
     limits: &Limits,
+    hold_stdout: Option<Arc<Mutex<InspectStdoutHold>>>,
+    redact_docker_inspect_stdout: bool,
 ) -> Result<Outcome, Error> {
     let pgid = child
         .id()
         .ok_or("process exited before its process group was known")? as i32;
+    let stdout_hold = hold_stdout.clone();
     let readers = [
-        tokio::spawn(drain(child.stdout.take().unwrap(), log.clone(), 0)),
-        tokio::spawn(drain(child.stderr.take().unwrap(), log.clone(), 1)),
+        tokio::spawn(drain(
+            child.stdout.take().unwrap(),
+            log.clone(),
+            0,
+            stdout_hold,
+        )),
+        tokio::spawn(drain(child.stderr.take().unwrap(), log.clone(), 1, None)),
     ];
     let mut termination = "exited";
     let exited = tokio::select! {
@@ -202,6 +250,24 @@ async fn run_child(
         if tokio::time::timeout(left, reader).await.is_err() {
             abort.abort();
             pipes_closed = false;
+        }
+    }
+    if let Some(buf) = hold_stdout {
+        let held = buf.lock().unwrap();
+        if !held.bytes().is_empty() {
+            let (total, truncated) = (held.total, held.truncated);
+            let out = if redact_docker_inspect_stdout {
+                diagnosis::redact_docker_inspect_stdout(
+                    &String::from_utf8_lossy(held.bytes()),
+                    truncated,
+                )
+                .into_bytes()
+            } else {
+                held.bytes().to_vec()
+            };
+            drop(held);
+            log.append_chunked(0, &out);
+            log.finish_inspect_stdout_hold(0, total, truncated);
         }
     }
     let (logs, _) = log.summary();

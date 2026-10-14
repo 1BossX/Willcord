@@ -2,9 +2,7 @@
 #   WILLCORD_SITE  address browsers and workers use, e.g. plane.internal:8443
 #                      or 10.0.0.5:8443; PUBLIC_BASE_URL must be https://<this>
 #   WILLCORD_ROOT  release directory, e.g. /opt/willcord/current
-#   WILLCORD_PORT  port in WILLCORD_SITE (default 8443); wrong-Host catch-all listener
-#   WILLCORD_WEB_ROOT  static UI, e.g. $WILLCORD_ROOT/apps/web/dist
-#   WILLCORD_CA_ROOT   Caddy internal CA directory (read-only), for public PEM endpoints
+# Wrong-Host 421 catch-all is Docker-only (see deploy/docker/Caddyfile).
 # Workers trust the internal root: copy Caddy's root.crt (see docs/operations.md)
 # to each worker and point SSL_CERT_FILE at it, or use /.well-known/willcord/ca.pem.
 {
@@ -23,11 +21,5 @@ import {$WILLCORD_ROOT}/deploy/caddy/willcord-routes.caddy
 
 {$WILLCORD_SITE} {
 	tls internal
-
-	import willcord
-}
-
-:{$WILLCORD_PORT:8443} {
-	tls internal
-	import willcord_wrong_host
+	import willcord_baremetal
 }

@@ -42,6 +42,7 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=30s \
   CMD ["node", "-e", "fetch('http://127.0.0.1:'+process.env.PORT+'/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
 CMD ["node", "dist/main.js"]
 
+# Caddy image bundles shared routes from deploy/caddy/ (see #91).
 FROM caddy:${CADDY_VERSION} AS caddy
 COPY deploy/caddy/willcord-routes.caddy /etc/caddy/willcord-routes.caddy
 COPY deploy/docker/Caddyfile /etc/caddy/Caddyfile

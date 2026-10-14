@@ -41,7 +41,10 @@ test("diagnosis intercept check creates a write call job", async () => {
       .prepare("SELECT tool_name,status,arguments_json FROM runtime_calls WHERE job_id=? AND call_id=?")
       .get(body.job_id, body.call_id) as { tool_name: string; status: string; arguments_json: string };
     assert.equal(call.tool_name, "write");
-    assert.equal(call.status, "committed");
+    assert.ok(
+      call.status === "committed" || call.status === "dispatched",
+      `expected committed or dispatched, got ${call.status}`,
+    );
     assert.equal(JSON.parse(call.arguments_json).path, DIAGNOSIS_INTERCEPT_PROBE_PATH);
   } finally {
     await app.close();

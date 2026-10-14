@@ -8,15 +8,6 @@ pub fn write_allowed(execution_mode: Option<&str>) -> bool {
     execution_mode != Some("diagnosis")
 }
 
-/// Human-readable summary for operator/model prompts (keep in sync with server `diagnosis-policy.ts`).
-pub const POLICY_SUMMARY: &str = "bash: docker ps|inspect|logs|info, df, du (-s/-d/--max-depth≤5), systemctl status <unit>, curl (loopback health GET only), id, ls, pwd, true; read: workspace-relative or /etc/os-release; write: blocked";
-
-/// Bash is allowed only as a single, read-only inspection command from the
-/// fixed allowlist below. Anything else is refused before exec.
-pub fn bash_allowed(command: &str) -> Result<(), &'static str> {
-    bash_argv(command).map(|_| ())
-}
-
 /// Validated argv for direct exec (no shell). Diagnosis mode must use this path.
 pub fn bash_argv(command: &str) -> Result<Vec<String>, &'static str> {
     let trimmed = command.trim();
@@ -78,28 +69,65 @@ pub fn bash_argv(command: &str) -> Result<Vec<String>, &'static str> {
     Ok(argv)
 }
 
+const HOST_OS_RELEASE_PATH: &str = "/etc/os-release";
+const HOST_READ_LIMIT: usize = 256 * 1024;
+
 /// Read-only host paths reachable via the `read` tool in diagnosis mode (not workspace-relative).
 pub fn read_host_file(path: &str) -> Result<Vec<u8>, &'static str> {
-    if path != "/etc/os-release" {
+    if path != HOST_OS_RELEASE_PATH {
         return Err(
             "diagnosis_read_host_path_not_allowed: 诊断模式仅允许读取主机路径 /etc/os-release；工作目录内请用相对路径",
         );
     }
-    use std::os::unix::fs::OpenOptionsExt;
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)
+    read_host_os_release(HOST_OS_RELEASE_PATH)
+}
+
+/// `/etc/os-release` is usually a symlink; follow it but only accept known distro targets.
+fn read_host_os_release(requested: &str) -> Result<Vec<u8>, &'static str> {
+    use std::ffi::CString;
+    use std::io::Read;
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::fs::MetadataExt;
+    let path = CString::new(requested)
         .map_err(|_| "diagnosis_read_host_open_failed: 无法打开 /etc/os-release")?;
+    let fd = unsafe { libc::open(path.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
+    if fd < 0 {
+        return Err("diagnosis_read_host_open_failed: 无法打开 /etc/os-release");
+    }
+    let file = unsafe { std::fs::File::from_raw_fd(fd) };
     let meta = file
         .metadata()
         .map_err(|_| "diagnosis_read_host_open_failed: 无法打开 /etc/os-release")?;
-    if meta.len() > 256 * 1024 {
+    if !meta.is_file() {
+        return Err("diagnosis_read_host_open_failed: 无法打开 /etc/os-release");
+    }
+    if meta.size() as usize > HOST_READ_LIMIT {
         return Err("diagnosis_read_host_read_failed: 读取 /etc/os-release 失败");
     }
-    let bytes = std::fs::read(path)
+    let proc_fd = format!("/proc/self/fd/{}", file.as_raw_fd());
+    let canonical = std::fs::canonicalize(&proc_fd)
+        .map_err(|_| "diagnosis_read_host_open_failed: 无法打开 /etc/os-release")?;
+    if !allowed_os_release_target(&canonical) {
+        return Err(
+            "diagnosis_read_host_path_not_allowed: 诊断模式仅允许读取主机路径 /etc/os-release；工作目录内请用相对路径",
+        );
+    }
+    let mut bytes = Vec::new();
+    file.take(HOST_READ_LIMIT as u64)
+        .read_to_end(&mut bytes)
         .map_err(|_| "diagnosis_read_host_read_failed: 读取 /etc/os-release 失败")?;
     Ok(bytes)
+}
+
+fn allowed_os_release_target(canonical: &std::path::Path) -> bool {
+    let name = canonical.file_name().and_then(|n| n.to_str());
+    if name != Some("os-release") && name != Some("os-release-dist") {
+        return false;
+    }
+    match canonical.parent().and_then(|p| p.to_str()) {
+        Some("/etc") | Some("/usr/lib") | Some("/usr/lib/rpm") => true,
+        _ => false,
+    }
 }
 
 fn reject_token_metacharacters(token: &str) -> Result<(), &'static str> {
@@ -441,8 +469,6 @@ fn parse_loopback_health_url(raw: &str) -> Result<(), &'static str> {
 }
 
 pub fn is_diagnosis(execution_mode: Option<&str>) -> bool {
-    // Release builds deny warnings; keep policy helpers referenced from hot paths.
-    let _ = (POLICY_SUMMARY, bash_allowed);
     execution_mode == Some("diagnosis")
 }
 
@@ -516,9 +542,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn policy_summary_matches_expanded_allowlist() {
-        assert!(POLICY_SUMMARY.contains("logs|info"));
-        assert!(POLICY_SUMMARY.contains("/etc/os-release"));
+    fn allowed_os_release_targets_are_distro_paths_only() {
+        use std::path::Path;
+        assert!(allowed_os_release_target(Path::new("/usr/lib/os-release")));
+        assert!(allowed_os_release_target(Path::new("/etc/os-release")));
+        assert!(!allowed_os_release_target(Path::new("/etc/passwd")));
+        assert!(!allowed_os_release_target(Path::new("/tmp/os-release")));
+    }
+
+    #[test]
+    fn read_host_os_release_on_distro_hosts() {
+        if !std::path::Path::new(HOST_OS_RELEASE_PATH).exists() {
+            return;
+        }
+        let bytes = read_host_file(HOST_OS_RELEASE_PATH).expect("read /etc/os-release");
+        assert!(!bytes.is_empty());
     }
 
     #[test]
@@ -552,7 +590,7 @@ mod tests {
             "pwd",
             "true",
         ] {
-            assert_eq!(bash_allowed(cmd), Ok(()), "expected allow: {cmd}");
+            assert!(bash_argv(cmd).is_ok(), "expected allow: {cmd}");
         }
     }
 
@@ -575,14 +613,14 @@ mod tests {
             "docker ps; docker restart x",
             "docker ps && docker restart x",
         ] {
-            assert_ne!(bash_allowed(cmd), Ok(()), "expected block: {cmd}");
+            assert!(bash_argv(cmd).is_err(), "expected block: {cmd}");
         }
     }
 
     #[test]
     fn du_depth_is_capped() {
-        assert_eq!(bash_allowed("du -d 6 /var"), Err("invalid"));
-        assert_eq!(bash_allowed("du --max-depth=9 /var"), Err("invalid"));
+        assert_eq!(bash_argv("du -d 6 /var").unwrap_err(), "invalid");
+        assert_eq!(bash_argv("du --max-depth=9 /var").unwrap_err(), "invalid");
     }
 
     #[test]
@@ -598,11 +636,11 @@ mod tests {
             "curl -fsS http://127.0.0.1/health extra-arg",
             "curl -fsS http://127.0.0.1/a http://127.0.0.1/b",
         ] {
-            assert_ne!(bash_allowed(cmd), Ok(()), "expected block: {cmd}");
+            assert!(bash_argv(cmd).is_err(), "expected block: {cmd}");
         }
-        assert_eq!(bash_allowed("curl -fsS http://127.0.0.1/health"), Ok(()));
-        assert_eq!(bash_allowed("curl http://[::1]/health"), Ok(()));
-        assert_eq!(bash_allowed("curl https://[::1]:8080/healthz"), Ok(()));
+        assert!(bash_argv("curl -fsS http://127.0.0.1/health").is_ok());
+        assert!(bash_argv("curl http://[::1]/health").is_ok());
+        assert!(bash_argv("curl https://[::1]:8080/healthz").is_ok());
     }
 
     #[test]
@@ -615,13 +653,17 @@ mod tests {
             "du -sh /var/*",
             "docker ps $IFS",
         ] {
-            assert_eq!(bash_allowed(cmd), Err("invalid"), "expected block: {cmd}");
+            assert_eq!(
+                bash_argv(cmd).unwrap_err(),
+                "invalid",
+                "expected block: {cmd}"
+            );
         }
     }
 
     #[test]
     fn systemctl_only_status_one_unit_no_remote_flags() {
-        assert_eq!(bash_allowed("systemctl status nginx"), Ok(()));
+        assert!(bash_argv("systemctl status nginx").is_ok());
         for cmd in [
             "systemctl status -H qa@172.30.0.2:2222 nginx",
             "systemctl status --host=qa@172.30.0.2:2222 nginx",
@@ -632,7 +674,11 @@ mod tests {
             "systemctl status",
             "systemctl status -",
         ] {
-            assert_eq!(bash_allowed(cmd), Err("invalid"), "expected block: {cmd}");
+            assert_eq!(
+                bash_argv(cmd).unwrap_err(),
+                "invalid",
+                "expected block: {cmd}"
+            );
         }
     }
 
@@ -643,9 +689,13 @@ mod tests {
             "docker logs --follow web",
             "docker logs -sf web",
         ] {
-            assert_eq!(bash_allowed(cmd), Err("invalid"), "expected block: {cmd}");
+            assert_eq!(
+                bash_argv(cmd).unwrap_err(),
+                "invalid",
+                "expected block: {cmd}"
+            );
         }
-        assert_eq!(bash_allowed("docker logs --tail 20 web"), Ok(()));
+        assert!(bash_argv("docker logs --tail 20 web").is_ok());
     }
 
     #[test]
@@ -670,7 +720,11 @@ mod tests {
             "curl --header @/tmp/h http://127.0.0.1/health",
             "curl -H @headers.txt http://127.0.0.1/health",
         ] {
-            assert_eq!(bash_allowed(cmd), Err("invalid"), "expected block: {cmd}");
+            assert_eq!(
+                bash_argv(cmd).unwrap_err(),
+                "invalid",
+                "expected block: {cmd}"
+            );
         }
     }
 
@@ -682,7 +736,11 @@ mod tests {
             "du --files0-from=/tmp/list -sh /var",
             "du -sh /var --exclude-from=/tmp/list",
         ] {
-            assert_eq!(bash_allowed(cmd), Err("invalid"), "expected block: {cmd}");
+            assert_eq!(
+                bash_argv(cmd).unwrap_err(),
+                "invalid",
+                "expected block: {cmd}"
+            );
         }
     }
 
@@ -764,7 +822,7 @@ mod tests {
             "curl -L http://127.0.0.1/health",
             "curl -X POST http://127.0.0.1/health",
         ] {
-            assert_ne!(bash_allowed(cmd), Ok(()), "expected block: {cmd}");
+            assert!(bash_argv(cmd).is_err(), "expected block: {cmd}");
         }
     }
 }

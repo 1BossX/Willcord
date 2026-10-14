@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { caFileName, fingerprintCheckNote, trustGuides, trustLinkCommand } from "./ca-trust";
 import { caPemPath, loadCaFingerprint } from "./install-command";
+import { CopyButton } from "./copy-button";
 
 export function CaTrustGuide() {
   const [fingerprint, setFingerprint] = useState("");
@@ -17,11 +18,15 @@ export function CaTrustGuide() {
   return (
     <section className="ca-trust" aria-labelledby="ca-trust-title">
       <h3 id="ca-trust-title">信任证书</h3>
-      <p>主节点使用内部证书。首次使用前，请在这台机器上信任根证书，否则浏览器会提示连接不安全。</p>
-      <a className="secondary-button" href={caPemPath} download={caFileName}>下载 ca.pem</a>
-      <p>根证书 SHA-256 指纹（与 ca.pem 来自同一次连接）：</p>
-      <code>{shown}</code>
-      <p><strong>{fingerprintCheckNote}</strong></p>
+      <p>首次打开控制台前，请在这台机器上信任主节点根证书，避免浏览器拦截 HTTPS。</p>
+      <div className="ca-trust-actions">
+        <a className="secondary-button" href={caPemPath} download={caFileName}>下载 ca.pem</a>
+      </div>
+      <div className="copy-row">
+        <code className="copy-row-value">{shown}</code>
+        {fingerprint && <CopyButton text={fingerprint} label="复制指纹" />}
+      </div>
+      <p className="ca-trust-note"><strong>{fingerprintCheckNote}</strong></p>
       {trustGuides().map(guide => (
         <details key={guide.id}>
           <summary>{guide.title}</summary>
@@ -29,17 +34,18 @@ export function CaTrustGuide() {
             {guide.steps.map(step => <li key={step}>{step}</li>)}
           </ol>
           {guide.commands.map(item => (
-            <div key={item.command}>
+            <div className="copy-row" key={item.command}>
               <span>{item.label}</span>
-              <code>{item.command}</code>
+              <code className="copy-row-value">{item.command}</code>
+              <CopyButton text={item.command} label="复制命令" />
             </div>
           ))}
         </details>
       ))}
-      <p>
-        已装 willcord 命令的机器，把从已信任或独立渠道核对过的指纹填入下面的命令；它会重新取得根证书，核对指纹后导入：
-      </p>
-      <code>{trustLinkCommand}</code>
+      <div className="copy-row">
+        <code className="copy-row-value">{trustLinkCommand}</code>
+        <CopyButton text={trustLinkCommand} label="复制命令" />
+      </div>
     </section>
   );
 }

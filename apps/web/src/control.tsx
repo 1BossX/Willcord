@@ -2,6 +2,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { request } from "./api";
 import { endReasonLabel } from "./end-reasons";
+import type { Alert } from "./feed-state";
 export { endReasonLabel };
 
 export type JobControl = {
@@ -242,6 +243,14 @@ const pauseReasons: Record<string, string> = {
   operator: "调度已由管理员暂停。",
 };
 
+/** One line for the current dispatch state: the reason while paused, an idle notice otherwise. */
+export function dispatchNotice(dispatch: { paused: number; reason: string | null; note: string | null } | null): string | null {
+  if (!dispatch) return null;
+  if (!dispatch.paused) return null;
+  const reason = dispatch.reason ?? "operator";
+  return pauseReasons[reason] ?? `调度已暂停：${reason}`;
+}
+
 /** Shown while the main node starts nothing; resuming needs a note, and after a restore every worker reconciled. */
 export function DispatchBanner({ dispatch, unreconciled, onError }: {
   dispatch: { paused: number; reason: string | null; note: string | null } | null;
@@ -251,12 +260,35 @@ export function DispatchBanner({ dispatch, unreconciled, onError }: {
 }) {
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
-  if (!dispatch?.paused) return null;
+  const [pausing, setPausing] = useState(false);
+  if (!dispatch) return null;
+  const paused = Boolean(dispatch.paused);
   const reason = dispatch.reason ?? "operator";
-  const waiting = reason === "restored" && unreconciled.length > 0;
+  const waiting = paused && reason === "restored" && unreconciled.length > 0;
+  const notice = dispatchNotice(dispatch);
+  if (!paused && !pausing) return (
+    <details className="dispatch-banner dispatch-pause-control" role="group" aria-label="调度控制">
+      <summary>调度进行中</summary>
+      <p>调度正常：任务按队列在机器上执行。升级、备份或排查时可以暂停调度，暂停后不会开始或恢复任何任务，已在执行的任务会跑完。</p>
+      <div className="attention-action">
+        <label>暂停说明（必填）<textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} placeholder="例如：升级到新版本" /></label>
+        <button
+          type="button"
+          className="secondary-button"
+          disabled={busy || !note.trim()}
+          onClick={async () => {
+            setBusy(true);
+            try { await post("/api/ops/pause", { note }); setNote(""); setPausing(false); } catch (e) { onError(e); } finally { setBusy(false); }
+          }}
+        >
+          暂停调度
+        </button>
+      </div>
+    </details>
+  );
   return (
     <section className="dispatch-banner" role="status" aria-label="调度已暂停">
-      <p>{pauseReasons[reason] ?? `调度已暂停：${reason}`}</p>
+      <p>{notice}</p>
       {dispatch.note && <p className="inspector-note">{dispatch.note}</p>}
       {waiting && <p className="inspector-note">尚未核对账本的机器：{unreconciled.join("、")}</p>}
       {reason !== "disk_low" && (
@@ -274,6 +306,31 @@ export function DispatchBanner({ dispatch, unreconciled, onError }: {
             恢复调度
           </button>
         </div>
+      )}
+    </section>
+  );
+}
+
+/** Newest device alerts first (#86). Collapsed by default so a healthy fleet shows one quiet line. */
+export function AlertList({ alerts }: { alerts: Alert[] }) {
+  const [open, setOpen] = useState(false);
+  if (!alerts.length) return null;
+  const shown = open ? alerts : alerts.slice(0, 3);
+  return (
+    <section className="alert-list" role="log" aria-label="设备告警">
+      <h2>设备告警</h2>
+      <ul>
+        {shown.map((a) => (
+          <li key={a.alert_id} className={`alert-item alert-${a.severity}`}>
+            <span className="alert-time">{new Date(a.created_at).toLocaleString()}</span>
+            <span>{a.message}</span>
+          </li>
+        ))}
+      </ul>
+      {alerts.length > 3 && (
+        <button type="button" className="secondary-button" onClick={() => setOpen(!open)}>
+          {open ? "收起" : `还有 ${alerts.length - 3} 条…`}
+        </button>
       )}
     </section>
   );

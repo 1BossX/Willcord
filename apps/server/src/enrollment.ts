@@ -1,6 +1,7 @@
 import { createHash, createPublicKey, randomBytes, verify } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import type Database from "better-sqlite3";
+import { emitAlert } from "./alerts.js";
 const hash = (s: string | Buffer) => createHash("sha256").update(s).digest("hex");
 export const enrollmentPaths = new Set(["/enrollment/challenge", "/enrollment/apply", "/enrollment/credentials", "/enrollment/status", "/enrollment/workspace"]);
 export function registerEnrollment(app: FastifyInstance, db: Database.Database, now: () => number, disconnect: (id: string) => void, publicBaseUrl: string) {
@@ -61,12 +62,28 @@ export function registerEnrollment(app: FastifyInstance, db: Database.Database, 
       return reply.code(result.code).send(result.data);
     });
   }
-  app.get("/api/enrollments", async () => ({ public_url: new URL(publicBaseUrl).origin, devices: (db.prepare("SELECT e.worker_id,e.name,e.os,e.arch,e.state,e.created_at,e.updated_at,w.online,w.reconciled,w.blocked,s.active_job_id FROM enrollments e LEFT JOIN workers w USING(worker_id) LEFT JOIN worker_slots s USING(worker_id) ORDER BY e.created_at DESC").all() as any[]).map(d=>({...d,workspaces:db.prepare("SELECT workspace_id,path,is_default FROM workspaces WHERE worker_id=?").all(d.worker_id)})) }));
+  app.get("/api/enrollments", async () => ({ public_url: new URL(publicBaseUrl).origin, devices: (db.prepare("SELECT e.worker_id,e.name,e.os,e.arch,e.state,e.execution_policy,e.created_at,e.updated_at,w.online,w.reconciled,w.blocked,s.active_job_id FROM enrollments e LEFT JOIN workers w USING(worker_id) LEFT JOIN worker_slots s USING(worker_id) ORDER BY e.created_at DESC").all() as any[]).map(d=>({...d,workspaces:db.prepare("SELECT workspace_id,path,is_default FROM workspaces WHERE worker_id=?").all(d.worker_id)})) }));
   app.patch<{Params:{id:string}}>("/api/enrollments/:id",async(req,reply)=>{
-    const name=(req.body as {name?:unknown}|null)?.name;
-    if(typeof name!=="string" || !name.trim() || name.length>128) return reply.code(400).send({error:"invalid_metadata"});
-    if(!db.prepare("UPDATE enrollments SET name=?,updated_at=? WHERE worker_id=?").run(name.trim(),now(),req.params.id).changes) return reply.code(404).send({error:"device_not_found"});
-    return {ok:true};
+    const body=req.body as {name?:unknown;execution_policy?:unknown}|null;
+    const name=body?.name;
+    if(typeof name!=="string" || !name.trim() || name.length>128 || !body) return reply.code(400).send({error:"invalid_metadata"});
+    // execution_policy: undefined leaves it unchanged; only diagnosis or a reset to unrestricted is accepted.
+    let policy: "diagnosis" | null;
+    if (body.execution_policy === undefined) {
+      const row = db.prepare("SELECT execution_policy FROM enrollments WHERE worker_id=?").get(req.params.id) as { execution_policy: string | null } | undefined;
+      if (!row) return reply.code(404).send({error:"device_not_found"});
+      policy = row.execution_policy === "diagnosis" ? "diagnosis" : null;
+    } else if (body.execution_policy === null || body.execution_policy === "none") policy = null;
+    else if (body.execution_policy === "diagnosis") policy = "diagnosis";
+    else return reply.code(400).send({error:"invalid_execution_policy"});
+    const result = db.transaction(() => {
+      const changed = db.prepare("UPDATE enrollments SET name=?,execution_policy=?,updated_at=? WHERE worker_id=?").run(name.trim(), policy, now(), req.params.id).changes;
+      if (!changed) return false;
+      db.prepare("INSERT INTO events(created_at,content_json) VALUES (?,?)").run(now(), JSON.stringify({ type: "device_policy", worker_id: req.params.id, execution_policy: policy }));
+      return true;
+    })();
+    if(!result) return reply.code(404).send({error:"device_not_found"});
+    return {ok:true,execution_policy:policy};
   });
   for (const [action, state] of [["approve", "approved"], ["reject", "rejected"], ["revoke", "revoked"]] as const) {
     app.post<{ Params: { id: string } }>(`/api/enrollments/:id/${action}`, async (req, reply) => {
@@ -75,6 +92,9 @@ export function registerEnrollment(app: FastifyInstance, db: Database.Database, 
         db.prepare("UPDATE enrollments SET state=?,updated_at=? WHERE worker_id=?").run(state, now(), req.params.id);
         if (state !== "approved") db.prepare("UPDATE worker_tokens SET revoked_at=? WHERE worker_id=? AND revoked_at IS NULL").run(now(), req.params.id);
         db.prepare("INSERT INTO events(created_at,content_json) VALUES (?,?)").run(now(), JSON.stringify({ type: "device_authorization", worker_id: req.params.id, action }));
+        // Revocation and rejection are device-level anomalies an operator should see (#86).
+        if (action === "revoke") emitAlert(db, now, { type: "device_revoked", severity: "warn", worker_id: req.params.id, message: `设备 ${req.params.id} 的授权已撤销，全部 token 已吊销并断开连接` });
+        if (action === "reject") emitAlert(db, now, { type: "device_rejected", severity: "info", worker_id: req.params.id, message: `设备 ${req.params.id} 的加入申请已拒绝` });
         return true;
       })();
       if (!changed) return reply.code(404).send({ error: "device_not_found" });

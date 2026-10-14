@@ -3,6 +3,7 @@ import type { FastifyInstance } from "fastify";
 import type { CarriedContext } from "./context.js";
 import { mainSession } from "./jobs.js";
 import { MAX_MODEL_TURNS_PER_JOB } from "./job-limits.js";
+import { recentAlerts } from "./alerts.js";
 
 /** Model view of each stream: chunks past this point may be dropped when the node is full. */
 const MODEL_STREAM_BYTES = 64 * 1024;
@@ -125,6 +126,7 @@ function materialize(db: Database.Database, e: { kind: string; entity_id: string
     case "draft": return db.prepare("SELECT * FROM model_drafts WHERE draft_id=?").get(e.entity_id) ?? null;
     case "dispatch": return dispatchView(db);
     case "attention": return db.prepare("SELECT action_id,worker_id,job_id,action,created_at FROM attention_actions WHERE action_id=?").get(e.entity_id) ?? null;
+    case "alert": return db.prepare("SELECT content_json FROM events WHERE entity_id=?").get(e.entity_id) ? JSON.parse((db.prepare("SELECT content_json FROM events WHERE entity_id=?").get(e.entity_id) as { content_json: string }).content_json) : null;
     default: return null;
   }
 }
@@ -171,6 +173,7 @@ export function snapshot(db: Database.Database, now: () => number, sessionId?: s
       main_session_id: (main as any).session_id as string,
       workers: workerViews(db),
       dispatch: dispatchView(db),
+      alerts: recentAlerts(db, 20),
       sessions: db.prepare("SELECT * FROM sessions ORDER BY created_at DESC").all(),
       session: session ? {
         session,

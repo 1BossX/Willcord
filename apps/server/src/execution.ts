@@ -12,6 +12,8 @@ import { logView } from "./feed.js";
 import { modelFromEnv, type ModelConfig } from "./config.js";
 import { buildDiagnosisReport } from "./diagnosis-report.js";
 import { diagnosisAnswerFormat } from "./diagnosis-scenarios.js";
+import { effectiveExecutionMode } from "./device-policy.js";
+import { emitAlert } from "./alerts.js";
 import { assertCallMatchesApproval, settleApprovedExecuteJob } from "./approved-action.js";
 import { isApprovedBoundExecuteCall, workerToolRequestFields } from "./approved-action-wire.js";
 import { MAX_MODEL_TURNS_PER_JOB } from "./job-limits.js";
@@ -192,6 +194,7 @@ export class ExecutionCoordinator {
       if (jobId) this.db.prepare("UPDATE jobs SET state='needs_attention' WHERE job_id=? AND state NOT IN ('succeeded','failed','cancelled')").run(jobId);
       const job = jobId && this.db.prepare("SELECT 1 FROM jobs WHERE job_id=?").get(jobId) ? jobId : null;
       this.db.prepare("INSERT INTO attention_actions(action_id,worker_id,job_id,action,evidence,created_at) VALUES(?,?,?,'blocked',?,?)").run(randomUUID(), workerId, job, JSON.stringify({ reason, evidence }), this.now());
+      emitAlert(this.db, this.now, { type: "device_blocked", severity: "error", worker_id: workerId, job_id: job, message: `机器 ${workerId} 因 ${reason} 进入需要核对状态`, detail: { reason } });
     })();
   }
 
@@ -994,7 +997,7 @@ export class ExecutionCoordinator {
           workspace_version: job.workspace_version,
           tool_name: c.name,
           arguments_json: JSON.stringify(c.arguments ?? {}),
-          execution_mode: job.approved_action_id && !job.verify_command ? "approved" : job.execution_mode ?? null,
+          execution_mode: job.approved_action_id && !job.verify_command ? "approved" : effectiveExecutionMode(this.db, job.worker_id, job.execution_mode ?? null),
           approved_binding_hash:
             job.approved_action_id && !job.verify_command
               ? (this.db.prepare("SELECT binding_hash FROM approved_actions WHERE approved_action_id=?").get(job.approved_action_id) as { binding_hash: string }).binding_hash

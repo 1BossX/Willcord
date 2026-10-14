@@ -5,6 +5,7 @@ import type { ExecutionCoordinator } from "./execution.js";
 import { createJob, nextQueueSeq, readyState } from "./jobs.js";
 import { DEFAULT_BUDGET } from "./execution.js";
 import { workerToolRequestFields } from "./approved-action-wire.js";
+import { deviceRequiresDiagnosis } from "./device-policy.js";
 
 export type ApprovedActionRow = {
   approved_action_id: string;
@@ -111,6 +112,8 @@ export function registerApprovedActionRoutes(
     if (!session || session.kind !== "worker") return reply.code(404).send({ error: "session_not_found" });
     if (session.execution_mode !== "diagnosis") return reply.code(409).send({ error: "diagnosis_session_required" });
     const workerId = session.worker_id as string;
+    // A device locked to diagnosis never takes approved writes (#86).
+    if (deviceRequiresDiagnosis(db, workerId)) return reply.code(409).send({ error: "device_requires_diagnosis" });
     const binding = actionBinding(workerId, body.tool, args);
     const id = randomBytes(16).toString("hex");
     const diagnosisJobId = typeof body.diagnosis_job_id === "string" ? body.diagnosis_job_id : null;

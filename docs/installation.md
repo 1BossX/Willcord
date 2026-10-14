@@ -110,7 +110,7 @@ willcord main upgrade --image-version vX.Y.Z   # 改 .env 里的镜像版本，p
 
 ## 2. 信任内部 CA
 
-本次安装使用 Caddy 内部 CA，即使地址是公网域名也需要分发根证书。`ca.pem` 是公开根证书，不包含私钥。
+本次安装使用 Caddy 内部 CA，即使地址是公网域名也需要分发根证书。`ca.pem` 是公开根证书，不包含私钥。主节点还在 `https://<WILLCORD_SITE>/.well-known/willcord/ca.pem` 提供同一张根证书，`/.well-known/willcord/chain.pem` 提供中间证书（核对 TLS 链）；地址栏必须与 `WILLCORD_SITE` 一致，否则会看到 421 说明页而非空白页。
 
 - **控制台所在的机器（推荐）**：运行 `willcord trust-ca`，把主节点地址和根证书指纹一起交给它；`willcord main init` 结束时打印的命令已经带好这两项。
 

@@ -48,6 +48,7 @@ jobs:
       - run: python3 deploy/test-main-node.py
       - run: python3 deploy/test-worker-join.py
       - run: python3 deploy/test-trust-ca.py
+      - run: python3 deploy/test-caddy-edge.py
       - run: python3 deploy/test-diagnosis-fixtures.py
       - run: python3 deploy/test-o2-kr3-acceptance.py
       - run: bash deploy/test-release-publish.sh

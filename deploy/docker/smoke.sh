@@ -55,6 +55,14 @@ dc up -d
 ready
 case "$health" in *'"dispatch_paused":null'*) ;; *) echo "dispatch should not be paused" >&2; exit 1 ;; esac
 
+wrong_host=$(curl -sk --cacert "$work/ca.pem" -H "Host: willcord-wrong-host.example:$port" \
+  -o "$work/wrong-host.html" -w '%{http_code}' "https://127.0.0.1:$port/")
+[ "$wrong_host" = "421" ] || { echo "wrong Host expected 421, got $wrong_host" >&2; cat "$work/wrong-host.html" >&2; exit 1; }
+grep -q '主机名不正确' "$work/wrong-host.html" || { echo "421 page missing site hint" >&2; exit 1; }
+curl -fsS --cacert "$work/ca.pem" "https://localhost:$port/.well-known/willcord/ca.pem" | openssl x509 -inform PEM -noout -subject > /dev/null
+curl -fsS --cacert "$work/ca.pem" "https://localhost:$port/.well-known/willcord/chain.pem" | openssl x509 -inform PEM -noout -subject > /dev/null
+echo "caddy host/ca: ok"
+
 dc exec -T main node dist/admin.js backup /var/lib/willcord/smoke-backup.sqlite > "$work/backup.json"
 grep -q '"integrity": "ok"' "$work/backup.json" || { cat "$work/backup.json" >&2; exit 1; }
 echo "backup: ok"

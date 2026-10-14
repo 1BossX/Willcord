@@ -43,6 +43,7 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=30s \
 CMD ["node", "dist/main.js"]
 
 FROM caddy:${CADDY_VERSION} AS caddy
+COPY deploy/caddy/willcord-routes.caddy /etc/caddy/willcord-routes.caddy
 COPY deploy/docker/Caddyfile /etc/caddy/Caddyfile
 COPY --chmod=0755 deploy/docker/caddy-entrypoint.sh /usr/local/bin/caddy-entrypoint.sh
 ENTRYPOINT ["/usr/local/bin/caddy-entrypoint.sh"]

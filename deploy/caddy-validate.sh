@@ -4,7 +4,11 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 version=${CADDY_VERSION:-2.10.2}
 cache=${CADDY_VALIDATE_CACHE:-/tmp/willcord-caddy-validate}
-os=linux
+case "$(uname -s)" in
+  Linux) os=linux ;;
+  Darwin) os=darwin ;;
+  *) echo "unsupported OS: $(uname -s)" >&2; exit 1 ;;
+esac
 arch=$(uname -m)
 case "$arch" in
   x86_64) arch=amd64 ;;
@@ -15,14 +19,17 @@ bin="$cache/caddy-$version-$os-$arch"
 if [ ! -x "$bin" ]; then
   mkdir -p "$cache"
   url="https://github.com/caddyserver/caddy/releases/download/v${version}/caddy_${version}_${os}_${arch}.tar.gz"
-  curl -fsSL "$url" | tar -xz -C "$cache" caddy
-  mv "$cache/caddy" "$bin"
+  tmp=$(mktemp -d)
+  curl -fsSL "$url" | tar -xz -C "$tmp" caddy
+  mv "$tmp/caddy" "$bin"
+  rm -rf "$tmp"
 fi
 
 stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT
 mkdir -p "$stage/etc/caddy" "$stage/release/deploy/caddy"
-cp "$root/deploy/docker/Caddyfile" "$stage/etc/caddy/Caddyfile"
+sed 's|import /etc/caddy/willcord-routes.caddy|import willcord-routes.caddy|' \
+  "$root/deploy/docker/Caddyfile" > "$stage/etc/caddy/Caddyfile"
 cp "$root/deploy/caddy/willcord-routes.caddy" "$stage/etc/caddy/willcord-routes.caddy"
 WILLCORD_SITE=localhost:8443 "$bin" validate --config "$stage/etc/caddy/Caddyfile" --adapter caddyfile
 

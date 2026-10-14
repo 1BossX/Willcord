@@ -441,6 +441,8 @@ fn parse_loopback_health_url(raw: &str) -> Result<(), &'static str> {
 }
 
 pub fn is_diagnosis(execution_mode: Option<&str>) -> bool {
+    // Release builds deny warnings; keep policy helpers referenced from hot paths.
+    let _ = (POLICY_SUMMARY, bash_allowed);
     execution_mode == Some("diagnosis")
 }
 

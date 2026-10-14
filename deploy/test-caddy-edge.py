@@ -2,7 +2,6 @@
 """Caddy edge cases for #91: shared routes, wrong-Host listener, public PEM endpoints."""
 from pathlib import Path
 import subprocess
-import sys
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]

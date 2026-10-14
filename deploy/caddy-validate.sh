@@ -6,7 +6,7 @@ version=${CADDY_VERSION:-2.10.2}
 cache=${CADDY_VALIDATE_CACHE:-/tmp/willcord-caddy-validate}
 case "$(uname -s)" in
   Linux) os=linux ;;
-  Darwin) os=darwin ;;
+  Darwin) os=mac ;;
   *) echo "unsupported OS: $(uname -s)" >&2; exit 1 ;;
 esac
 arch=$(uname -m)

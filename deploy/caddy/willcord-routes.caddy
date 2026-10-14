@@ -4,33 +4,9 @@
 #   WILLCORD_SITE     host:port browsers and workers must use
 
 (willcord_wrong_host) {
-	respond <<HTML 421
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Host 不匹配</title>
-  <style>
-    body { font-family: system-ui, sans-serif; margin: 2rem; line-height: 1.5; max-width: 40rem; }
-    code { background: #f4f4f5; padding: 0.1em 0.35em; border-radius: 4px; }
-  </style>
-</head>
-<body>
-  <h1>421 — 请求的主机名不正确</h1>
-  <p>请使用配置的主节点地址访问控制台和 API：</p>
-  <p><code>https://{$WILLCORD_SITE}</code></p>
-  <p>若地址栏用了 IP、别名或未包含端口，请改成与 <code>WILLCORD_SITE</code> / <code>PUBLIC_BASE_URL</code> 完全一致的主机名和端口。</p>
-  <p>内部 CA 根证书（公开，无私钥）：</p>
-  <ul>
-    <li><a href="https://{$WILLCORD_SITE}/.well-known/willcord/ca.pem">/.well-known/willcord/ca.pem</a></li>
-    <li><a href="https://{$WILLCORD_SITE}/.well-known/willcord/chain.pem">/.well-known/willcord/chain.pem</a>（中间证书，用于核对 TLS 链）</li>
-  </ul>
-</body>
-</html>
-HTML
 	header Content-Type "text/html; charset=utf-8"
 	header Cache-Control "no-store"
+	respond "<!DOCTYPE html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\"><title>Host 不匹配</title></head><body><h1>421 — 请求的主机名不正确</h1><p>请使用 <code>https://{$WILLCORD_SITE}</code> 访问控制台和 API（与 WILLCORD_SITE / PUBLIC_BASE_URL 完全一致）。</p><p>根证书：<a href=\"https://{$WILLCORD_SITE}/.well-known/willcord/ca.pem\">ca.pem</a>；中间证书：<a href=\"https://{$WILLCORD_SITE}/.well-known/willcord/chain.pem\">chain.pem</a>。</p></body></html>" 421
 }
 
 (willcord) {

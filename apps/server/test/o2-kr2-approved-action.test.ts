@@ -37,8 +37,11 @@ test("O2-KR2 bound execute path on the worker", { timeout: 120000 }, async () =>
     assert.equal((await peer.next("tool_rejected", 15000, (f) => f.call_id === "bad")).reason, "invalid");
     peer.call(1, "good", 2, "bash", args, "kr2-exec", "approved", binding);
     assert.equal((await peer.next("tool_accepted", 15000, (f) => f.call_id === "good")).call_id, "good");
+    await peer.next("tool_result", 30000, (f) => f.call_id === "good");
     peer.call(1, "diag", 3, "bash", args, "kr2-exec", "diagnosis");
-    assert.equal((await peer.next("tool_rejected", 15000, (f) => f.call_id === "diag")).reason, "invalid");
+    assert.equal((await peer.next("tool_accepted", 15000, (f) => f.call_id === "diag")).call_id, "diag");
+    const diagResult = await peer.next("tool_result", 30000, (f) => f.call_id === "diag");
+    assert.equal(diagResult.ok, false);
   } finally {
     stopWorker(worker);
     rmSync(dir, { recursive: true, force: true });

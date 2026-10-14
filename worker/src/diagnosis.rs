@@ -8,6 +8,9 @@ pub fn write_allowed(execution_mode: Option<&str>) -> bool {
     execution_mode != Some("diagnosis")
 }
 
+/// Human-readable summary for operator/model prompts (keep in sync with server `diagnosis-policy.ts`).
+pub const POLICY_SUMMARY: &str = "bash: docker ps|inspect|logs|info, df, du (-s/-d/--max-depth≤5), systemctl status <unit>, curl (loopback health GET only), id, ls, pwd, true; read: workspace-relative or /etc/os-release; write: blocked";
+
 /// Bash is allowed only as a single, read-only inspection command from the
 /// fixed allowlist below. Anything else is refused before exec.
 pub fn bash_allowed(command: &str) -> Result<(), &'static str> {
@@ -18,11 +21,11 @@ pub fn bash_allowed(command: &str) -> Result<(), &'static str> {
 pub fn bash_argv(command: &str) -> Result<Vec<String>, &'static str> {
     let trimmed = command.trim();
     if trimmed.is_empty() {
-        return Err("invalid");
+        return Err("diagnosis_bash_empty: 诊断模式 bash 命令不能为空");
     }
     let tokens: Vec<String> = trimmed.split_whitespace().map(|s| s.to_owned()).collect();
     if tokens.is_empty() {
-        return Err("invalid");
+        return Err("diagnosis_bash_empty: 诊断模式 bash 命令不能为空");
     }
     for token in &tokens {
         reject_token_metacharacters(token)?;
@@ -50,9 +53,50 @@ pub fn bash_argv(command: &str) -> Result<Vec<String>, &'static str> {
             argv.extend(tokens.into_iter().skip(1));
             argv
         }
-        _ => return Err("invalid"),
+        "id" => {
+            allow_id(&tokens)?;
+            tokens
+        }
+        "ls" => {
+            allow_ls(&tokens)?;
+            tokens
+        }
+        "pwd" => {
+            allow_pwd(&tokens)?;
+            tokens
+        }
+        "true" => {
+            allow_true(&tokens)?;
+            tokens
+        }
+        _ => {
+            return Err(
+                "diagnosis_bash_not_allowlisted: 命令不在诊断只读白名单内（允许: docker、df、du、systemctl status、curl、id、ls、pwd、true）",
+            );
+        }
     };
     Ok(argv)
+}
+
+/// Read-only host paths reachable via the `read` tool in diagnosis mode (not workspace-relative).
+pub fn read_host_file(path: &str) -> Result<Vec<u8>, &'static str> {
+    if path != "/etc/os-release" {
+        return Err(
+            "diagnosis_read_host_path_not_allowed: 诊断模式仅允许读取主机路径 /etc/os-release；工作目录内请用相对路径",
+        );
+    }
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+        .map_err(|_| "diagnosis_read_host_open_failed: 无法打开 /etc/os-release")?;
+    let mut bytes = Vec::new();
+    file.take(256 * 1024)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "diagnosis_read_host_read_failed: 读取 /etc/os-release 失败")?;
+    Ok(bytes)
 }
 
 fn reject_token_metacharacters(token: &str) -> Result<(), &'static str> {
@@ -75,10 +119,64 @@ fn reject_token_metacharacters(token: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
+fn allow_pwd(tokens: &[String]) -> Result<(), &'static str> {
+    if tokens.len() == 1 && tokens[0] == "pwd" {
+        Ok(())
+    } else {
+        Err("diagnosis_bash_pwd_only: 诊断模式仅允许单独的 pwd")
+    }
+}
+
+fn allow_true(tokens: &[String]) -> Result<(), &'static str> {
+    if tokens.len() == 1 && tokens[0] == "true" {
+        Ok(())
+    } else {
+        Err("diagnosis_bash_true_only: 诊断模式仅允许单独的 true")
+    }
+}
+
+fn allow_id(tokens: &[String]) -> Result<(), &'static str> {
+    if tokens.is_empty() || tokens[0] != "id" {
+        return Err("diagnosis_bash_not_allowlisted: id 命令格式无效");
+    }
+    for t in tokens.iter().skip(1) {
+        if !t.starts_with('-') || t.len() < 2 {
+            return Err("diagnosis_bash_id_flags: id 仅允许常见只读标志（如 -u、-g、-n）");
+        }
+        if !t.chars().skip(1).all(|c| c.is_ascii_alphabetic()) {
+            return Err("diagnosis_bash_id_flags: id 仅允许常见只读标志（如 -u、-g、-n）");
+        }
+    }
+    Ok(())
+}
+
+fn allow_ls(tokens: &[String]) -> Result<(), &'static str> {
+    if tokens.is_empty() || tokens[0] != "ls" {
+        return Err("diagnosis_bash_not_allowlisted: ls 命令格式无效");
+    }
+    for t in tokens.iter().skip(1) {
+        if t.starts_with('-') {
+            if !t
+                .chars()
+                .skip(1)
+                .all(|c| c.is_ascii_alphabetic() || c == '-')
+            {
+                return Err("diagnosis_bash_ls_flags: ls 标志不在诊断只读白名单内");
+            }
+            continue;
+        }
+        if t.contains("..") {
+            return Err("diagnosis_bash_path_traversal: 路径不得包含 ..");
+        }
+    }
+    Ok(())
+}
+
 fn allow_docker(tokens: &[String]) -> Result<(), &'static str> {
     let sub = tokens.get(1).map(String::as_str);
     match sub {
         Some("ps") => Ok(()),
+        Some("info") if tokens.len() == 2 => Ok(()),
         Some("inspect") if tokens.len() >= 3 => Ok(()),
         Some("logs") if tokens.len() >= 3 => reject_docker_logs_follow(tokens),
         Some("container") => match tokens.get(2).map(String::as_str) {
@@ -436,6 +534,12 @@ mod tests {
             "systemctl status nginx",
             "curl -fsS http://127.0.0.1/health",
             "curl http://localhost:8080/ready",
+            "docker info",
+            "id",
+            "id -u",
+            "ls -la /var",
+            "pwd",
+            "true",
         ] {
             assert_eq!(bash_allowed(cmd), Ok(()), "expected allow: {cmd}");
         }

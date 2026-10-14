@@ -8,6 +8,7 @@ pub mod approved_tool_gate;
 #[path = "approved_write.rs"]
 pub mod approved_write;
 
+use crate::diagnosis;
 use crate::generated::{ToolCall, Workspace};
 use serde_json::Value;
 use sha2::Digest;
@@ -16,7 +17,11 @@ use uuid::Uuid;
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
-pub async fn execute_tool(workspaces: &[Workspace], call: &ToolCall) -> Result<Value, Error> {
+pub async fn execute_tool(
+    workspaces: &[Workspace],
+    call: &ToolCall,
+    execution_mode: Option<&str>,
+) -> Result<Value, Error> {
     let workspace = workspaces
         .iter()
         .find(|w| w.workspace_id == call.workspace_id && w.config_version == call.config_version)
@@ -24,10 +29,12 @@ pub async fn execute_tool(workspaces: &[Workspace], call: &ToolCall) -> Result<V
     let args = &call.arguments;
     match call.tool.as_str() {
         "read" => {
-            let bytes = read_workspace_file(
-                &workspace.path,
-                args["path"].as_str().ok_or("path required")?,
-            )?;
+            let path = args["path"].as_str().ok_or("path required")?;
+            let bytes = if diagnosis::is_diagnosis(execution_mode) && path.starts_with('/') {
+                diagnosis::read_host_file(path).map_err(|e| e.to_string())?
+            } else {
+                read_workspace_file(&workspace.path, path)?
+            };
             if bytes.len() > 256 * 1024 {
                 return Err("file exceeds read limit".into());
             }

@@ -321,7 +321,24 @@ export class ExecutionCoordinator {
    * Only for proof (a refusal, a fence, or a call never sent), never a guess.
    */
   private writeNotExecuted(row: Pick<CallRow, "job_id" | "call_id" | "tool_name" | "arguments_json">, reason: string) {
-    const record: ToolRecord = { ok: false, result: { error: `not_executed:${reason}`, not_executed: true, reason } };
+    let detail = reason;
+    let error = `not_executed:${reason}`;
+    if (reason === "invalid" && row.tool_name === "write") {
+      const mode = (
+        this.db
+          .prepare("SELECT s.execution_mode FROM jobs j JOIN sessions s USING(session_id) WHERE j.job_id=?")
+          .get(row.job_id) as { execution_mode: string | null } | undefined
+      )?.execution_mode;
+      if (mode === "diagnosis") {
+        detail = "diagnosis_write_blocked";
+        error =
+          "diagnosis_write_blocked: 诊断模式在 worker 执行层拒绝写入（只读）；修复须走批准后执行";
+      }
+    }
+    const record: ToolRecord = {
+      ok: false,
+      result: { error, not_executed: true, reason: detail },
+    };
     const changed = this.db.prepare("UPDATE runtime_calls SET status='not_executed',result_json=?,completed_at=? WHERE job_id=? AND call_id=? AND status IN ('committed','dispatched')").run(JSON.stringify(record), this.now(), row.job_id, row.call_id).changes;
     if (!changed) return undefined;
     this.db.prepare("UPDATE tool_calls SET state='finished',result_json=? WHERE call_id=?").run(JSON.stringify(record), row.call_id);

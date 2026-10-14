@@ -37,6 +37,7 @@ class CaddyEdgeConfigTests(unittest.TestCase):
         self.assertIn(':{$WILLCORD_PORT', docker)
         self.assertIn('willcord_wrong_host', docker)
 
+    @unittest.skipUnless(sys.platform.startswith('linux'), 'caddy-validate downloads official linux builds only')
     def test_caddy_validate_without_docker(self):
         proc = subprocess.run(['bash', str(VALIDATE)], capture_output=True, text=True)
         self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)

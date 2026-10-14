@@ -45,7 +45,7 @@ Git CLI 使用系统钥匙串中的 GitHub 凭据；不要将凭据写入仓库�
 
 ```text
 PUBLIC_BASE_URL=          # 浏览器访问的源，例如 https://plane.internal:8443
-PORT=3000
+PORT=3000                 # systemd 裸进程监听端口；Docker Compose 的 main.env 不要设 PORT（见 docs/docker.md）
 MODEL_PROVIDER=openrouter
 MODEL_NAME=deepseek/deepseek-v4.1-flash
 MODEL_API_KEY=

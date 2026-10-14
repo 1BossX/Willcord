@@ -1,6 +1,6 @@
 # 用 Docker 部署主节点
 
-适用于 v0.2.0 及以上版本。主节点和 Caddy 各一个容器，用 Docker Compose 管理；行为与 [运维手册](operations.md) 的 systemd 部署相同，本文只写不同之处。worker 仍装在每台被管理的机器上（[worker 安装与授权](worker-onboarding.md)），不放进容器：它要在宿主机上执行命令。
+适用于 v0.2.0 及以上版本（主节点用 Compose 部署）。主节点和 Caddy 各一个容器，用 Docker Compose 管理；行为与 [运维手册](operations.md) 的 systemd 部署相同，本文只写不同之处。worker 仍装在每台被管理的机器上（[worker 安装与授权](worker-onboarding.md)），不放进容器：它要在宿主机上执行命令。控制台生成的 **CA 指纹加入链接**自 **v0.3.0** 起提供（与 [安装指南 §CA 指纹自动接入](installation.md#ca-指纹自动接入) 一致）；低于 v0.3.0 的 worker 仍用手动 `--ca` 流程。
 
 ## 镜像
 
@@ -20,7 +20,7 @@
 1. 准备目录，复制 `deploy/docker/compose.yaml`，并在同一目录写 `.env`：
 
    ```bash
-   WILLCORD_VERSION=0.1.0-beta.3
+   WILLCORD_VERSION=0.1.0-beta.4
    WILLCORD_SITE=plane.internal:8443
    WILLCORD_PORT=8443
    WILLCORD_BIND_IP=192.168.1.10
@@ -28,7 +28,7 @@
 
    `WILLCORD_SITE` 是浏览器和 worker 访问的地址，端口必须等于 `WILLCORD_PORT`，宿主机上发布的也是这个端口。`WILLCORD_BIND_IP` 是**本机**上监听该端口的 IP（例如内网网卡地址）；Compose 会把端口直接发布到宿主机，通常**绕过 ufw**，不要把 `WILLCORD_BIND_IP` 留成 `0.0.0.0` 除非确需所有网卡。仅本机试用可写 `127.0.0.1`。向导会根据所选服务地址自动填入合适的默认值。
 
-2. 复制 `deploy/main.env.example` 为同目录的 `main.env`，权限 0600，填入值。`PUBLIC_BASE_URL` 必须是 `https://` 加 `WILLCORD_SITE`；`DATA_DIR`、`HOST`、`PORT` 已由镜像设置，不要填。`INITIAL_ADMIN_PASSWORD` 只在第一次启动时需要，启动成功后删掉这一行。
+2. 复制 `deploy/main.env.example` 为同目录的 `main.env`，权限 0600，填入值。`PUBLIC_BASE_URL` 必须是 `https://` 加 `WILLCORD_SITE`；`DATA_DIR`、`HOST`、`PORT` 已由镜像在容器内设置，**Compose 部署的 `main.env` 不要写这三项**（示例文件里的 `PORT=3000` 是给 systemd 裸进程部署用的，表示 Node 在反向代理后监听 3000，与对外 HTTPS 端口无关）。`INITIAL_ADMIN_PASSWORD` 只在第一次启动时需要，启动成功后删掉这一行。
 
 3. 启动并检查：
 
@@ -109,6 +109,12 @@ docker compose start main
 ## 安全设置
 
 compose 中主节点以非 root 用户运行，根文件系统只读（`/tmp` 为 tmpfs），去掉全部 capability 并设置 `no-new-privileges`；容器 3000 端口只在 compose 内部网络开放，对外只有 Caddy 的 HTTPS 端口，且通过 `WILLCORD_BIND_IP` 绑定到指定宿主机 IP 而非默认的所有网卡。模型 key 只在 `main.env` 里，不进入镜像。
+
+主节点容器**不**挂载宿主机 `docker.sock`；控制台里的 Docker 诊断在 **各 worker 宿主机**上执行，权限与 socket 访问见 [安装指南 §5](installation.md#5-第一次诊断)。
+
+## 主节点与 worker 版本
+
+正式环境请让主节点镜像与所有 worker 二进制使用**同一 Release 标签**。未做代码级错配拦截；错配或只回退主节点镜像而不恢复迁移快照的风险见 [运维手册 §6](operations.md#6-升级) 与上文 [§升级](#升级)。
 
 ## 验收
 

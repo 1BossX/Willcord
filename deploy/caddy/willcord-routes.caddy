@@ -46,11 +46,11 @@ HTML
 		file_server
 	}
 
-	@chain {
+	@ca_chain {
 		method GET
 		path /.well-known/willcord/chain.pem
 	}
-	handle @chain {
+	handle @ca_chain {
 		root * {$WILLCORD_CA_ROOT:/data/caddy/pki/authorities/local}
 		rewrite * /intermediate.crt
 		header Content-Type application/x-pem-file

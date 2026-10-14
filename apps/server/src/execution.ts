@@ -619,7 +619,7 @@ export class ExecutionCoordinator {
           if (!this.release(workerId, slot)) return;
           continue;
         }
-        const job = this.db.prepare("SELECT job_id,session_id,wait_until FROM jobs WHERE worker_id=? AND state IN ('queued','waiting_worker') AND queue_seq IS NOT NULL ORDER BY queue_seq LIMIT 1").get(workerId) as any;
+        const job = this.db.prepare("SELECT job_id,session_id,state,wait_until FROM jobs WHERE worker_id=? AND state IN ('queued','waiting_worker') AND queue_seq IS NOT NULL ORDER BY queue_seq LIMIT 1").get(workerId) as any;
         if (!job) return;
         // Only jobs waiting for the worker to come back expire here. A queued job at
         // the head with a free slot may have an old wait_until after CI scheduling

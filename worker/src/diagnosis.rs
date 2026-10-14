@@ -85,17 +85,19 @@ pub fn read_host_file(path: &str) -> Result<Vec<u8>, &'static str> {
             "diagnosis_read_host_path_not_allowed: 诊断模式仅允许读取主机路径 /etc/os-release；工作目录内请用相对路径",
         );
     }
-    use std::io::Read;
     use std::os::unix::fs::OpenOptionsExt;
-    let mut file = std::fs::OpenOptions::new()
+    let file = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW)
         .open(path)
         .map_err(|_| "diagnosis_read_host_open_failed: 无法打开 /etc/os-release")?;
-    let mut bytes = Vec::new();
-    file.take(256 * 1024)
-        .read_to_end(&mut bytes)
-        .map_err(|_| "diagnosis_read_host_read_failed: 读取 /etc/os-release 失败")?;
+    let meta = file
+        .metadata()
+        .map_err(|_| "diagnosis_read_host_open_failed: 无法打开 /etc/os-release")?;
+    if meta.len() > 256 * 1024 {
+        return Err("diagnosis_read_host_read_failed: 读取 /etc/os-release 失败");
+    }
+    let bytes = std::fs::read(path).map_err(|_| "diagnosis_read_host_read_failed: 读取 /etc/os-release 失败")?;
     Ok(bytes)
 }
 
@@ -509,6 +511,12 @@ fn redact_env_fields(value: &mut serde_json::Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn policy_summary_matches_expanded_allowlist() {
+        assert!(POLICY_SUMMARY.contains("logs|info"));
+        assert!(POLICY_SUMMARY.contains("/etc/os-release"));
+    }
 
     #[test]
     fn diagnosis_blocks_writes() {

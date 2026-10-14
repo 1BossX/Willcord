@@ -930,7 +930,6 @@ async fn tool_call(
         return Ok(());
     }
     let timeout = if call.tool == "bash" {
-        let command = call.arguments["command"].as_str().unwrap_or("");
         match process::bash_timeout(&call.arguments, worker.max_tool_timeout_secs) {
             Ok(timeout) => Some(timeout),
             Err(reason) => {

@@ -621,6 +621,7 @@ function App() {
   const [navOpen, setNavOpen] = useState(false),
     [tasksOpen, setTasksOpen] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [interceptRunning, setInterceptRunning] = useState(false);
   /** The side-effect warning of a retry, shown on the job it created. */
   const [retryNotice, setRetryNotice] = useState<{ jobId: string; text: string } | null>(null);
   const restored = useRef(false),
@@ -716,6 +717,24 @@ function App() {
     setNavOpen(false);
     localStorage.setItem("willcord-session", session.session_id);
     syncRoute({ view: "session", sessionId: session.session_id });
+  }
+  async function runDiagnosisInterceptCheck() {
+    if (!sessionId || interceptRunning) return;
+    setInterceptRunning(true);
+    setError("");
+    try {
+      const out = await request<{ job_id: string; call_id: string }>(
+        `/api/sessions/${encodeURIComponent(sessionId)}/diagnosis-intercept-check`,
+        { method: "POST" },
+      );
+      setSelectedJobId(out.job_id);
+      setTasksOpen(true);
+      setRefreshKey((k) => k + 1);
+    } catch (cause) {
+      report(cause);
+    } finally {
+      setInterceptRunning(false);
+    }
   }
   function selectWorker(worker: Worker) {
     navigation.current++;
@@ -1619,6 +1638,17 @@ function App() {
                   Main Agent 委派
                 </button>
               )}
+              {activeSession?.execution_mode === "diagnosis" && sessionId && (
+                <button
+                  type="button"
+                  className="secondary-button diagnosis-intercept-check"
+                  disabled={interceptRunning || submitting || !activeWorker?.schedulable}
+                  title="触发一次受控 write，在时间线中查看 worker 拒绝写入的证据"
+                  onClick={() => void runDiagnosisInterceptCheck()}
+                >
+                  {interceptRunning ? "自检中…" : "拦截自检"}
+                </button>
+              )}
               {activeSession?.execution_mode === "diagnosis" && messages.length > 0 && (
                 <button
                   type="button"
@@ -1837,7 +1867,7 @@ function App() {
                   {activeSession?.kind === "main"
                     ? "Main Agent 在主节点运行；委派的任务进入各机器的队列。"
                     : activeSession?.execution_mode === "diagnosis"
-                      ? "诊断模式：仅允许只读检查命令，不会写入文件或执行修复。"
+                      ? "诊断模式：仅允许白名单内的只读命令；拒绝原因会出现在工具结果中。可用「拦截自检」验证写拦截。"
                     : activeWorker?.blocked
                     ? "消息将保留在队列中，等待机器完成核对。"
                     : !activeWorker?.online

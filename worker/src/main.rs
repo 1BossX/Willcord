@@ -930,13 +930,6 @@ async fn tool_call(
         return Ok(());
     }
     let timeout = if call.tool == "bash" {
-        let command = call.arguments["command"].as_str().unwrap_or("");
-        if diagnosis::is_diagnosis(call.execution_mode.as_deref()) {
-            if diagnosis::bash_allowed(command).is_err() {
-                send(socket, &rejected_frame(worker, epoch, &identity, "invalid")).await?;
-                return Ok(());
-            }
-        }
         match process::bash_timeout(&call.arguments, worker.max_tool_timeout_secs) {
             Ok(timeout) => Some(timeout),
             Err(reason) => {
@@ -992,7 +985,13 @@ async fn tool_call(
                         .await
                     }
                     None => {
-                        let record = match tools::execute_tool(&workspaces, &call).await {
+                        let record = match tools::execute_tool(
+                            &workspaces,
+                            &call,
+                            call.execution_mode.as_deref(),
+                        )
+                        .await
+                        {
                             Ok(result) => serde_json::json!({"ok":true,"result":result}),
                             Err(e) => {
                                 serde_json::json!({"ok":false,"result":{"error":e.to_string()}})

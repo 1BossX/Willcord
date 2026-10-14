@@ -75,13 +75,20 @@ test("O2-KR1 diagnosis mode refuses writes and unauthorized bash before executio
       ["b-du-file", 8, "du --exclude-from=/tmp/x -sh /var"],
     ] as const) {
       peer.call(1, callId, seq, "bash", { command }, "diag-w", "diagnosis");
-      assert.equal((await peer.next("tool_rejected", 15000, (f) => f.call_id === callId)).reason, "invalid");
+      assert.equal((await peer.next("tool_accepted", 15000, (f) => f.call_id === callId)).call_id, callId);
+      const result = await peer.next("tool_result", 30000, (f) => f.call_id === callId);
+      assert.equal(result.ok, false);
+      assert.ok(String(result.result?.error ?? "").length > 0);
     }
     assert.equal(existsSync(join(workspace, "pr75-chain-marker")), false);
 
     peer.call(1, "b4", 5, "bash", { command: "docker ps" }, "diag-w", "diagnosis");
     assert.equal((await peer.next("tool_accepted")).call_id, "b4");
     await peer.next("tool_result", 30000, (f) => f.call_id === "b4");
+
+    peer.call(1, "b5", 9, "bash", { command: "docker info" }, "diag-w", "diagnosis");
+    assert.equal((await peer.next("tool_accepted", 15000, (f) => f.call_id === "b5")).call_id, "b5");
+    await peer.next("tool_result", 30000, (f) => f.call_id === "b5");
   } finally {
     if (worker) stopWorker(worker);
     rmSync(dir, { recursive: true, force: true });

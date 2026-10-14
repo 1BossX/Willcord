@@ -1,3 +1,5 @@
+import { diagnosisExecutionPolicyText } from "./diagnosis-policy.js";
+
 /** O1-KR1: the three host-level troubleshooting scenarios. */
 export type DiagnosisScenarioId = "docker-service" | "disk-usage" | "post-deploy";
 
@@ -68,5 +70,9 @@ export function diagnosisAnswerFormat(scenarioId: DiagnosisScenarioId | null | u
   } else {
     scope = "检查的是这台主机，不限于当前工作目录。";
   }
-  return `${DIAGNOSIS_HEADINGS}${scope}`;
+  return `${DIAGNOSIS_HEADINGS}
+
+${diagnosisExecutionPolicyText()}
+
+${scope}`;
 }

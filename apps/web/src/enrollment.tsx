@@ -3,6 +3,7 @@ import { request } from "./api";
 import { Icon } from "./icon";
 import { getPendingCount, refreshPending, setPendingLoader, subscribePending } from "./pending-store";
 import { installCommand, isLoopbackOrigin, joinCommand, loadCaFingerprint } from "./install-command";
+import { CopyButton } from "./copy-button";
 
 type Device = {
   worker_id: string; name: string; os: string; arch: string; state: string; created_at: number;
@@ -121,7 +122,13 @@ export function EnrollmentPanel() {
           <label>证书信任<select value={trustMode} onChange={e => { setTrustMode(e.target.value); setCopyStatus(""); }}>
             <option value="pin">自动获取 CA（推荐）</option><option value="file">手动 CA 文件</option><option value="system">系统信任（公共或已信任证书）</option>
           </select></label>
-          {trustMode === "pin" && <><p>主节点 CA 指纹（已写入命令，与设备指纹不同）</p><code>{fingerprint || trustError || "正在读取 CA 指纹…"}</code></>}
+          {trustMode === "pin" && (
+            <div className="copy-row">
+              <p>主节点 CA 指纹（已写入命令，与下方设备指纹不同）</p>
+              <code className="copy-row-value">{fingerprint || trustError || "正在读取 CA 指纹…"}</code>
+              {fingerprint && <CopyButton text={fingerprint} label="复制指纹" />}
+            </div>
+          )}
           {trustMode === "file" && <label>执行机器上的 CA 绝对路径<input value={ca} placeholder="/absolute/ca.pem" onChange={e => { setCa(e.target.value); setCopyStatus(""); }} /></label>}
           {trustMode === "system" && <p>仅适用于执行机器已经信任主节点证书的部署；验证失败会停止，不会自动盲信。</p>}
         </details>
@@ -132,8 +139,17 @@ export function EnrollmentPanel() {
       {!loaded && !error && <p role="status">正在读取加入申请…</p>}
       {loaded && !devices.length && <p>尚无加入申请。在执行机器上运行“添加机器”里的安装命令后，申请会出现在这里。</p>}
       {devices.map(d => <article className="enrollment-device" key={d.worker_id}>
-        <strong>{d.name}</strong><p>{d.os} / {d.arch} · {states[d.state]}</p>
-        <p>节点 ID / 公钥 SHA-256 指纹</p><code>{d.worker_id}</code><p>{new Date(d.created_at).toLocaleString()}</p>
+        <strong>{d.name}</strong>
+        <p>
+          {d.os} / {d.arch} · {states[d.state]}
+          {d.state === "pending" && (d.online ? " · 终端在线" : " · 终端离线")}
+        </p>
+        <p>节点 ID / 公钥 SHA-256 指纹</p>
+        <div className="copy-row">
+          <code className="copy-row-value">{d.worker_id}</code>
+          <CopyButton text={d.worker_id} label="复制指纹" />
+        </div>
+        <p>{new Date(d.created_at).toLocaleString()}</p>
         {d.state === "approved" && <p>{d.blocked ? "需要核对" : !d.online ? "离线" : !d.reconciled ? "对账中" : d.active_job_id ? "正在执行" : "可执行"}</p>}
         {d.workspaces.map(w => <p key={w.workspace_id}>{w.workspace_id}{w.is_default ? "（默认）" : ""} · {w.path}</p>)}
         {d.state !== "approved" && <button className="primary-button" disabled={busy} onClick={() => void mutate(`/api/enrollments/${d.worker_id}/approve`, "POST", {})}>核对指纹后批准</button>}

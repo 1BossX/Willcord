@@ -14,6 +14,7 @@ import { buildDiagnosisReport } from "./diagnosis-report.js";
 import { diagnosisAnswerFormat } from "./diagnosis-scenarios.js";
 import { assertCallMatchesApproval, settleApprovedExecuteJob } from "./approved-action.js";
 import { isApprovedBoundExecuteCall, workerToolRequestFields } from "./approved-action-wire.js";
+import { MAX_MODEL_TURNS_PER_JOB } from "./job-limits.js";
 
 type Socket = { readyState: number; send(data: string): void };
 type Connection = { epoch: number; socket: Socket; tokenDigest: string };
@@ -73,7 +74,7 @@ const LOG_ACK_REPEAT_MS = 7 * 24 * 3600 * 1000;
 type Stream = (typeof STREAMS)[number];
 type LogSummary = Record<Stream, { bytes_total: number; bytes_logged: number; chunks: number }> & { truncated: boolean };
 type ResultFrame = Extract<WorkerFrame, { type: "tool_result" }>;
-const MAX_MODEL_TURNS = 20;
+const MAX_MODEL_TURNS = MAX_MODEL_TURNS_PER_JOB;
 /** Streamed text is written at most this often while a generation runs. */
 const DRAFT_FLUSH_MS = 250;
 const TERMINAL = new Set(["succeeded", "failed", "cancelled"]);

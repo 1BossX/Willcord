@@ -72,14 +72,18 @@ summary:focus-visible {
   background: #7f909820;
 }
 .muted {
-  color: #7c8b94;
+  color: #5f6f78;
   line-height: 1.7;
+}
+.muted-copy {
+  color: #5f6f78;
+  line-height: 1.65;
 }
 .eyebrow {
   font-size: 11px;
   font-weight: 650;
   letter-spacing: 0.16em;
-  color: #7f909a;
+  color: #667780;
 }
 .primary-button,
 .secondary-button {
@@ -307,6 +311,117 @@ summary:focus-visible {
   overflow-wrap: anywhere;
   user-select: all;
 }
+.copy-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 12px;
+}
+.copy-row-value {
+  flex: 1 1 200px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  background: #f4f6f8;
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.copy-inline-button {
+  padding: 8px 12px;
+  font-size: 12px;
+}
+.ca-trust-note {
+  font-size: 12px;
+  line-height: 1.65;
+}
+.app-bootstrap {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  background: #f4f6f8ee;
+  color: #3f525c;
+  font-weight: 600;
+}
+.model-settings-primary-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 8px;
+}
+.model-settings-danger-zone {
+  margin-top: 22px;
+  padding-top: 16px;
+  border-top: 1px solid #dce4e8;
+}
+.model-settings-danger-zone p {
+  margin: 0 0 10px;
+  font-size: 13px;
+  color: #5f6f78;
+}
+.session-mode-fieldset {
+  border: 1px solid #dce4e8;
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin: 0 0 14px;
+}
+.session-mode-option {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin: 8px 0;
+  font-size: 14px;
+}
+.diagnosis-new-session {
+  margin-left: auto;
+  padding: 8px 12px;
+  font-size: 13px;
+}
+.diagnosis-result {
+  margin: 18px 0 8px;
+  padding: 16px;
+  border: 1px solid #dce4e8;
+  border-radius: 12px;
+  background: #fbfcfd;
+}
+.diagnosis-result-block h4 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: #4a5c66;
+}
+.diagnosis-result-block + .diagnosis-result-block {
+  margin-top: 14px;
+}
+.diagnosis-next-step p {
+  margin: 0 0 8px;
+}
+.diagnosis-evidence-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.diagnosis-evidence-list li {
+  margin: 0 0 12px;
+  padding: 10px;
+  background: #f4f6f8;
+  border-radius: 8px;
+}
+.diagnosis-evidence-meta {
+  display: block;
+  font-size: 13px;
+  margin-bottom: 6px;
+}
+.diagnosis-call-id {
+  font-size: 11px;
+  color: #5f6f78;
+}
+.diagnosis-result-actions {
+  margin-top: 14px;
+}
 .ca-trust details > div > span {
   display: block;
   font-size: 12px;
@@ -533,6 +648,8 @@ summary:focus-visible {
   align-items: stretch;
   gap: 3px;
   margin: 3px 0;
+  min-width: 0;
+  max-width: 100%;
 }
 .session-nav {
   color: #a4b7c0;
@@ -564,8 +681,11 @@ summary:focus-visible {
 .session-nav small {
   display: block;
   font-size: 11px;
-  color: #91a7b1;
+  color: #8aa0aa;
   margin-top: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .session-rename {
   width: 30px;

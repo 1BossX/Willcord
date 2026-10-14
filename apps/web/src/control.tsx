@@ -14,6 +14,8 @@ export type JobControl = {
   deadline_at?: number | null;
   tool_calls_used?: number | null;
   tokens_used?: number | null;
+  model_turns?: number | null;
+  max_model_turns?: number | null;
   /** Set on a job a Main Agent delegated; it shares its parent's budget and is retried through the parent. */
   parent_job_id?: string | null;
 };
@@ -67,6 +69,12 @@ export function BudgetRows({ job, now }: { job: JobControl; now: number }) {
         <div>
           <dt>工具次数</dt>
           <dd>{job.tool_calls_used ?? 0} / {job.max_tool_calls}</dd>
+        </div>
+      )}
+      {job.max_model_turns != null && (
+        <div>
+          <dt>模型轮次</dt>
+          <dd>{job.model_turns ?? 0} / {job.max_model_turns}</dd>
         </div>
       )}
       {job.max_tokens != null && (

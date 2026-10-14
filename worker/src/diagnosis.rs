@@ -97,7 +97,8 @@ pub fn read_host_file(path: &str) -> Result<Vec<u8>, &'static str> {
     if meta.len() > 256 * 1024 {
         return Err("diagnosis_read_host_read_failed: 读取 /etc/os-release 失败");
     }
-    let bytes = std::fs::read(path).map_err(|_| "diagnosis_read_host_read_failed: 读取 /etc/os-release 失败")?;
+    let bytes = std::fs::read(path)
+        .map_err(|_| "diagnosis_read_host_read_failed: 读取 /etc/os-release 失败")?;
     Ok(bytes)
 }
 

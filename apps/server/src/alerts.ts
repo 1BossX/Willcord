@@ -35,6 +35,9 @@ export function emitAlert(db: Database.Database, now: () => number, alert: Alert
     alertId,
     alert.job_id ?? null,
   );
+  // The main node log carries the same line, so an operator tailing logs sees
+  // device anomalies without opening the console.
+  console.warn(`[alert:${alert.severity}] ${alert.message} (alert_id=${alertId})`);
   return alertId;
 }
 

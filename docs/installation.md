@@ -235,6 +235,57 @@ curl -fsSL https://bossoptional.github.io/Willcord/install.sh | bash -s -- worke
 
 **Docker 场景与权限**：「Docker 服务起不来」等场景会在 **worker 所在宿主机**上运行只读白名单内的 `docker ps` / `docker inspect` 等命令，需要该 worker 进程能访问 **Docker 守护进程**（通常与在 shell 里直接运行 `docker` 相同：Linux 上服务账户在 `docker` 组，或 macOS 上 Docker Desktop 对当前用户开放）。这与「仅读文件、不碰容器」的最小权限账户相冲突：不给 Docker API 访问权限时，Docker 类诊断会失败，但 worker 仍可执行其他场景或非 Docker 任务。系统级 worker（`--system`）以指定账户运行，不会自动获得 `docker` 组；需要 Docker 诊断时请为该账户显式配置守护进程访问，或接受该机器不做 Docker 场景。
 
+**取舍说明（#86）**：`docker` 组等价于对整个 Docker 守护进程 API 的 root 级访问——除只读查询外，还能创建特权容器、挂载宿主文件系统，等于放弃最小权限。Willcord 的诊断白名单只运行只读的 `docker ps` / `docker inspect` 类命令，但**无法在 worker 侧约束守护进程 API 本身的权限**：拿到组身份的进程越出白名单时，守护进程不会拒绝它。因此按机器二选一：
+
+- **接受风险**：把服务账户加入 `docker` 组，Docker 诊断可用，同时承认该账户实际具有宿主机 root 等价能力；这台机器上的可写会话与白名单外的诊断都受普通审批机制约束，但账户本身不受。
+- **收窄守护进程面**：不加入 `docker` 组，改为只放行守护进程 socket 的只读端点。最常用的做法是跑一个只读代理（如 [Tecnativa/docker-socket-proxy](https://github.com/Tecnativa/docker-socket-proxy)），只放行 `GET /containers`、`GET /info`、`GET /version` 等只读路径，拒绝所有写请求：
+
+  ```yaml
+  # 在 worker 宿主机上运行（docker compose 片段）
+  services:
+    docker-proxy:
+      image: tecnativa/docker-socket-proxy
+      restart: unless-stopped
+      environment:
+        CONTAINERS: 1   # 允许 GET /containers/*（docker ps / inspect 用）
+        INFO: 1         # 允许 GET /info、/version
+        POST: 0         # 拒绝一切写请求
+      volumes:
+        - /var/run/docker.sock:/var/run/docker.sock:ro
+      ports:
+        - "127.0.0.1:2375:2375"
+  ```
+
+  然后给 worker 指向代理而不给组身份：系统级服务用 `Environment=DOCKER_HOST=tcp://127.0.0.1:2375`（`systemctl edit willcord-worker`），交互 shell 写入用户环境（`~/.bashrc` 或 systemd 用户单元）。这样 Docker 诊断在白名单内可用，即使 worker 进程被完全攻破，攻击者通过这个 socket 也只能看到容器清单与守护进程信息，不能创建或修改任何容器。代理监听 `127.0.0.1` 而不是 `0.0.0.0`，避免把守护进程 API 暴露给局域网。
+
+  代价：Docker 诊断里需要写操作或更多端点的场景会失败（代理返回 403），且代理本身多一个需要维护的组件。两台机器可以采取不同选择——不跑 Docker 诊断的机器保持纯最小权限账户即可。
+
+### 撤销设备授权
+
+从「设备」面板选择设备后点 **撤销授权**。撤销的完整影响（token 全部失效、断开连接、重连被拒）见 [worker-onboarding.md §升级、撤销与卸载](worker-onboarding.md#升级撤销与卸载)。
+
+- **路径**：`POST /api/enrollments/{worker_id}/revoke`
+- **鉴权**：控制台管理员会话（浏览器登录后的 cookie 会话）；worker 凭据不能撤销设备，被撤销设备自己的请求一律 401。
+- **请求**：空对象 `{}`；无请求体字段。
+- **响应**：`200 {"ok":true}`；设备不存在时 `404 {"error":"device_not_found"}`。
+- **副作用（同事务完成）**：`enrollments.state` 置为 `revoked`；该设备**全部**未吊销的 `worker_tokens` 记录 `revoked_at`，已连接的 socket 立即关闭并拒绝重连；写一条 `device_authorization` 事件，同时产生一条「设备已撤销」告警（设备告警面板与主节点日志可见，10 分钟内同设备同类型只记一条）。撤销不可静默恢复：重新启用须走重新注册（新的 challenge/apply 与指纹核对）。
+
+### 拒绝加入申请
+
+- **路径**：`POST /api/enrollments/{worker_id}/reject`（其余同上：管理员会话鉴权、空请求体、`200 {"ok":true}`）
+- **副作用**：申请置为 `rejected`，未产生过 token；写 `device_authorization` 事件与一条「加入申请已拒绝」告警。被拒设备可重新发起注册。
+
+### 设备级诊断锁定（执行策略）
+
+- **路径**：`PATCH /api/enrollments/{worker_id}`，请求体 `{"name": "...", "execution_policy": "diagnosis" | "none" | null}`；省略 `execution_policy` 表示保持不变。
+- **鉴权**：控制台管理员会话。
+- **响应**：`200 {"ok":true,"execution_policy":"diagnosis"|null}`；`400 invalid_execution_policy` / `400 invalid_metadata` / `404 device_not_found`。
+- **副作用**：写入 `enrollments.execution_policy` 与 `device_policy` 事件。锁定后该设备**只**能跑诊断：新的普通会话与 Main Agent 委派返回 409 `device_requires_diagnosis`，派发给已锁定设备的每个调用都强制携带诊断模式（已批准动作不接受新的批准请求）；worker 端照常按调用下发的执行模式拦截。解除锁定把策略置回 `none`，恢复按会话选择。控制台在设备卡片上有同一开关。
+
+### 设备告警
+
+撤销、拒绝、凭据吊销、心跳超时、账本阻塞和策略变更都会产生 `alert` 事件：控制台「设备告警」面板显示最近 20 条（同一设备同一类型 10 分钟内去重），主节点日志同步输出同一行。当前没有对外 webhook 通道；要转发请解析 feed 事件流里的 `kind:"alert"` 事件。
+
 已有项目通过 `willcord worker workspace add my-app /absolute/projects/my-app` 添加，再创建绑定该 workspace 的新会话。机器须已授权、服务运行且空闲；系统级命令带 `--system`。跨机器任务通过 Main Agent 委派，文件不会自动在机器之间传输。
 
 ### 常见卡住点（各有一句原因与下一步）

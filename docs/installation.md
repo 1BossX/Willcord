@@ -7,7 +7,8 @@
 - 只使用已发布的正式 Release，并校验 SHA-256；没有正式版本时退出，不使用草稿、预发布或源码构建结果。正式版本是 `vX.Y.Z`，以及不勾选 GitHub prerelease 的 `vX.Y.Z-beta.N`（例如 `v0.1.0-beta.1`）。
 - 省略 `--version` 时安装 GitHub latest 指向的正式版本并显示实际版本，所以一行安装可以装到 `0.1.0-beta.1` 这种 beta 号；固定版本加 `--version`。
 - 其他预发布版本（如 `v0.3.0-rc.1`）只用于验收，须用 `--version` 显式指定，安装器会标明“预发布”。一行安装和 Pages 不会把它们当成 latest。
-- Pages 上的 `install.sh` 是最新正式 Release 附带的那一份，与它下载的二进制和镜像同版本；需要旧版本的安装器时，从对应 Release 下载 `install.sh` 并校验 `.sha256`。
+- 每个正式 [GitHub Release](https://github.com/BossOptional/Willcord/releases) 附带 `install.sh` 与 `install.sh.sha256`。校验：`shasum -a 256 -c install.sh.sha256`（或 Linux 上 `sha256sum -c install.sh.sha256`）。
+- [GitHub Pages](https://bossoptional.github.io/Willcord/install.sh) 上的 `install.sh` 由发布流程从**当时 Latest 的正式 Release** 下载、校验通过后上传，应与该 Release 附件字节一致，且与它随后拉取的二进制和镜像同版本。需要固定某一版安装器时，请从对应 Release 下载并校验，不要只依赖 Pages。
 
 ## 0. 安装 willcord 命令
 
@@ -110,7 +111,7 @@ willcord main upgrade --image-version vX.Y.Z   # 改 .env 里的镜像版本，p
 
 ## 2. 信任内部 CA
 
-本次安装使用 Caddy 内部 CA，即使地址是公网域名也需要分发根证书。`ca.pem` 是公开根证书，不包含私钥。
+本次安装使用 Caddy 内部 CA，即使地址是公网域名也需要分发根证书。`ca.pem` 是公开根证书，不包含私钥。主节点还在 `https://<WILLCORD_SITE>/.well-known/willcord/ca.pem` 提供同一张根证书，`/.well-known/willcord/chain.pem` 提供中间证书（核对 TLS 链）；地址栏必须与 `WILLCORD_SITE` 一致，否则会看到 421 说明页而非空白页。
 
 - **控制台所在的机器（推荐）**：运行 `willcord trust-ca`，把主节点地址和根证书指纹一起交给它；`willcord main init` 结束时打印的命令已经带好这两项。
 
@@ -208,7 +209,7 @@ curl -fsSL https://bossoptional.github.io/Willcord/install.sh | bash -s -- worke
 
 ## 5. 第一次诊断
 
-> **版本说明**：下列控制台里的「首次诊断」、诊断模式会话和结构化诊断结果自 **v0.1.0-beta.3**（当前 GitHub Latest）起提供。若你安装的是更早的 beta 构建，请升级后再使用这些入口。
+> **版本说明**：下列控制台里的「首次诊断」、诊断模式会话和结构化诊断结果自 **v0.1.0-beta.3** 起提供；当前 GitHub Latest 为 **v0.1.0-beta.4**。若你安装的是更早的 beta 构建，请升级后再使用这些入口。
 
 机器显示“可执行”且控制台已绑定模型 API key 后，工作台首页会出现**首次诊断**入口，三个场景任选其一：
 
@@ -232,6 +233,8 @@ curl -fsSL https://bossoptional.github.io/Willcord/install.sh | bash -s -- worke
 
 点选场景后，控制台会创建 `execution_mode` 为诊断的会话并发送该场景的预设任务。若要在这台机器上做**非**诊断任务（受工作目录约束、可写），在空会话里点 **新建非诊断会话…**，或在已有普通会话里直接输入任务。
 
+**Docker 场景与权限**：「Docker 服务起不来」等场景会在 **worker 所在宿主机**上运行只读白名单内的 `docker ps` / `docker inspect` 等命令，需要该 worker 进程能访问 **Docker 守护进程**（通常与在 shell 里直接运行 `docker` 相同：Linux 上服务账户在 `docker` 组，或 macOS 上 Docker Desktop 对当前用户开放）。这与「仅读文件、不碰容器」的最小权限账户相冲突：不给 Docker API 访问权限时，Docker 类诊断会失败，但 worker 仍可执行其他场景或非 Docker 任务。系统级 worker（`--system`）以指定账户运行，不会自动获得 `docker` 组；需要 Docker 诊断时请为该账户显式配置守护进程访问，或接受该机器不做 Docker 场景。
+
 已有项目通过 `willcord worker workspace add my-app /absolute/projects/my-app` 添加，再创建绑定该 workspace 的新会话。机器须已授权、服务运行且空闲；系统级命令带 `--system`。跨机器任务通过 Main Agent 委派，文件不会自动在机器之间传输。
 
 ### 常见卡住点（各有一句原因与下一步）
@@ -245,6 +248,7 @@ curl -fsSL https://bossoptional.github.io/Willcord/install.sh | bash -s -- worke
 
 ## 升级与故障处理
 
+- **支持的版本组合**：主节点与每台 worker 应使用**同一正式 Release 标签**（例如均为 v0.1.0-beta.4）。产品**不会**在代码里硬拦截错配，但混用版本可能导致 worker 无法注册、反复重启，或在回滚主节点后诊断模式与执行层不一致等风险；详见 [运维手册 §6](operations.md#6-升级) 与 [Docker 指南 §升级](docker.md#升级)。
 - 升级前暂停主节点调度、等待任务结束并备份。worker 使用同样的安装命令，指定新的正式版本；身份、token 和账本保留，忙时安装失败。升级后验证对账和真实任务，再恢复调度。
 - 主节点向导只用于新部署；升级按 [Docker 指南](docker.md#升级) 操作，不能用新目录冒充原部署的升级。
 - 下载、校验失败或没有正式 Release：安装器返回非零，不运行下载的二进制；确认网络与版本号，必要时从 Releases 页面手动下载并校验。

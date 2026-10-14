@@ -720,9 +720,10 @@ async fn init(mut args: Vec<String>) -> Result<(), Error> {
         eprintln!("提示：没能记住部署目录（{e}）；之后的 willcord main 命令请加 --dir。");
     }
     println!(
-        "\n主节点已就绪：{}\n根证书：{}/ca.pem",
+        "\n主节点已就绪：{}\n根证书：{}/ca.pem\n公开下载（无私钥）：{}/.well-known/willcord/ca.pem",
         origin.server,
-        dir.display()
+        dir.display(),
+        origin.server
     );
     let command = crate::path_install::ensure(crate::path_install::Scope::User, &beside);
     println!("\n下一步：\n1. 让浏览器信任根证书，否则控制台会提示证书不安全。");

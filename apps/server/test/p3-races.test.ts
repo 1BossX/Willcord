@@ -36,8 +36,24 @@ class ScriptedWorker {
     const epoch = frame.type === "register" ? {} : { connection_epoch: this.epoch };
     this.socket.send(JSON.stringify({ protocol_version: 1, worker_id: "w", ...epoch, ...frame }));
   }
-  async next(type: string, after = 0) {
-    await waitFor(() => this.received.slice(after).some((f) => f.type === type)).catch((e) => { throw new Error(`no ${type}: ${JSON.stringify(this.received)}`, { cause: e }); });
+  async next(type: string, after = 0, timeoutMs = 20_000) {
+    const has = () => this.received.slice(after).some((f) => f.type === type);
+    if (has()) return this.received.slice(after).find((f) => f.type === type);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const deadline = Date.now() + timeoutMs;
+        const wake = () => {
+          if (has()) { cleanup(); resolve(); return; }
+          if (Date.now() > deadline) { cleanup(); reject(new Error("timed out")); }
+        };
+        const cleanup = () => { clearInterval(poll); const i = this.waiters.indexOf(wake); if (i >= 0) this.waiters.splice(i, 1); };
+        const poll = setInterval(wake, 25);
+        this.waiters.push(wake);
+        wake();
+      });
+    } catch (e) {
+      throw new Error(`no ${type}: ${JSON.stringify(this.received)}`, { cause: e });
+    }
     return this.received.slice(after).find((f) => f.type === type);
   }
   /** register → reconcile(calls) → worker_ready, as the Rust worker does. */

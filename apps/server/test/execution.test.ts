@@ -122,6 +122,24 @@ test("P3 reconciliation re-ACKs settled calls and blocks on anything it cannot e
  blockedBy(({db})=>{db.prepare("UPDATE worker_slots SET active_job_id='missing'").run();return [];},/slot_held_by_unknown_job/);
 });
 
+test("pump wait_until expiry applies only to waiting_worker, not queued jobs at the head", async () => {
+ const now = Date.now();
+ const { db, connections, one } = fixture();
+ db.prepare("UPDATE worker_slots SET active_job_id=NULL").run();
+ db.prepare("UPDATE jobs SET state='queued', wait_until=?").run(now - 1000);
+ const coordinator = new ExecutionCoordinator(db, connections, () => now, async () => {}, { fakeScript: () => [{ text: "done" }] });
+ await coordinator.pump("venus");
+ assert.notEqual(one("SELECT end_reason FROM jobs WHERE job_id='j'")?.end_reason, "worker_wait_expired");
+ coordinator.close();
+ const { db: db2, connections: conn2, one: one2 } = fixture();
+ db2.prepare("UPDATE worker_slots SET active_job_id=NULL").run();
+ db2.prepare("UPDATE jobs SET state='waiting_worker', wait_until=?").run(now - 1000);
+ const coordinator2 = new ExecutionCoordinator(db2, conn2, () => now, async () => {});
+ await coordinator2.pump("venus");
+ assert.deepEqual(one2("SELECT state,end_reason FROM jobs WHERE job_id='j'"), { state: "failed", end_reason: "worker_wait_expired" });
+ coordinator2.close(); db2.close(); db.close();
+});
+
 test("P3 a run that ends with an unresolved call keeps the slot and needs attention",async()=>{
  const {db,connections,commit,one}=fixture();
  commit("c1",1,"bash",{command:"a"});

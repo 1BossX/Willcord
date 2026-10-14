@@ -14,6 +14,8 @@ on:
       - 'migrations/**'
       - 'pnpm-lock.yaml'
       - 'deploy/docker/**'
+      - 'deploy/caddy/**'
+      - 'deploy/Caddyfile.production'
       - '.dockerignore'
       - '.github/workflows/docker.yml'
   workflow_dispatch:

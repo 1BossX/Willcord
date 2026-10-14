@@ -14,6 +14,7 @@ import { buildDiagnosisReport } from "./diagnosis-report.js";
 import { diagnosisAnswerFormat } from "./diagnosis-scenarios.js";
 import { assertCallMatchesApproval, settleApprovedExecuteJob } from "./approved-action.js";
 import { isApprovedBoundExecuteCall, workerToolRequestFields } from "./approved-action-wire.js";
+import { MAX_MODEL_TURNS_PER_JOB } from "./job-limits.js";
 
 type Socket = { readyState: number; send(data: string): void };
 type Connection = { epoch: number; socket: Socket; tokenDigest: string };
@@ -73,7 +74,7 @@ const LOG_ACK_REPEAT_MS = 7 * 24 * 3600 * 1000;
 type Stream = (typeof STREAMS)[number];
 type LogSummary = Record<Stream, { bytes_total: number; bytes_logged: number; chunks: number }> & { truncated: boolean };
 type ResultFrame = Extract<WorkerFrame, { type: "tool_result" }>;
-const MAX_MODEL_TURNS = 20;
+const MAX_MODEL_TURNS = MAX_MODEL_TURNS_PER_JOB;
 /** Streamed text is written at most this often while a generation runs. */
 const DRAFT_FLUSH_MS = 250;
 const TERMINAL = new Set(["succeeded", "failed", "cancelled"]);
@@ -636,9 +637,12 @@ export class ExecutionCoordinator {
           if (!this.release(workerId, slot)) return;
           continue;
         }
-        const job = this.db.prepare("SELECT job_id,session_id,wait_until FROM jobs WHERE worker_id=? AND state IN ('queued','waiting_worker') AND queue_seq IS NOT NULL ORDER BY queue_seq LIMIT 1").get(workerId) as any;
+        const job = this.db.prepare("SELECT job_id,session_id,state,wait_until FROM jobs WHERE worker_id=? AND state IN ('queued','waiting_worker') AND queue_seq IS NOT NULL ORDER BY queue_seq LIMIT 1").get(workerId) as any;
         if (!job) return;
-        if (job.wait_until && job.wait_until < this.now()) { this.db.prepare("UPDATE jobs SET state='failed',end_reason='worker_wait_expired' WHERE job_id=?").run(job.job_id); this.advance(); continue; }
+        // Only jobs waiting for the worker to come back expire here. A queued job at
+        // the head with a free slot may have an old wait_until after CI scheduling
+        // jitter; it should dispatch instead of failing before the first tool_call.
+        if (job.state === "waiting_worker" && job.wait_until && job.wait_until < this.now()) { this.db.prepare("UPDATE jobs SET state='failed',end_reason='worker_wait_expired' WHERE job_id=?").run(job.job_id); this.advance(); continue; }
         if (!workspaceCurrent(this.db, job.session_id)) { this.failStaleWorkspace(job.job_id, job.session_id); this.advance(); continue; }
         const claimed = this.db.transaction(() => {
           if (this.db.prepare("UPDATE worker_slots SET active_job_id=? WHERE worker_id=? AND active_job_id IS NULL").run(job.job_id, workerId).changes !== 1) return false;

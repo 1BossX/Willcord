@@ -22,7 +22,7 @@ import {
   MAX_FRAME_BYTES,
 } from "@willcord/protocol";
 import type { WorkerFrame } from "@willcord/protocol";
-import { isDiagnosisScenarioId } from "./diagnosis-scenarios.js";
+import { isDiagnosisScenarioId, scenarioById } from "./diagnosis-scenarios.js";
 import { registerApprovedActionRoutes } from "./approved-action.js";
 import { registerDiagnosisInterceptProbeRoutes } from "./diagnosis-intercept-probe.js";
 const digest = (value: string) =>
@@ -257,7 +257,8 @@ export async function createApp(
     const session_id=randomBytes(16).toString("hex");
     const executionMode=body.execution_mode==="diagnosis"?"diagnosis":null;
     const diagnosisScenario=executionMode&&isDiagnosisScenarioId(body.diagnosis_scenario)?body.diagnosis_scenario:null;
-    db.prepare("INSERT INTO sessions(session_id,kind,worker_id,workspace_id,workspace_version,repo_id,path,created_at,execution_mode,diagnosis_scenario) VALUES(?,'worker',?,?,?,?,?,?,?,?)").run(session_id,body.worker_id,body.workspace_id,workspace.config_version,workspace.repo_id,workspace.path,now(),executionMode,diagnosisScenario);
+    const title=diagnosisScenario?scenarioById(diagnosisScenario)?.title??null:null;
+    db.prepare("INSERT INTO sessions(session_id,kind,worker_id,workspace_id,workspace_version,repo_id,path,created_at,title,execution_mode,diagnosis_scenario) VALUES(?,'worker',?,?,?,?,?,?,?,?,?)").run(session_id,body.worker_id,body.workspace_id,workspace.config_version,workspace.repo_id,workspace.path,now(),title,executionMode,diagnosisScenario);
     return reply.code(201).send(db.prepare("SELECT * FROM sessions WHERE session_id=?").get(session_id));
   });
   app.patch<{ Params: { session_id: string } }>(
@@ -729,6 +730,7 @@ export async function createApp(
   timer.unref();
   const expiryTimer=setInterval(()=>{
     db.prepare("UPDATE jobs SET state='failed',end_reason='worker_wait_expired' WHERE state='waiting_worker' AND wait_until IS NOT NULL AND wait_until<?").run(now());
+    db.prepare("UPDATE jobs SET state='failed',end_reason='worker_wait_expired' WHERE state='queued' AND wait_until IS NOT NULL AND wait_until<? AND worker_id IN (SELECT worker_id FROM worker_slots WHERE active_job_id IS NOT NULL)").run(now());
     coordinator.sweepDeadlines();
   },options.waitSweepMs??60000);
   expiryTimer.unref();

@@ -69,7 +69,7 @@ curl -fsSL https://bossoptional.github.io/Willcord/install.sh | bash -s -- worke
 
 ## 当前状态
 
-当前版本 v0.1.0-beta.3，处于开发与受控验收阶段。用于生产前，请在自己的环境完成安全、权限与故障恢复验收。
+当前版本 v0.1.0-beta.4，处于开发与受控验收阶段。用于生产前，请在自己的环境完成安全、权限与故障恢复验收。
 
 历史上从 **v0.5.0**（旧版次编号，早于当前 **v0.1.0-beta** 公开发布线）起所有名称统一为 willcord，旧名称下的部署不会被识别，升级步骤见[迁移说明](docs/migrating-to-willcord.md)。
 

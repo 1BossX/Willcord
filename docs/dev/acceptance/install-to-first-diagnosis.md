@@ -6,7 +6,7 @@
 
 - Linux x86_64/arm64，已安装 **Docker Compose v2**（`docker compose version` 成功）。
 - 自备临时管理员密码与模型 API key（验收后作废）。
-- 公开安装命令解析到的版本与 GitHub Latest Release、README/SECURITY 中的当前版本一致（发版前不打新 tag 时，文档对齐已发布的 latest）。
+- 公开安装命令解析到的版本与 GitHub Latest Release、README/SECURITY 中的当前版本一致（当前为 **v0.1.0-beta.4**；发版前不打新 tag 时，文档对齐已发布的 latest）。
 
 ## 步骤
 

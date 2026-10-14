@@ -2,8 +2,9 @@
 #   WILLCORD_SITE  address browsers and workers use, e.g. plane.internal:8443
 #                      or 10.0.0.5:8443; PUBLIC_BASE_URL must be https://<this>
 #   WILLCORD_ROOT  release directory, e.g. /opt/willcord/current
+# Wrong-Host 421 catch-all is Docker-only (see deploy/docker/Caddyfile).
 # Workers trust the internal root: copy Caddy's root.crt (see docs/operations.md)
-# to each worker and point SSL_CERT_FILE at it.
+# to each worker and point SSL_CERT_FILE at it, or use /.well-known/willcord/ca.pem.
 {
 	# Caddy's admin API, used by `caddy reload`; local only.
 	admin {$CADDY_ADMIN:localhost:2019}
@@ -16,36 +17,9 @@
 	}
 }
 
+import {$WILLCORD_ROOT}/deploy/caddy/willcord-routes.caddy
+
 {$WILLCORD_SITE} {
 	tls internal
-
-	# Public certificate only; never expose the CA directory or admin API.
-	@bootstrap {
-		method GET
-		path /.well-known/willcord/ca.pem
-	}
-	handle @bootstrap {
-		root * {$WILLCORD_CA_ROOT:/var/lib/caddy/.local/share/caddy/pki/authorities/local}
-		rewrite * /root.crt
-		header Content-Type application/x-pem-file
-		header Cache-Control "no-store"
-		file_server
-	}
-
-	# API, login, the worker socket (WSS) and the event stream (SSE) go to the
-	# main node. Responses are flushed as written, and a config reload keeps
-	# open sockets for a while instead of cutting every worker off at once.
-	@server path /enrollment/* /api/* /auth/* /ws/worker /health
-	handle @server {
-		reverse_proxy 127.0.0.1:3000 {
-			flush_interval -1
-			stream_close_delay 5m
-		}
-	}
-
-	handle {
-		root * {$WILLCORD_ROOT}/apps/web/dist
-		try_files {path} /index.html
-		file_server
-	}
+	import willcord_baremetal
 }

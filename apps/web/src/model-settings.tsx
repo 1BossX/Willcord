@@ -96,8 +96,8 @@ export function ModelSettingsPanel() {
     <button className="nav-button sidebar-link sidebar-link-last" onClick={() => { dialog.current?.showModal(); setOpen(true); }}><Icon name="key" />模型连接</button>
     <dialog ref={dialog} className="session-dialog enrollment-dialog" aria-labelledby="model-title" onCancel={close}>
       <div className="dialog-heading"><h2 id="model-title">模型连接</h2><button className="secondary-button" onClick={close} aria-label="关闭模型连接">关闭</button></div>
-      <p>模型调用只发生在主节点，API key 不会发送到执行机器，也不会在这里显示。</p>
-      {view && <p>当前：<strong>{view.provider} / {view.name}</strong> · API key {view.has_key ? `已设置${view.key_hint ? `（${view.key_hint}）` : ""}` : "未设置"} · 来源：{sources[view.source]}</p>}
+      <p>模型调用只发生在主节点，API key 不会发送到执行机器；控制台不会显示完整 key，仅用于确认是否已保存。</p>
+      {view && <p>当前：<strong>{view.provider} / {view.name}</strong> · API key {view.has_key ? `已保存${view.key_hint ? `（末四位 ${view.key_hint}）` : ""}` : "未设置"} · 来源：{sources[view.source]}</p>}
       {view?.key_unreadable && <p role="alert">已保存的 API key 无法解密（数据库可能从备份恢复，缺少本机密钥文件）。请重新输入 API key。</p>}
       {view && !view.has_key && !view.key_unreadable && <p role="alert">尚未设置 API key，任务会因模型调用失败而结束。</p>}
       {view && <form className="enrollment-install" onSubmit={e => { e.preventDefault(); void save(); }}>
@@ -108,9 +108,16 @@ export function ModelSettingsPanel() {
           <datalist id="model-names">{models.map(m => <option key={m} value={m} />)}</datalist></label>
         <label>API key<input type="password" value={apiKey} autoComplete="new-password" placeholder={needsKey ? (view.key_unreadable ? "已保存的 key 无法解密，请重新输入" : "切换 provider 后必须输入新的 key") : "留空则保持当前 key"} onChange={e => { setApiKey(e.target.value); setResult(null); }} /></label>
         <p>保存前可先“测试连接”：向模型发送一个很短的请求，会消耗极少量 token。</p>
-        <button className="secondary-button" type="button" disabled={busy || !name.trim() || needsKey} onClick={() => void test()}>测试连接</button>{" "}
-        <button className="primary-button" type="submit" disabled={busy || !name.trim() || needsKey || !dirty}>保存</button>{" "}
-        {view.source === "console" && <button className="secondary-button" type="button" disabled={busy} onClick={() => void reset()}>恢复为环境变量</button>}
+        <div className="model-settings-primary-actions">
+          <button className="secondary-button" type="button" disabled={busy || !name.trim() || needsKey} onClick={() => void test()}>测试连接</button>
+          <button className="primary-button" type="submit" disabled={busy || !name.trim() || needsKey || !dirty}>保存</button>
+        </div>
+        {view.source === "console" && (
+          <div className="model-settings-danger-zone">
+            <p>恢复后会删除控制台里的模型配置，改读主节点环境变量。</p>
+            <button className="secondary-button danger-action" type="button" disabled={busy} onClick={() => void reset()}>恢复为环境变量</button>
+          </div>
+        )}
       </form>}
       {result && <div role="status" className={result.ok ? "" : "form-error"}>
         <p>{result.text}</p>

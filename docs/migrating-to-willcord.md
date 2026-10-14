@@ -2,7 +2,7 @@
 
 ## 版本号说明
 
-文中出现的 **v0.5.0**、**v0.6.0** 指改名时期的**历史版次**（早于当前公开发布的 **v0.1.0-beta** 线）。**当前** GitHub Latest 为 **v0.1.0-beta.3**；全新部署请安装 [最新 Release](https://github.com/BossOptional/Willcord/releases/latest)，不要把文中的旧号当成“今天要装的版本”。
+文中出现的 **v0.5.0**、**v0.6.0** 指改名时期的**历史版次**（早于当前公开发布的 **v0.1.0-beta** 线）。**当前** GitHub Latest 为 **v0.1.0-beta.4**；全新部署请安装 [最新 Release](https://github.com/BossOptional/Willcord/releases/latest)，不要把文中的旧号当成“今天要装的版本”。
 
 历史上 **v0.5.0** 把所有仍叫 `worker-plane` / `WorkerPlane` 的名称统一为 `willcord`，**且不兼容旧名称**。旧版本安装的主节点和执行机器不会被新版本识别，需要按下面的步骤重新部署。
 

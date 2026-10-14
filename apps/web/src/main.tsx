@@ -3,7 +3,8 @@ import { Icon } from "./icon";
 import { ModelNotice, ModelSettingsPanel, openModelSettings } from "./model-settings";
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { marked } from "marked";
+
+import { MarkdownMessage } from "./main-markdown";
 import { ApiError, request } from "./api";
 import { AttentionPanel, BudgetRows, CancelButton, DispatchBanner, InlineCancel, LogViewer, RetryButton, endReasonLabel, type JobControl } from "./control";
 import { callLiveness, jobActivity, lastOutputOf } from "./call-liveness";
@@ -14,6 +15,9 @@ import { DiagnosisResultPanel, type DiagnosisReport } from "./diagnosis-result";
 import { canReuseDiagnosisSession } from "./diagnosis-session";
 import { diagnosisScenarios, type DiagnosisScenario } from "./diagnosis-scenarios";
 import { loginFailureMessage } from "./login-connectivity";
+import { parseRouteHash, writeRoute, type ConsoleRoute } from "./console-routing";
+import { jobFailureSummary, localizeToolError } from "./job-failures";
+import { sessionDisplaySubtitle, sessionDisplayTitle } from "./session-label";
 import { SetupJourneyPanel, START_FIRST_DIAGNOSIS } from "./setup-journey-panel";
 import "./style.css";
 
@@ -65,6 +69,8 @@ type Job = JobControl & {
   job_id: string;
   session_id: string;
   state: string;
+  model_turns?: number | null;
+  max_model_turns?: number | null;
   children?: Child[];
   children_summary?: { total: number; succeeded: number; failed: number; needs_attention: number; open: number };
   /** Earlier exchanges of the session the model saw with this job; fixed when it first ran. */
@@ -157,11 +163,15 @@ function workerStatus(worker: Worker) {
   if (!(worker.schedulable ?? worker.reconciled)) return { label: "等待对账", tone: "warning" };
   return { label: "可执行", tone: "success" };
 }
-function Status({ state }: { state: string }) {
+function Status({ state, endReason }: { state: string; endReason?: string | null }) {
+  const label =
+    state === "failed" && endReason
+      ? endReasonLabel(endReason)
+      : jobLabels[state] ?? state;
   return (
     <span className={`status status-${state}`}>
       <span className="status-dot" />
-      {jobLabels[state] ?? state}
+      {label}
     </span>
   );
 }
@@ -180,7 +190,7 @@ function toolFailure(value: Content) {
       ? (value.content as ToolContent)
       : {};
   if (value.role !== "tool") return "";
-  if (value.ok === false || result.error) return result.error ?? "工具执行失败";
+  if (value.ok === false || result.error) return localizeToolError(result.error ?? "工具执行失败");
   if (
     (value.tool === "bash" || result.exit_code !== undefined) &&
     typeof result.exit_code === "number" &&
@@ -197,230 +207,6 @@ function messageText(content: Content) {
       .map((block) => block.text ?? "")
       .join("\n");
   return "";
-}
-
-type MarkdownToken = {
-  type: string;
-  raw?: string;
-  text?: string;
-  lang?: string;
-  href?: string;
-  title?: string;
-  depth?: number;
-  ordered?: boolean;
-  start?: number;
-  checked?: boolean;
-  task?: boolean;
-  align?: ("left" | "center" | "right" | null)[];
-  tokens?: MarkdownToken[];
-  items?: MarkdownToken[];
-  header?: MarkdownToken[];
-  rows?: MarkdownToken[][];
-};
-
-function safeLink(href: string | undefined) {
-  if (!href) return "";
-  try {
-    const url = new URL(href, window.location.href);
-    return ["http:", "https:", "mailto:"].includes(url.protocol) ? href : "";
-  } catch {
-    return "";
-  }
-}
-
-function InlineMarkdown({ tokens = [] }: { tokens?: MarkdownToken[] }) {
-  return (
-    <>
-      {tokens.map((token, index) => {
-        const key = `${token.type}-${index}`;
-        const children = token.tokens ?? [];
-        switch (token.type) {
-          case "strong":
-            return (
-              <strong key={key}>
-                <InlineMarkdown tokens={children} />
-              </strong>
-            );
-          case "em":
-            return (
-              <em key={key}>
-                <InlineMarkdown tokens={children} />
-              </em>
-            );
-          case "del":
-            return (
-              <del key={key}>
-                <InlineMarkdown tokens={children} />
-              </del>
-            );
-          case "codespan":
-            return <code key={key}>{token.text}</code>;
-          case "br":
-            return <br key={key} />;
-          case "link": {
-            const href = safeLink(token.href);
-            return href ? (
-              <a
-                key={key}
-                href={href}
-                title={token.title}
-                target="_blank"
-                rel="noreferrer noopener"
-              >
-                <InlineMarkdown tokens={children} />
-              </a>
-            ) : (
-              <InlineMarkdown key={key} tokens={children} />
-            );
-          }
-          case "image":
-            return <span key={key}>{token.text ?? ""}</span>;
-          case "html":
-            return <span key={key}>{token.raw ?? token.text ?? ""}</span>;
-          case "text":
-            return children.length ? (
-              <React.Fragment key={key}>
-                <InlineMarkdown tokens={children} />
-              </React.Fragment>
-            ) : (
-              <React.Fragment key={key}>{token.text ?? ""}</React.Fragment>
-            );
-          default:
-            return (
-              <React.Fragment key={key}>
-                {token.text ?? token.raw ?? ""}
-              </React.Fragment>
-            );
-        }
-      })}
-    </>
-  );
-}
-
-function CodeBlock({ code, language }: { code: string; language?: string }) {
-  const [copied, setCopied] = useState(false);
-  async function copy() {
-    try {
-      await navigator.clipboard.writeText(code);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1600);
-    } catch {
-      setCopied(false);
-    }
-  }
-  return (
-    <div className="markdown-code">
-      <div className="markdown-code-bar">
-        <span>{language || "代码"}</span>
-        <button type="button" onClick={() => void copy()} aria-label="复制代码">
-          {copied ? "已复制" : "复制"}
-        </button>
-      </div>
-      <pre><code>{code}</code></pre>
-    </div>
-  );
-}
-
-function MarkdownBlocks({ tokens = [] }: { tokens?: MarkdownToken[] }) {
-  return (
-    <>
-      {tokens.map((token, index) => {
-        const key = `${token.type}-${index}`;
-        const inline = <InlineMarkdown tokens={token.tokens ?? []} />;
-        switch (token.type) {
-          case "heading": {
-            const level = Math.min(6, Math.max(1, token.depth ?? 1));
-            return React.createElement(`h${level}`, { key }, inline);
-          }
-          case "paragraph":
-          case "text":
-            return <p key={key}>{inline}</p>;
-          case "list": {
-            const items = (token.items ?? []).map((item, itemIndex) => (
-              <li key={itemIndex}>
-                {item.task && (
-                  <input
-                    type="checkbox"
-                    checked={Boolean(item.checked)}
-                    readOnly
-                    aria-label="任务项"
-                  />
-                )}
-                <MarkdownBlocks tokens={item.tokens ?? []} />
-              </li>
-            ));
-            return token.ordered ? (
-              <ol key={key} start={token.start}>
-                {items}
-              </ol>
-            ) : (
-              <ul key={key}>{items}</ul>
-            );
-          }
-          case "blockquote":
-            return (
-              <blockquote key={key}>
-                <MarkdownBlocks tokens={token.tokens} />
-              </blockquote>
-            );
-          case "code":
-            return (
-              <CodeBlock
-                key={key}
-                code={token.text ?? ""}
-                language={token.lang?.split(/\s+/, 1)[0]}
-              />
-            );
-          case "table":
-            return (
-              <div className="markdown-table-wrap" key={key}>
-                <table>
-                  <thead>
-                    <tr>
-                      {(token.header ?? []).map((cell, cellIndex) => (
-                        <th
-                          key={cellIndex}
-                          style={{ textAlign: token.align?.[cellIndex] ?? undefined }}
-                        >
-                          <InlineMarkdown tokens={cell.tokens} />
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(token.rows ?? []).map((row, rowIndex) => (
-                      <tr key={rowIndex}>
-                        {row.map((cell, cellIndex) => (
-                          <td
-                            key={cellIndex}
-                            style={{ textAlign: token.align?.[cellIndex] ?? undefined }}
-                          >
-                            <InlineMarkdown tokens={cell.tokens} />
-                          </td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            );
-          case "hr":
-            return <hr key={key} />;
-          case "space":
-            return null;
-          case "html":
-            return <p key={key}>{token.raw ?? token.text ?? ""}</p>;
-          default:
-            return <p key={key}>{inline}</p>;
-        }
-      })}
-    </>
-  );
-}
-
-function MarkdownMessage({ value }: { value: string }) {
-  const tokens = marked.lexer(value) as MarkdownToken[];
-  return <MarkdownBlocks tokens={tokens} />;
 }
 
 const childEnd: Record<string, string> = {
@@ -697,6 +483,10 @@ function JobNotes({ job, worker }: { job: Job; worker?: Worker }) {
   // The reason a task failed belongs where the user is looking, with the way to fix it.
   if (job.state === "failed" && job.end_reason && modelReasons.has(job.end_reason))
     notes.push({ tone: "danger", text: `任务没有执行：${endReasonLabel(job.end_reason)}。`, action: job.end_reason === "model_error" ? undefined : { label: "打开模型连接", run: openModelSettings } });
+  if (job.state === "failed" && job.end_reason && !modelReasons.has(job.end_reason)) {
+    const summary = jobFailureSummary(job);
+    if (summary) notes.push({ tone: "danger", text: summary });
+  }
   const summary = job.children_summary;
   // A blocked machine may be online: say why it waits, not that it is away.
   if (queuedStates.has(job.state) && worker?.blocked)
@@ -809,7 +599,9 @@ function App() {
     [loggingIn, setLoggingIn] = useState(false);
   const [modalOpen, setModalOpen] = useState(false),
     [modalWorker, setModalWorker] = useState(""),
-    [modalWorkspace, setModalWorkspace] = useState("");
+    [modalWorkspace, setModalWorkspace] = useState(""),
+    [modalDiagnosis, setModalDiagnosis] = useState(true),
+    [modalScenario, setModalScenario] = useState<DiagnosisScenario["id"]>("docker-service");
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]),
     [loadingWorkspaces, setLoadingWorkspaces] = useState(false),
     [creating, setCreating] = useState(false),
@@ -833,6 +625,7 @@ function App() {
   /** The side-effect warning of a retry, shown on the job it created. */
   const [retryNotice, setRetryNotice] = useState<{ jobId: string; text: string } | null>(null);
   const restored = useRef(false),
+    routeApplied = useRef(false),
     dialog = useRef<HTMLDialogElement>(null),
     composer = useRef<HTMLTextAreaElement>(null);
   const feed = useFeed(auth === "logged-in", sessionId, {
@@ -845,6 +638,7 @@ function App() {
   const messages = (Object.values(feed.state.messages) as (Message & { seq: number })[]).sort((a, b) => a.seq - b.seq);
   const jobs = (Object.values(feed.state.jobs) as Job[]).sort((a, b) => a.created_at - b.created_at);
   const loadingConversation = Boolean(sessionId) && !feed.loaded;
+  const bootstrapping = auth === "logged-in" && feed.state.mainSessionId === null;
   const activeSession = sessions.find(
     (session) => session.session_id === sessionId,
   );
@@ -878,6 +672,9 @@ function App() {
   }
   /** Bumped on every navigation, so a slow Main lookup cannot override a later click. */
   const navigation = useRef(0);
+  function syncRoute(route: ConsoleRoute, options?: { replace?: boolean }) {
+    writeRoute(route, options);
+  }
   async function selectMain() {
     const generation = ++navigation.current;
     setError("");
@@ -891,6 +688,7 @@ function App() {
       setSessionId(main);
       // A refresh reopens Main too.
       localStorage.setItem("willcord-session", main);
+      syncRoute({ view: "main" });
     } catch (cause) {
       if (generation !== navigation.current) return;
       report(cause);
@@ -907,6 +705,7 @@ function App() {
     setSessionId(id);
     setSelectedJobId(null);
     localStorage.setItem("willcord-session", id);
+    syncRoute({ view: "session", sessionId: id });
   }
   function selectSession(session: Session) {
     navigation.current++;
@@ -917,6 +716,7 @@ function App() {
     setSelectedJobId(null);
     setNavOpen(false);
     localStorage.setItem("willcord-session", session.session_id);
+    syncRoute({ view: "session", sessionId: session.session_id });
   }
   async function runDiagnosisInterceptCheck() {
     if (!sessionId || interceptRunning) return;
@@ -948,16 +748,25 @@ function App() {
       setSessionId(null);
       setSelectedJobId(null);
       setNavOpen(false);
+      syncRoute({ view: "worker", workerId: worker.worker_id });
     }
   }
   function openNewSession(
     workerId = selectedWorker ?? workers[0]?.worker_id ?? "",
+    options?: { diagnosis?: boolean; scenario?: DiagnosisScenario["id"] },
   ) {
     setModalWorker(workerId);
     setModalWorkspace("");
     setModalError("");
     setWorkspaces([]);
+    setModalDiagnosis(options?.diagnosis ?? false);
+    setModalScenario(options?.scenario ?? "docker-service");
     setModalOpen(true);
+  }
+  function startAnotherDiagnosisSession() {
+    const workerId = activeSession?.worker_id ?? selectedWorker ?? workers[0]?.worker_id;
+    if (!workerId) return;
+    openNewSession(workerId, { diagnosis: true, scenario: activeSession?.diagnosis_scenario ?? "docker-service" });
   }
   async function beginDiagnosisScenario(
     scenario: DiagnosisScenario,
@@ -1074,12 +883,83 @@ function App() {
   useEffect(() => {
     if (restored.current || !feed.state.mainSessionId) return;
     restored.current = true;
+    const fromHash = parseRouteHash(window.location.hash);
+    if (fromHash?.view === "session") {
+      const saved = sessions.find((session) => session.session_id === fromHash.sessionId);
+      if (saved) {
+        setSelectedWorker(saved.kind === "main" ? null : saved.worker_id);
+        setSessionId(saved.session_id);
+        return;
+      }
+    }
+    if (fromHash?.view === "main") {
+      void selectMain();
+      return;
+    }
+    if (fromHash?.view === "worker") {
+      const worker = workers.find((w) => w.worker_id === fromHash.workerId);
+      if (worker) {
+        selectWorker(worker);
+        return;
+      }
+    }
     const saved = sessions.find((session) => session.session_id === localStorage.getItem("willcord-session"));
     if (saved) {
       setSelectedWorker(saved.kind === "main" ? null : saved.worker_id);
       setSessionId(saved.session_id);
+      syncRoute({ view: "session", sessionId: saved.session_id });
     }
-  }, [feed.state.mainSessionId]);
+  }, [feed.state.mainSessionId, sessions, workers]);
+  useEffect(() => {
+    if (!feed.state.mainSessionId || routeApplied.current) return;
+    routeApplied.current = true;
+    if (!window.location.hash) {
+      if (sessionId) syncRoute({ view: "session", sessionId });
+      else if (selectedWorker) syncRoute({ view: "worker", workerId: selectedWorker });
+    }
+  }, [feed.state.mainSessionId, sessionId, selectedWorker]);
+  /** Browser back/forward: hash is already updated; do not pushState or auto-open latest session. */
+  function applyRouteFromHistory(route: ConsoleRoute) {
+    navigation.current++;
+    setError("");
+    setEditingSessionId(null);
+    setNavOpen(false);
+    setSelectedJobId(null);
+    if (route.view === "main") {
+      setSelectedWorker(null);
+      const main = feed.state.mainSessionId;
+      if (main) {
+        setSessionId(main);
+        localStorage.setItem("willcord-session", main);
+      } else setSessionId(null);
+      return;
+    }
+    if (route.view === "session") {
+      const session = sessions.find((s) => s.session_id === route.sessionId);
+      if (session) {
+        setSelectedWorker(session.kind === "main" ? null : session.worker_id);
+        setSessionId(session.session_id);
+        localStorage.setItem("willcord-session", session.session_id);
+      }
+      return;
+    }
+    if (route.view === "worker") {
+      setSelectedWorker(route.workerId);
+      setSessionId(null);
+      return;
+    }
+    setSelectedWorker(null);
+    setSessionId(null);
+  }
+  useEffect(() => {
+    const onPop = () => {
+      const route = parseRouteHash(window.location.hash);
+      if (!route) return;
+      applyRouteFromHistory(route);
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, [sessions, workers, feed.state.mainSessionId]);
   // A child session opened before its record arrived gets its machine once it does.
   useEffect(() => {
     if (activeSession?.kind === "worker" && selectedWorker !== activeSession.worker_id) setSelectedWorker(activeSession.worker_id);
@@ -1195,6 +1075,9 @@ function App() {
           worker_id: modalWorker,
           workspace_id: workspace.workspace_id,
           repo_id: workspace.repo_id,
+          ...(modalDiagnosis
+            ? { execution_mode: "diagnosis", diagnosis_scenario: modalScenario }
+            : {}),
         }),
       });
       selectSession(created);
@@ -1208,7 +1091,7 @@ function App() {
   }
   function beginRenameSession(session: Session) {
     setEditingSessionId(session.session_id);
-    setEditingTitle(session.title ?? session.workspace_id);
+    setEditingTitle(sessionDisplayTitle(session));
     setError("");
   }
   async function renameSession(event: React.FormEvent, session: Session) {
@@ -1301,7 +1184,7 @@ function App() {
             <span>Willcord</span>
           </div>
           <div>
-            <span className="eyebrow">ONE PLAN. MANY HANDS.</span>
+            <span className="eyebrow">一个目标 · 多台机器</span>
             <h1>
               大脑留在中心，
               <br />
@@ -1320,7 +1203,7 @@ function App() {
         <section className="login-panel">
           <div className="login-stack">
             <form onSubmit={login}>
-              <span className="eyebrow">WELCOME BACK</span>
+              <span className="eyebrow">欢迎回来</span>
               <h2>登录工作台</h2>
               <p className="muted">使用管理员密码连接主节点。</p>
               <label htmlFor="password">管理员密码</label>
@@ -1355,6 +1238,12 @@ function App() {
 
   return (
     <div className="workspace-app">
+      {bootstrapping && (
+        <div className="app-bootstrap" role="status">
+          <span className="loading-indicator" />
+          正在加载工作台…
+        </div>
+      )}
       {tasksOpen && isNarrow && (
         <button
           className="task-scrim"
@@ -1379,7 +1268,7 @@ function App() {
             <img src="/brand/logo-on-dark.svg" alt="" />
           </span>
           <span>
-            Willcord<small>AI OPERATIONS</small>
+            Willcord<small>运维控制台</small>
           </span>
           <button
             ref={navClose}
@@ -1491,11 +1380,11 @@ function App() {
                       >
                         <Icon name="chat" />
                         <span>
-                          <strong title={session.title ?? session.workspace_id}>
-                            {session.title ?? session.workspace_id}
+                          <strong title={sessionDisplayTitle(session)}>
+                            {sessionDisplayTitle(session)}
                           </strong>
                           <small>
-                            {session.parent_job_id ? "委派 · " : ""}
+                            {sessionDisplaySubtitle(session) ? `${sessionDisplaySubtitle(session)} · ` : ""}
                             {time(session.created_at, true)} ·{" "}
                             {session.session_id.slice(0, 6)}
                           </small>
@@ -1504,7 +1393,7 @@ function App() {
                       <button
                         type="button"
                         className="session-rename"
-                        aria-label={`重命名会话 ${session.title ?? session.workspace_id}`}
+                        aria-label={`重命名会话 ${sessionDisplayTitle(session)}`}
                         onClick={() => beginRenameSession(session)}
                       >
                         <Icon name="write" />
@@ -1570,8 +1459,11 @@ function App() {
               {activeWorker?.display_name ?? selectedWorker ?? "Main Agent"}
             </span>
             <h1>
-              {activeSession?.title ?? activeSession?.workspace_id ??
-                (selectedWorker ? "独立会话" : "Main Agent")}
+              {activeSession
+                ? sessionDisplayTitle(activeSession)
+                : selectedWorker
+                  ? "独立会话"
+                  : "Main Agent"}
             </h1>
           </div>
           <div className="header-actions">
@@ -1757,6 +1649,15 @@ function App() {
                   {interceptRunning ? "自检中…" : "拦截自检"}
                 </button>
               )}
+              {activeSession?.execution_mode === "diagnosis" && messages.length > 0 && (
+                <button
+                  type="button"
+                  className="secondary-button diagnosis-new-session"
+                  onClick={startAnotherDiagnosisSession}
+                >
+                  新建诊断会话
+                </button>
+              )}
             </div>
             )}
             {needsAttention && (
@@ -1847,7 +1748,7 @@ function App() {
                       >
                         <div className="turn-divider">
                           <span>{time(group.job.created_at, true)}</span>
-                          <Status state={group.job.state} />
+                          <Status state={group.job.state} endReason={group.job.end_reason} />
                         </div>
                         {resultMessages.map((message) => (
                           <ChatMessage
@@ -1885,7 +1786,14 @@ function App() {
                           .sort((a, b) => a.created_at - b.created_at)
                           .map((draft) => <DraftMessage key={draft.draft_id} draft={draft} agent={agentName} />)}
                         {group.job.result?.diagnosis && group.job.state === "succeeded" && (
-                          <DiagnosisResultPanel report={group.job.result.diagnosis} />
+                          <DiagnosisResultPanel
+                            report={group.job.result.diagnosis}
+                            onNewDiagnosis={
+                              activeSession?.execution_mode === "diagnosis"
+                                ? startAnotherDiagnosisSession
+                                : undefined
+                            }
+                          />
                         )}
                         <JobNotes job={group.job} worker={workers.find((w) => w.worker_id === group.job.worker_id)} />
                       </section>
@@ -1982,7 +1890,7 @@ function App() {
       >
         <div className="task-panel-heading">
           <div>
-            <span className="eyebrow">ACTIVITY</span>
+            <span className="eyebrow">任务</span>
             <h2>任务时间线</h2>
           </div>
           <button
@@ -2065,7 +1973,7 @@ function App() {
         </div>
         {selectedJob && (
           <div className="job-inspector">
-            <span className="eyebrow">SELECTED TASK</span>
+            <span className="eyebrow">当前任务</span>
             <h3>任务详情</h3>
             <dl>
               <div>
@@ -2170,6 +2078,46 @@ function App() {
           <p className="muted">
             选择执行机器和工作目录。创建后，这个会话的目标保持固定。
           </p>
+          <fieldset className="session-mode-fieldset">
+            <legend>会话类型</legend>
+            <label className="session-mode-option">
+              <input
+                type="radio"
+                name="session-mode"
+                checked={modalDiagnosis}
+                disabled={creating}
+                onChange={() => setModalDiagnosis(true)}
+              />
+              诊断会话（只读检查，可选场景）
+            </label>
+            <label className="session-mode-option">
+              <input
+                type="radio"
+                name="session-mode"
+                checked={!modalDiagnosis}
+                disabled={creating}
+                onChange={() => setModalDiagnosis(false)}
+              />
+              普通会话（可写入，受工作目录约束）
+            </label>
+          </fieldset>
+          {modalDiagnosis && (
+            <>
+              <label htmlFor="session-scenario">诊断场景</label>
+              <select
+                id="session-scenario"
+                value={modalScenario}
+                disabled={creating}
+                onChange={(event) => setModalScenario(event.target.value as DiagnosisScenario["id"])}
+              >
+                {diagnosisScenarios.map((scenario) => (
+                  <option key={scenario.id} value={scenario.id}>
+                    {scenario.title}
+                  </option>
+                ))}
+              </select>
+            </>
+          )}
           <label htmlFor="session-worker">执行机器</label>
           <select
             id="session-worker"

@@ -1,6 +1,8 @@
 // P4 operator controls: cancel, budget use, attention handling and full logs.
 import React, { useEffect, useRef, useState } from "react";
 import { request } from "./api";
+import { endReasonLabel } from "./end-reasons";
+export { endReasonLabel };
 
 export type JobControl = {
   job_id: string;
@@ -14,6 +16,8 @@ export type JobControl = {
   deadline_at?: number | null;
   tool_calls_used?: number | null;
   tokens_used?: number | null;
+  model_turns?: number | null;
+  max_model_turns?: number | null;
   /** Set on a job a Main Agent delegated; it shares its parent's budget and is retried through the parent. */
   parent_job_id?: string | null;
 };
@@ -34,20 +38,6 @@ type Attention = {
 };
 type Outcome = "executed" | "not_executed" | "terminated";
 
-const endReasons: Record<string, string> = {
-  completed: "正常完成",
-  cancelled_by_user: "用户取消",
-  abandoned: "已放弃",
-  deadline_exceeded: "超出运行时限",
-  budget_tool_calls: "超出工具调用次数",
-  budget_tokens: "超出 token 预算",
-  budget_model_turns: "超出模型轮次上限",
-  worker_disk_full: "机器磁盘空间不足，未执行",
-  worker_wait_expired: "等待机器上线超时",
-  model_auth_failed: "模型服务拒绝了 API key",
-  model_error: "模型服务调用失败，详情见主节点日志",
-  model_not_configured: "模型尚未配置完整（缺少 API key 或模型不存在）",
-};
 const outcomes: Record<Outcome, string> = {
   executed: "已执行完毕",
   not_executed: "确认未执行",
@@ -55,8 +45,6 @@ const outcomes: Record<Outcome, string> = {
 };
 const post = <T,>(url: string, body?: object) =>
   request<T>(url, { method: "POST", ...(body ? { body: JSON.stringify(body) } : {}) });
-
-export const endReasonLabel = (reason?: string | null) => (reason ? (endReasons[reason] ?? reason) : "");
 
 /** Budget use and the reason a job ended, for the job inspector. */
 export function BudgetRows({ job, now }: { job: JobControl; now: number }) {
@@ -67,6 +55,12 @@ export function BudgetRows({ job, now }: { job: JobControl; now: number }) {
         <div>
           <dt>工具次数</dt>
           <dd>{job.tool_calls_used ?? 0} / {job.max_tool_calls}</dd>
+        </div>
+      )}
+      {job.max_model_turns != null && (
+        <div>
+          <dt>模型轮次</dt>
+          <dd>{job.model_turns ?? 0} / {job.max_model_turns}</dd>
         </div>
       )}
       {job.max_tokens != null && (

@@ -3,7 +3,7 @@
 #                      PUBLIC_BASE_URL must be https://<this>
 # The internal CA lives in /data: keep that volume, or every worker's CA file
 # stops matching. Workers can fetch root.crt using a trusted CA fingerprint.
-# caddy-entrypoint.sh derives WILLCORD_HOST and WILLCORD_ORIGIN from the site.
+# caddy-entrypoint.sh derives WILLCORD_HOST, WILLCORD_ORIGIN and WILLCORD_PORT.
 {
 	skip_install_trust
 	# Browsers send no SNI for an IP address; serve this host's certificate.
@@ -15,38 +15,17 @@
 	}
 }
 
-(willcord) {
-	# Public certificate only; never expose the CA directory or admin API.
-	@bootstrap {
-		method GET
-		path /.well-known/willcord/ca.pem
-	}
-	handle @bootstrap {
-		root * {$WILLCORD_CA_ROOT:/data/caddy/pki/authorities/local}
-		rewrite * /root.crt
-		header Content-Type application/x-pem-file
-		header Cache-Control "no-store"
-		file_server
-	}
-
-	@server path /enrollment/* /api/* /auth/* /ws/worker /health
-	handle @server {
-		reverse_proxy {$WILLCORD_UPSTREAM:main:3000} {
-			flush_interval -1
-			stream_close_delay 5m
-		}
-	}
-
-	handle {
-		root * /srv/web
-		try_files {path} /index.html
-		file_server
-	}
-}
+import /etc/caddy/willcord-routes.caddy
 
 {$WILLCORD_SITE} {
 	tls internal
 	import willcord
+}
+
+# Wrong Host header or SNI-only access that does not match WILLCORD_SITE.
+:{$WILLCORD_PORT:8443} {
+	tls internal
+	import willcord_wrong_host
 }
 
 # Plain HTTP for the machine running the node. Compose publishes this port on

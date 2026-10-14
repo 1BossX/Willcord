@@ -14,4 +14,8 @@ WILLCORD_HOST=${WILLCORD_HOST%\]}
 origin=https://$site
 [ "$port" != 443 ] || origin=https://$host
 export WILLCORD_ORIGIN=$origin
+export WILLCORD_PORT=$port
+export WILLCORD_UPSTREAM=${WILLCORD_UPSTREAM:-main:3000}
+export WILLCORD_WEB_ROOT=${WILLCORD_WEB_ROOT:-/srv/web}
+export WILLCORD_CA_ROOT=${WILLCORD_CA_ROOT:-/data/caddy/pki/authorities/local}
 exec "$@"

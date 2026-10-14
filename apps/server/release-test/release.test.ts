@@ -77,10 +77,12 @@ test("P7-C release acceptance from the built artifacts", { timeout: 15 * 60_000 
     site = `https://localhost:${sitePort}`;
     // The production Caddyfile, unchanged except that it proxies to this main port.
     const caddyfile = join(dir, "Caddyfile");
-    writeFileSync(caddyfile, readFileSync(join(releaseDir, "deploy/Caddyfile.production"), "utf8").replace("127.0.0.1:3000", `127.0.0.1:${mainPort}`));
+    writeFileSync(caddyfile, readFileSync(join(releaseDir, "deploy/Caddyfile.production"), "utf8"));
     caddy = run(caddyBin, ["run", "--config", caddyfile, "--adapter", "caddyfile"], { env: {
       PATH: process.env.PATH ?? "", HOME: dir, XDG_DATA_HOME: join(dir, "caddy-data"), XDG_CONFIG_HOME: join(dir, "caddy-config"),
-      WILLCORD_SITE: `localhost:${sitePort}`, WILLCORD_ROOT: releaseDir, CADDY_ADMIN: `localhost:${await freePort()}`,
+      WILLCORD_SITE: `localhost:${sitePort}`, WILLCORD_PORT: String(sitePort), WILLCORD_ROOT: releaseDir,
+      WILLCORD_WEB_ROOT: join(releaseDir, "apps/web/dist"), WILLCORD_UPSTREAM: `127.0.0.1:${mainPort}`,
+      CADDY_ADMIN: `localhost:${await freePort()}`,
     } });
     ca = join(dir, "caddy-data/caddy/pki/authorities/local/root.crt");
     await waitFor(() => existsSync(ca), 30_000).catch(() => { throw new Error(`caddy did not create its CA: ${caddy!.log()}`); });

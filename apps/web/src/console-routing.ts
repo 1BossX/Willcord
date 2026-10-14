@@ -28,8 +28,9 @@ export function parseRouteHash(hash: string): ConsoleRoute | null {
   return null;
 }
 
-export function writeRoute(route: ConsoleRoute) {
+export function writeRoute(route: ConsoleRoute, options?: { replace?: boolean }) {
   const next = routeToHash(route);
   if (window.location.hash === next) return;
-  window.history.pushState(null, "", next);
+  if (options?.replace) window.history.replaceState(null, "", next);
+  else window.history.pushState(null, "", next);
 }

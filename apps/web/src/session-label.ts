@@ -29,7 +29,8 @@ export function sessionDisplaySubtitle(session: SessionLabelInput): string {
   if (session.parent_job_id) parts.push("委派");
   if (session.execution_mode === "diagnosis" && session.title?.trim()) {
     const fromScenario = scenarioTitle(session.diagnosis_scenario ?? null);
-    if (fromScenario) parts.push(fromScenario);
+    const title = session.title.trim();
+    if (fromScenario && fromScenario !== title) parts.push(fromScenario);
   }
   return parts.join(" · ");
 }

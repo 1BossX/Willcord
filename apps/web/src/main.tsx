@@ -671,8 +671,8 @@ function App() {
   }
   /** Bumped on every navigation, so a slow Main lookup cannot override a later click. */
   const navigation = useRef(0);
-  function syncRoute(route: ConsoleRoute) {
-    writeRoute(route);
+  function syncRoute(route: ConsoleRoute, options?: { replace?: boolean }) {
+    writeRoute(route, options);
   }
   async function selectMain() {
     const generation = ++navigation.current;
@@ -747,10 +747,6 @@ function App() {
   function startAnotherDiagnosisSession() {
     const workerId = activeSession?.worker_id ?? selectedWorker ?? workers[0]?.worker_id;
     if (!workerId) return;
-    setSelectedWorker(workerId);
-    setSessionId(null);
-    setSelectedJobId(null);
-    syncRoute({ view: "worker", workerId });
     openNewSession(workerId, { diagnosis: true, scenario: activeSession?.diagnosis_scenario ?? "docker-service" });
   }
   async function beginDiagnosisScenario(
@@ -903,26 +899,48 @@ function App() {
       else if (selectedWorker) syncRoute({ view: "worker", workerId: selectedWorker });
     }
   }, [feed.state.mainSessionId, sessionId, selectedWorker]);
+  /** Browser back/forward: hash is already updated; do not pushState or auto-open latest session. */
+  function applyRouteFromHistory(route: ConsoleRoute) {
+    navigation.current++;
+    setError("");
+    setEditingSessionId(null);
+    setNavOpen(false);
+    setSelectedJobId(null);
+    if (route.view === "main") {
+      setSelectedWorker(null);
+      const main = feed.state.mainSessionId;
+      if (main) {
+        setSessionId(main);
+        localStorage.setItem("willcord-session", main);
+      } else setSessionId(null);
+      return;
+    }
+    if (route.view === "session") {
+      const session = sessions.find((s) => s.session_id === route.sessionId);
+      if (session) {
+        setSelectedWorker(session.kind === "main" ? null : session.worker_id);
+        setSessionId(session.session_id);
+        localStorage.setItem("willcord-session", session.session_id);
+      }
+      return;
+    }
+    if (route.view === "worker") {
+      setSelectedWorker(route.workerId);
+      setSessionId(null);
+      return;
+    }
+    setSelectedWorker(null);
+    setSessionId(null);
+  }
   useEffect(() => {
     const onPop = () => {
       const route = parseRouteHash(window.location.hash);
       if (!route) return;
-      if (route.view === "main") void selectMain();
-      else if (route.view === "session") {
-        const session = sessions.find((s) => s.session_id === route.sessionId);
-        if (session) selectSession(session);
-      } else if (route.view === "worker") {
-        const worker = workers.find((w) => w.worker_id === route.workerId);
-        if (worker) selectWorker(worker);
-      } else if (route.view === "home") {
-        setSelectedWorker(null);
-        setSessionId(null);
-        setSelectedJobId(null);
-      }
+      applyRouteFromHistory(route);
     };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
-  }, [sessions, workers]);
+  }, [sessions, workers, feed.state.mainSessionId]);
   // A child session opened before its record arrived gets its machine once it does.
   useEffect(() => {
     if (activeSession?.kind === "worker" && selectedWorker !== activeSession.worker_id) setSelectedWorker(activeSession.worker_id);
@@ -1348,7 +1366,6 @@ function App() {
                           </strong>
                           <small>
                             {sessionDisplaySubtitle(session) ? `${sessionDisplaySubtitle(session)} · ` : ""}
-                            {session.parent_job_id ? "委派 · " : ""}
                             {time(session.created_at, true)} ·{" "}
                             {session.session_id.slice(0, 6)}
                           </small>

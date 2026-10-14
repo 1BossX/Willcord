@@ -17,3 +17,7 @@ test("model turn budget explains tool count separately", () => {
 test("localizes common tool errors", () => {
   assert.equal(localizeToolError("permission denied"), "权限不足");
 });
+
+test("command not found beats generic not found", () => {
+  assert.equal(localizeToolError("bash: foo: command not found"), "命令未找到");
+});

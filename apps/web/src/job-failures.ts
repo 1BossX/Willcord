@@ -3,8 +3,8 @@ import { endReasonLabel } from "./end-reasons.ts";
 const toolErrorRules: Array<[RegExp, string]> = [
   [/rate limit|too many requests/i, "被限流，请稍后重试"],
   [/permission denied|not permitted|operation not permitted/i, "权限不足"],
-  [/no such file|not found/i, "路径不存在"],
   [/command not found/i, "命令未找到"],
+  [/no such file|not found/i, "路径不存在"],
   [/timed? ?out|timeout/i, "执行超时"],
   [/disk full|no space left/i, "磁盘空间不足"],
 ];

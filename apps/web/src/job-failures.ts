@@ -1,4 +1,4 @@
-import { endReasonLabel } from "./control";
+import { endReasonLabel } from "./end-reasons.ts";
 
 const toolErrorRules: Array<[RegExp, string]> = [
   [/rate limit|too many requests/i, "被限流，请稍后重试"],

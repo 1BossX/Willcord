@@ -1,5 +1,5 @@
-import type { DiagnosisScenario } from "./diagnosis-scenarios";
-import { diagnosisScenarios } from "./diagnosis-scenarios";
+import type { DiagnosisScenario } from "./diagnosis-scenarios.ts";
+import { diagnosisScenarios } from "./diagnosis-scenarios.ts";
 
 export type SessionLabelInput = {
   title: string | null;

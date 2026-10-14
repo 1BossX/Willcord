@@ -621,7 +621,10 @@ export class ExecutionCoordinator {
         }
         const job = this.db.prepare("SELECT job_id,session_id,wait_until FROM jobs WHERE worker_id=? AND state IN ('queued','waiting_worker') AND queue_seq IS NOT NULL ORDER BY queue_seq LIMIT 1").get(workerId) as any;
         if (!job) return;
-        if (job.wait_until && job.wait_until < this.now()) { this.db.prepare("UPDATE jobs SET state='failed',end_reason='worker_wait_expired' WHERE job_id=?").run(job.job_id); this.advance(); continue; }
+        // Only jobs waiting for the worker to come back expire here. A queued job at
+        // the head with a free slot may have an old wait_until after CI scheduling
+        // jitter; it should dispatch instead of failing before the first tool_call.
+        if (job.state === "waiting_worker" && job.wait_until && job.wait_until < this.now()) { this.db.prepare("UPDATE jobs SET state='failed',end_reason='worker_wait_expired' WHERE job_id=?").run(job.job_id); this.advance(); continue; }
         if (!workspaceCurrent(this.db, job.session_id)) { this.failStaleWorkspace(job.job_id, job.session_id); this.advance(); continue; }
         const claimed = this.db.transaction(() => {
           if (this.db.prepare("UPDATE worker_slots SET active_job_id=? WHERE worker_id=? AND active_job_id IS NULL").run(job.job_id, workerId).changes !== 1) return false;

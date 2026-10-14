@@ -727,6 +727,7 @@ export async function createApp(
   timer.unref();
   const expiryTimer=setInterval(()=>{
     db.prepare("UPDATE jobs SET state='failed',end_reason='worker_wait_expired' WHERE state='waiting_worker' AND wait_until IS NOT NULL AND wait_until<?").run(now());
+    db.prepare("UPDATE jobs SET state='failed',end_reason='worker_wait_expired' WHERE state='queued' AND wait_until IS NOT NULL AND wait_until<? AND worker_id IN (SELECT worker_id FROM worker_slots WHERE active_job_id IS NOT NULL)").run(now());
     coordinator.sweepDeadlines();
   },options.waitSweepMs??60000);
   expiryTimer.unref();

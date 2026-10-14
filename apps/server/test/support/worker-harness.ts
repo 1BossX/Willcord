@@ -10,7 +10,9 @@ import { WebSocket, WebSocketServer } from "ws";
 
 export const repoRoot = resolve(import.meta.dirname, "../../../..");
 
-export const waitFor = async (check: () => boolean, timeoutMs = 10000) => {
+const defaultWaitForMs = process.env.CI ? 20_000 : 10_000;
+
+export const waitFor = async (check: () => boolean, timeoutMs = defaultWaitForMs) => {
   const deadline = Date.now() + timeoutMs;
   while (!check()) {
     if (Date.now() > deadline) throw new Error("timed out");

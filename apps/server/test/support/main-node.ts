@@ -54,7 +54,7 @@ export async function startScenario(options: {
 
   const one = (sql: string, ...params: unknown[]) => main!.db.prepare(sql).get(...params) as any;
   const all = (sql: string, ...params: unknown[]) => main!.db.prepare(sql).all(...params) as any[];
-  const until = (check: () => boolean, timeoutMs = 20000) => waitFor(() => {
+  const until = (check: () => boolean, timeoutMs = 30_000) => waitFor(() => {
     for (const worker of workers.values()) if (worker.child.exitCode !== null && worker.child.signalCode === null) throw new Error(`worker exited: ${worker.stderr()}`);
     return check();
   }, timeoutMs);

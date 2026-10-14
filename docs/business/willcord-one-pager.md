@@ -1,6 +1,6 @@
 # Willcord 一页商业计划书
 
-> 版本：2026-10-13 · 产品现状 v0.1.0-beta.3 · Apache-2.0 自托管 · 仓库 github.com/BossOptional/Willcord
+> 版本：2026-10-14 · 产品现状 v0.1.0-beta.4 · Apache-2.0 自托管 · 仓库 github.com/BossOptional/Willcord
 > 说明：文中所有价格、目标、转化数字均为 **假设/待验证**；不含任何市场规模、收入或用户数估算。
 
 ## 一句话定位

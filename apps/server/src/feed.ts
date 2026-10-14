@@ -126,7 +126,7 @@ function materialize(db: Database.Database, e: { kind: string; entity_id: string
     case "draft": return db.prepare("SELECT * FROM model_drafts WHERE draft_id=?").get(e.entity_id) ?? null;
     case "dispatch": return dispatchView(db);
     case "attention": return db.prepare("SELECT action_id,worker_id,job_id,action,created_at FROM attention_actions WHERE action_id=?").get(e.entity_id) ?? null;
-    case "alert": return db.prepare("SELECT content_json FROM events WHERE entity_id=?").get(e.entity_id) ? JSON.parse((db.prepare("SELECT content_json FROM events WHERE entity_id=?").get(e.entity_id) as { content_json: string }).content_json) : null;
+    case "alert": { const row = db.prepare("SELECT content_json FROM events WHERE entity_id=?").get(e.entity_id) as { content_json: string } | undefined; return row ? JSON.parse(row.content_json) : null; }
     default: return null;
   }
 }

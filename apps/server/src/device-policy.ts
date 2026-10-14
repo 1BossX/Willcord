@@ -2,10 +2,16 @@ import type Database from "better-sqlite3";
 
 /**
  * The device-level execution policy (#86): a locked device only ever runs
- * diagnosis. Enforcement lives on the main node at three layers — session
- * creation, Main Agent delegation, and call dispatch — so no code path can
- * hand a writable call to a locked worker, and the worker keeps enforcing the
- * per-call mode it is sent.
+ * diagnosis. Enforcement lives on the main node at these layers, so no code
+ * path can hand a writable call to a locked worker:
+ *  - session creation refuses a normal session (409 device_requires_diagnosis);
+ *  - Main Agent delegation to the device fails (error device_requires_diagnosis);
+ *  - approved actions are refused at propose, approve and execute time;
+ *  - calls of sessions created before the lock carry the frozen effective
+ *    mode: commit() persists it on runtime_calls.execution_mode and dispatch
+ *    rebuilds the request from that column, so commit and send always hash
+ *    identically.
+ * The worker keeps enforcing the per-call mode it is sent.
  */
 export type DeviceExecutionPolicy = "diagnosis" | null;
 
@@ -16,10 +22,10 @@ export function deviceExecutionPolicy(db: Database.Database, workerId: string | 
 }
 
 /**
- * The mode a dispatched call carries. A locked worker gets diagnosis on every
- * regular call, even in a session created before the policy was set.
- * Approved-mode calls keep their operator-approved binding; approving an
- * action for a locked worker is refused at the approval route.
+ * The mode a call carries. A locked worker gets diagnosis on every regular
+ * call, even in a session created before the policy was set. Approved-mode
+ * calls keep their operator-approved binding. This is frozen onto the call at
+ * commit time; a later policy change never rewrites it.
  */
 export function effectiveExecutionMode(
   db: Database.Database,

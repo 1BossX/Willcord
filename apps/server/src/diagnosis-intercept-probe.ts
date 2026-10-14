@@ -87,7 +87,7 @@ export function registerDiagnosisInterceptProbeRoutes(
       const digest = requestHash(request);
       db.prepare("INSERT INTO runtime_turns VALUES(?,?,?,?,?)").run(jobId, `intercept:${callId}`, JSON.stringify(assistant), hash(assistant), now());
       db.prepare(
-        "INSERT INTO runtime_calls(job_id,turn_key,call_id,call_seq,request_hash,tool_name,arguments_json,status) VALUES(?,?,?,?,?,?,?,'committed')",
+        "INSERT INTO runtime_calls(job_id,turn_key,call_id,call_seq,request_hash,tool_name,arguments_json,status,execution_mode) VALUES(?,?,?,?,?,?,?,'committed','diagnosis')",
       ).run(jobId, `intercept:${callId}`, callId, 1, digest, "write", JSON.stringify(writeArgs));
       db.prepare("INSERT INTO runtime_history(job_id,entry_key,turn_key,message_json) VALUES(?,?,?,NULL)").run(
         jobId,

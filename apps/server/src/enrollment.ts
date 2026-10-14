@@ -77,9 +77,19 @@ export function registerEnrollment(app: FastifyInstance, db: Database.Database, 
     else if (body.execution_policy === "diagnosis") policy = "diagnosis";
     else return reply.code(400).send({error:"invalid_execution_policy"});
     const result = db.transaction(() => {
+      const before = db.prepare("SELECT execution_policy FROM enrollments WHERE worker_id=?").get(req.params.id) as { execution_policy: string | null } | undefined;
       const changed = db.prepare("UPDATE enrollments SET name=?,execution_policy=?,updated_at=? WHERE worker_id=?").run(name.trim(), policy, now(), req.params.id).changes;
       if (!changed) return false;
       db.prepare("INSERT INTO events(created_at,content_json) VALUES (?,?)").run(now(), JSON.stringify({ type: "device_policy", worker_id: req.params.id, execution_policy: policy }));
+      // A policy change is an operator decision worth surfacing (#86).
+      if (before && (before.execution_policy === "diagnosis" ? "diagnosis" : null) !== policy) {
+        emitAlert(db, now, {
+          type: "device_policy_changed",
+          severity: policy === "diagnosis" ? "warn" : "info",
+          worker_id: req.params.id,
+          message: policy === "diagnosis" ? `设备 ${req.params.id} 已被锁定为仅诊断，普通会话与委派将被拒绝` : `设备 ${req.params.id} 的仅诊断锁定已解除`,
+        });
+      }
       return true;
     })();
     if(!result) return reply.code(404).send({error:"device_not_found"});

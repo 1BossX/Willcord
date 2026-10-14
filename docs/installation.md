@@ -280,7 +280,7 @@ curl -fsSL https://bossoptional.github.io/Willcord/install.sh | bash -s -- worke
 - **路径**：`PATCH /api/enrollments/{worker_id}`，请求体 `{"name": "...", "execution_policy": "diagnosis" | "none" | null}`；省略 `execution_policy` 表示保持不变。
 - **鉴权**：控制台管理员会话。
 - **响应**：`200 {"ok":true,"execution_policy":"diagnosis"|null}`；`400 invalid_execution_policy` / `400 invalid_metadata` / `404 device_not_found`。
-- **副作用**：写入 `enrollments.execution_policy` 与 `device_policy` 事件。锁定后该设备**只**能跑诊断：新的普通会话与 Main Agent 委派返回 409 `device_requires_diagnosis`，派发给已锁定设备的每个调用都强制携带诊断模式（已批准动作不接受新的批准请求）；worker 端照常按调用下发的执行模式拦截。解除锁定把策略置回 `none`，恢复按会话选择。控制台在设备卡片上有同一开关。
+- **副作用**：写入 `enrollments.execution_policy` 与 `device_policy` 事件，并在策略实际变化时产生一条告警（锁定为 warn、解除为 info）。锁定后该设备**只**能跑诊断：新的普通会话被拒绝（409 `device_requires_diagnosis`），Main Agent 委派到这台设备的调用立即失败（错误 `device_requires_diagnosis`，不会静默转成诊断会话）；锁定前已建立的会话，其调用在派发时按提交时刻冻结的诊断模式下发（提交与派发使用同一模式，不会出现哈希不一致）；批准动作在提出、批准、执行三个环节都拒绝。worker 端照常按调用下发的执行模式拦截。解除锁定把策略置回 `none`，恢复按会话选择；已冻结的调用不受解除影响。控制台在设备卡片上有同一开关。
 
 ### 设备告警
 

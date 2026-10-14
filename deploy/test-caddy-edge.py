@@ -2,7 +2,6 @@
 """Caddy edge cases for #91: shared routes, wrong-Host listener, public PEM endpoints."""
 from pathlib import Path
 import subprocess
-import sys
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -37,7 +36,6 @@ class CaddyEdgeConfigTests(unittest.TestCase):
         self.assertIn(':{$WILLCORD_PORT', docker)
         self.assertIn('willcord_wrong_host', docker)
 
-    @unittest.skipUnless(sys.platform.startswith('linux'), 'caddy-validate downloads official linux builds only')
     def test_caddy_validate_without_docker(self):
         proc = subprocess.run(['bash', str(VALIDATE)], capture_output=True, text=True)
         self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)

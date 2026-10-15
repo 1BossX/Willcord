@@ -1,9 +1,8 @@
 export class ApiError extends Error {
-  constructor(
-    public readonly status: number,
-    message: string,
-  ) {
+  readonly status: number;
+  constructor(status: number, message: string) {
     super(message);
+    this.status = status;
   }
 }
 
@@ -23,6 +22,13 @@ const errors: Record<string, string> = {
   invalid_api_key: "API key 格式无效：不能为空或包含换行。",
   api_key_required: "切换 provider 后必须输入新的 API key。",
 };
+
+/** Known error codes get their sentence; rate limiting gets a retry hint; anything else the generic line. */
+export function apiErrorMessage(status: number, code: unknown): string {
+  if (typeof code === "string" && Object.hasOwn(errors, code)) return errors[code];
+  if (status === 429) return "操作太频繁，请稍后再试。";
+  return "暂时无法完成请求，请稍后重试。";
+}
 
 export async function request<T>(
   url: string,
@@ -50,10 +56,7 @@ export async function request<T>(
   }
   const data = await response.json().catch(() => null);
   if (!response.ok)
-    throw new ApiError(
-      response.status,
-      errors[data?.error] ?? "暂时无法完成请求，请稍后重试。",
-    );
+    throw new ApiError(response.status, apiErrorMessage(response.status, data?.error));
   if (data === null)
     throw new ApiError(503, "主节点暂时未返回有效数据，请稍后重试。");
   return data as T;

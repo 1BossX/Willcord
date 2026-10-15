@@ -4,21 +4,30 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 version=${CADDY_VERSION:-2.10.2}
 cache=${CADDY_VALIDATE_CACHE:-/tmp/willcord-caddy-validate}
-case "$(uname -s)" in
+# Caddy release artifacts name macOS assets "mac", not "darwin" (#105). The
+# uname results are injectable so tests can verify that mapping on any host.
+uname_s=${CADDY_VALIDATE_UNAME_S:-$(uname -s)}
+uname_m=${CADDY_VALIDATE_UNAME_M:-$(uname -m)}
+case "$uname_s" in
   Linux) os=linux ;;
   Darwin) os=mac ;;
-  *) echo "unsupported OS: $(uname -s)" >&2; exit 1 ;;
+  *) echo "unsupported OS: $uname_s" >&2; exit 1 ;;
 esac
-arch=$(uname -m)
+arch=$uname_m
 case "$arch" in
   x86_64) arch=amd64 ;;
   aarch64|arm64) arch=arm64 ;;
   *) echo "unsupported arch: $arch" >&2; exit 1 ;;
 esac
+url="https://github.com/caddyserver/caddy/releases/download/v${version}/caddy_${version}_${os}_${arch}.tar.gz"
+# Tests read back the artifact URL without downloading anything.
+if [ "${CADDY_VALIDATE_PRINT_URL:-}" = "1" ]; then
+  printf '%s\n' "$url"
+  exit 0
+fi
 bin="$cache/caddy-$version-$os-$arch"
 if [ ! -x "$bin" ]; then
   mkdir -p "$cache"
-  url="https://github.com/caddyserver/caddy/releases/download/v${version}/caddy_${version}_${os}_${arch}.tar.gz"
   tmp=$(mktemp -d)
   curl -fsSL "$url" | tar -xz -C "$tmp" caddy
   mv "$tmp/caddy" "$bin"

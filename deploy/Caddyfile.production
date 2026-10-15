@@ -2,7 +2,13 @@
 #   WILLCORD_SITE  address browsers and workers use, e.g. plane.internal:8443
 #                      or 10.0.0.5:8443; PUBLIC_BASE_URL must be https://<this>
 #   WILLCORD_ROOT  release directory, e.g. /opt/willcord/current
-# Wrong-Host 421 catch-all is Docker-only (see deploy/docker/Caddyfile).
+# These two are all a bare-metal deployment needs; everything else derives
+# from WILLCORD_ROOT (#100): the UI is served from $WILLCORD_ROOT/apps/web/dist
+# and ca.pem/chain.pem default to the system Caddy data directory
+# (/var/lib/caddy/.local/share/caddy/pki/authorities/local; set WILLCORD_CA_ROOT
+# to override, e.g. for a non-default caddy home). The WEB_ROOT and PORT
+# placeholders and the wrong-Host 421 catch-all are Docker-only
+# (see deploy/docker/Caddyfile and deploy/docker/caddy-entrypoint.sh).
 # Workers trust the internal root: copy Caddy's root.crt (see docs/operations.md)
 # to each worker and point SSL_CERT_FILE at it, or use /.well-known/willcord/ca.pem.
 {

@@ -80,7 +80,7 @@ sudo install -d -m 0755 /etc/willcord
      - `Environment=WILLCORD_SITE=plane.internal:8443`
      - `Environment=WILLCORD_ROOT=/opt/willcord/current`
    - 执行 `sudo systemctl restart caddy`。
-   - `WILLCORD_SITE` 可以是主机名或 IP，worker 和浏览器都用这个地址访问。公开根证书：`https://<WILLCORD_SITE>/.well-known/willcord/ca.pem`；中间证书：`/.well-known/willcord/chain.pem`（默认读系统 Caddy 数据目录下的 CA 文件）。Docker 部署在 Host 不匹配时会返回 **421** 说明页；裸机默认不监听额外 catch-all，避免未设 `WILLCORD_PORT` 时升级后整站 404。
+   - `WILLCORD_SITE` 可以是主机名或 IP，worker 和浏览器都用这个地址访问。裸机只需这两行变量（#100）：控制台页面从 `WILLCORD_ROOT/apps/web/dist` 提供；公开根证书：`https://<WILLCORD_SITE>/.well-known/willcord/ca.pem`；中间证书：`/.well-known/willcord/chain.pem`（默认读系统 Caddy 数据目录下的 CA 文件，一般是 `/var/lib/caddy/.local/share/caddy/pki/authorities/local`；Caddy 数据目录不在默认位置时另加 `WILLCORD_CA_ROOT` 指向它）。`WILLCORD_PORT`、`WILLCORD_WEB_ROOT` 只在 Docker 部署里使用。Docker 部署在 Host 不匹配时会返回 **421** 说明页；裸机默认不监听额外 catch-all，避免未设 `WILLCORD_PORT` 时升级后整站 404。
 
 6. 配置内部 CA 信任：Caddy 第一次签发证书后，根证书在它的数据目录里。用系统包安装时一般是 `/var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt`。
    - 浏览器所在的机器要信任这个根证书，否则无法安全登录。

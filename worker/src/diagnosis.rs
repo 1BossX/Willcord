@@ -1,5 +1,20 @@
 // Diagnosis-mode execution policy (O2-KR1). Enforced on the worker before any
 // write hits disk or bash spawns a process.
+//
+// Rejection reasons follow the `diagnosis_bash_<rule>: <说明>` convention so the
+// operator can see which allowlist rule refused the call (#102). They are
+// &'static str to keep the Result type allocation-free on the hot path.
+const MSG_BASH_METACHARACTER: &str = "diagnosis_bash_metacharacter: 命令包含诊断模式禁止的 shell 元字符（& $ * ? [ ] ~ { } ! # | ; ` < > 引号 或反斜杠）；@ 开头参数也不允许";
+const MSG_BASH_DOCKER_FORM: &str = "diagnosis_bash_docker_form: docker 子命令或参数不在诊断只读白名单内（仅 docker ps/info/inspect/logs 及 docker container ps/inspect/logs）";
+const MSG_BASH_DF_FLAGS: &str =
+    "diagnosis_bash_df_flags: df 标志或路径不在诊断只读白名单内（常见字母标志，路径不得含 ..）";
+const MSG_BASH_DU_FLAGS: &str = "diagnosis_bash_du_flags: du 标志或路径不在诊断只读白名单内（-s/-a 组合或 -d/--max-depth≤5 必填其一，路径不得含 ..）";
+const MSG_BASH_DU_DEPTH: &str =
+    "diagnosis_bash_du_depth: -d/--max-depth 必须是 1..=5 的整数（诊断模式限制目录遍历深度）";
+const MSG_BASH_SYSTEMCTL_FORM: &str = "diagnosis_bash_systemctl_form: systemctl 仅允许 systemctl status <unit>（unit 不能为空或以 - 开头）";
+const MSG_BASH_CURL_FLAGS: &str = "diagnosis_bash_curl_flags: curl 标志不在诊断只读白名单内（仅 -f/-s/-S/-4/-6/--fail/--silent/--show-error/--ipv4/--ipv6 及带值的 --max-time/--connect-timeout/--header/--user-agent）";
+const MSG_BASH_CURL_URL: &str = "diagnosis_bash_curl_url: curl URL 不是合法的本地回环地址（仅 http(s)://localhost 或 127.0.0.1/[::1]，禁止用户信息、@ 与反斜杠）";
+const MSG_BASH_DU_NEED_SUMMARY_OR_DEPTH: &str = "diagnosis_bash_du_flags: du 需要汇总或深度限定（-s/-a 组合或 -d/--max-depth≤5 必填其一），避免诊断模式下全盘遍历";
 
 const MAX_DU_DEPTH: u64 = 5;
 
@@ -132,11 +147,11 @@ fn allowed_os_release_target(canonical: &std::path::Path) -> bool {
 
 fn reject_token_metacharacters(token: &str) -> Result<(), &'static str> {
     if token.starts_with('@') {
-        return Err("invalid");
+        return Err(MSG_BASH_METACHARACTER);
     }
     if token.starts_with("http://") || token.starts_with("https://") {
         if token.contains('\\') || token.contains('@') {
-            return Err("invalid");
+            return Err(MSG_BASH_METACHARACTER);
         }
         return Ok(());
     }
@@ -145,7 +160,7 @@ fn reject_token_metacharacters(token: &str) -> Result<(), &'static str> {
         '<', '>', '"', '\'',
     ];
     if token.chars().any(|c| FORBIDDEN.contains(&c)) {
-        return Err("invalid");
+        return Err(MSG_BASH_METACHARACTER);
     }
     Ok(())
 }
@@ -213,15 +228,15 @@ fn allow_docker(tokens: &[String]) -> Result<(), &'static str> {
         Some("container") => match tokens.get(2).map(String::as_str) {
             Some("ps") | Some("inspect") if tokens.len() >= 3 => Ok(()),
             Some("logs") if tokens.len() >= 4 => reject_docker_logs_follow(tokens),
-            _ => Err("invalid"),
+            _ => Err(MSG_BASH_DOCKER_FORM),
         },
-        _ => Err("invalid"),
+        _ => Err(MSG_BASH_DOCKER_FORM),
     }
 }
 
 fn allow_df(tokens: &[String]) -> Result<(), &'static str> {
     if tokens[0] != "df" {
-        return Err("invalid");
+        return Err(MSG_BASH_DF_FLAGS);
     }
     for t in tokens.iter().skip(1) {
         if t.starts_with('-') {
@@ -230,12 +245,12 @@ fn allow_df(tokens: &[String]) -> Result<(), &'static str> {
                 .skip(1)
                 .all(|c| c.is_ascii_alphabetic() || c == '-')
             {
-                return Err("invalid");
+                return Err(MSG_BASH_DF_FLAGS);
             }
             continue;
         }
         if t.contains("..") {
-            return Err("invalid");
+            return Err(MSG_BASH_DF_FLAGS);
         }
     }
     Ok(())
@@ -243,7 +258,7 @@ fn allow_df(tokens: &[String]) -> Result<(), &'static str> {
 
 fn allow_du(tokens: &[String]) -> Result<(), &'static str> {
     if tokens[0] != "du" {
-        return Err("invalid");
+        return Err(MSG_BASH_DU_FLAGS);
     }
     let mut summary_only = false;
     let mut depth_ok = false;
@@ -267,9 +282,9 @@ fn allow_du(tokens: &[String]) -> Result<(), &'static str> {
         if t.starts_with("--max-depth=") {
             let depth = t["--max-depth=".len()..]
                 .parse::<u64>()
-                .map_err(|_| "invalid")?;
+                .map_err(|_| MSG_BASH_DU_DEPTH)?;
             if depth == 0 || depth > MAX_DU_DEPTH {
-                return Err("invalid");
+                return Err(MSG_BASH_DU_DEPTH);
             }
             depth_ok = true;
             i += 1;
@@ -280,19 +295,19 @@ fn allow_du(tokens: &[String]) -> Result<(), &'static str> {
             continue;
         }
         if t == "-X" {
-            return Err("invalid");
+            return Err(MSG_BASH_DU_FLAGS);
         }
         if t.starts_with("--") && (t.contains("-from") || t.starts_with("--exclude-from")) {
-            return Err("invalid");
+            return Err(MSG_BASH_DU_FLAGS);
         }
         if t == "-d" {
             let depth = tokens
                 .get(i + 1)
-                .ok_or("invalid")?
+                .ok_or(MSG_BASH_DU_DEPTH)?
                 .parse::<u64>()
-                .map_err(|_| "invalid")?;
+                .map_err(|_| MSG_BASH_DU_DEPTH)?;
             if depth == 0 || depth > MAX_DU_DEPTH {
-                return Err("invalid");
+                return Err(MSG_BASH_DU_DEPTH);
             }
             depth_ok = true;
             i += 2;
@@ -300,11 +315,11 @@ fn allow_du(tokens: &[String]) -> Result<(), &'static str> {
         }
         if let Some(rest) = t.strip_prefix("-d") {
             if rest.is_empty() {
-                return Err("invalid");
+                return Err(MSG_BASH_DU_FLAGS);
             }
-            let depth = rest.parse::<u64>().map_err(|_| "invalid")?;
+            let depth = rest.parse::<u64>().map_err(|_| MSG_BASH_DU_DEPTH)?;
             if depth == 0 || depth > MAX_DU_DEPTH {
-                return Err("invalid");
+                return Err(MSG_BASH_DU_DEPTH);
             }
             depth_ok = true;
             i += 1;
@@ -312,10 +327,10 @@ fn allow_du(tokens: &[String]) -> Result<(), &'static str> {
         }
         if t.starts_with('-') {
             if t.starts_with("--") {
-                return Err("invalid");
+                return Err(MSG_BASH_DU_FLAGS);
             }
             if t.chars().skip(1).any(|c| c == 'X') {
-                return Err("invalid");
+                return Err(MSG_BASH_DU_FLAGS);
             }
             if t.chars().skip(1).all(|c| c == 'a' || c == 's' || c == 'h') {
                 if t.contains('s') {
@@ -324,27 +339,27 @@ fn allow_du(tokens: &[String]) -> Result<(), &'static str> {
                 i += 1;
                 continue;
             }
-            return Err("invalid");
+            return Err(MSG_BASH_DU_FLAGS);
         }
         if t.contains("..") {
-            return Err("invalid");
+            return Err(MSG_BASH_DU_FLAGS);
         }
         i += 1;
     }
     if summary_only || depth_ok {
         Ok(())
     } else {
-        Err("invalid")
+        Err(MSG_BASH_DU_NEED_SUMMARY_OR_DEPTH)
     }
 }
 
 fn allow_systemctl(tokens: &[String]) -> Result<(), &'static str> {
     if tokens.len() != 3 || tokens[1] != "status" {
-        return Err("invalid");
+        return Err(MSG_BASH_SYSTEMCTL_FORM);
     }
     let unit = &tokens[2];
     if unit.is_empty() || unit.starts_with('-') {
-        return Err("invalid");
+        return Err(MSG_BASH_SYSTEMCTL_FORM);
     }
     Ok(())
 }
@@ -357,14 +372,14 @@ fn reject_docker_logs_follow(tokens: &[String]) -> Result<(), &'static str> {
     {
         3
     } else {
-        return Err("invalid");
+        return Err(MSG_BASH_DOCKER_FORM);
     };
     for t in tokens.iter().skip(start) {
         if t == "-f" || t == "--follow" || t.starts_with("--follow=") {
-            return Err("invalid");
+            return Err(MSG_BASH_DOCKER_FORM);
         }
         if t.starts_with('-') && !t.starts_with("--") && t.chars().skip(1).any(|c| c == 'f') {
-            return Err("invalid");
+            return Err(MSG_BASH_DOCKER_FORM);
         }
     }
     Ok(())
@@ -372,14 +387,14 @@ fn reject_docker_logs_follow(tokens: &[String]) -> Result<(), &'static str> {
 
 fn allow_curl(tokens: &[String]) -> Result<(), &'static str> {
     if tokens[0] != "curl" {
-        return Err("invalid");
+        return Err(MSG_BASH_CURL_FLAGS);
     }
     for t in tokens.iter().skip(1) {
         if *t == "-q" || *t == "--globoff" {
-            return Err("invalid");
+            return Err(MSG_BASH_CURL_FLAGS);
         }
         if t.starts_with('-') && !t.starts_with("--") && t.chars().skip(1).any(|c| c == 'q') {
-            return Err("invalid");
+            return Err(MSG_BASH_CURL_FLAGS);
         }
     }
     let mut urls = 0usize;
@@ -391,20 +406,24 @@ fn allow_curl(tokens: &[String]) -> Result<(), &'static str> {
             continue;
         }
         if urls > 0 {
-            return Err("invalid");
+            return Err(MSG_BASH_CURL_FLAGS);
         }
         parse_loopback_health_url(t)?;
         urls += 1;
         i += 1;
     }
-    if urls == 1 { Ok(()) } else { Err("invalid") }
+    if urls == 1 {
+        Ok(())
+    } else {
+        Err(MSG_BASH_CURL_URL)
+    }
 }
 
 /// Read-only curl flags for a single local health GET. Anything else is refused.
 fn consume_curl_flag(tokens: &[String], i: &mut usize) -> Result<(), &'static str> {
     let flag = tokens[*i].as_str();
     if flag == "-" {
-        return Err("invalid");
+        return Err(MSG_BASH_CURL_FLAGS);
     }
     if flag.starts_with("--") {
         match flag {
@@ -417,12 +436,12 @@ fn consume_curl_flag(tokens: &[String], i: &mut usize) -> Result<(), &'static st
                 let value = tokens
                     .get(*i)
                     .filter(|v| !v.starts_with('-'))
-                    .ok_or("invalid")?;
+                    .ok_or(MSG_BASH_CURL_FLAGS)?;
                 reject_curl_flag_value(value)?;
                 *i += 1;
                 Ok(())
             }
-            _ => Err("invalid"),
+            _ => Err(MSG_BASH_CURL_FLAGS),
         }
     } else if flag.starts_with('-') {
         let mut needs_value = false;
@@ -430,7 +449,7 @@ fn consume_curl_flag(tokens: &[String], i: &mut usize) -> Result<(), &'static st
             match ch {
                 'f' | 's' | 'S' | '4' | '6' => {}
                 'm' | 'H' | 'A' => needs_value = true,
-                _ => return Err("invalid"),
+                _ => return Err(MSG_BASH_CURL_FLAGS),
             }
         }
         *i += 1;
@@ -438,26 +457,26 @@ fn consume_curl_flag(tokens: &[String], i: &mut usize) -> Result<(), &'static st
             let value = tokens
                 .get(*i)
                 .filter(|v| !v.starts_with('-'))
-                .ok_or("invalid")?;
+                .ok_or(MSG_BASH_CURL_FLAGS)?;
             reject_curl_flag_value(value)?;
             *i += 1;
         }
         Ok(())
     } else {
-        Err("invalid")
+        Err(MSG_BASH_CURL_FLAGS)
     }
 }
 
 fn parse_loopback_health_url(raw: &str) -> Result<(), &'static str> {
     if raw.contains('\\') || raw.contains('@') {
-        return Err("invalid");
+        return Err(MSG_BASH_CURL_URL);
     }
-    let parsed = url::Url::parse(raw).map_err(|_| "invalid")?;
+    let parsed = url::Url::parse(raw).map_err(|_| MSG_BASH_CURL_URL)?;
     if parsed.scheme() != "http" && parsed.scheme() != "https" {
-        return Err("invalid");
+        return Err(MSG_BASH_CURL_URL);
     }
     if !parsed.username().is_empty() || parsed.password().is_some() {
-        return Err("invalid");
+        return Err(MSG_BASH_CURL_URL);
     }
     let ok = match parsed.host() {
         Some(url::Host::Domain(name)) => name.eq_ignore_ascii_case("localhost"),
@@ -465,7 +484,7 @@ fn parse_loopback_health_url(raw: &str) -> Result<(), &'static str> {
         Some(url::Host::Ipv6(addr)) => addr == std::net::Ipv6Addr::LOCALHOST,
         None => false,
     };
-    if ok { Ok(()) } else { Err("invalid") }
+    if ok { Ok(()) } else { Err(MSG_BASH_CURL_URL) }
 }
 
 pub fn is_diagnosis(execution_mode: Option<&str>) -> bool {
@@ -474,7 +493,7 @@ pub fn is_diagnosis(execution_mode: Option<&str>) -> bool {
 
 fn reject_curl_flag_value(value: &str) -> Result<(), &'static str> {
     if value.starts_with('@') {
-        return Err("invalid");
+        return Err(MSG_BASH_CURL_FLAGS);
     }
     Ok(())
 }
@@ -619,8 +638,11 @@ mod tests {
 
     #[test]
     fn du_depth_is_capped() {
-        assert_eq!(bash_argv("du -d 6 /var").unwrap_err(), "invalid");
-        assert_eq!(bash_argv("du --max-depth=9 /var").unwrap_err(), "invalid");
+        assert_eq!(bash_argv("du -d 6 /var").unwrap_err(), MSG_BASH_DU_DEPTH);
+        assert_eq!(
+            bash_argv("du --max-depth=9 /var").unwrap_err(),
+            MSG_BASH_DU_DEPTH
+        );
     }
 
     #[test]
@@ -655,7 +677,7 @@ mod tests {
         ] {
             assert_eq!(
                 bash_argv(cmd).unwrap_err(),
-                "invalid",
+                MSG_BASH_METACHARACTER,
                 "expected block: {cmd}"
             );
         }
@@ -676,7 +698,7 @@ mod tests {
         ] {
             assert_eq!(
                 bash_argv(cmd).unwrap_err(),
-                "invalid",
+                MSG_BASH_SYSTEMCTL_FORM,
                 "expected block: {cmd}"
             );
         }
@@ -691,7 +713,7 @@ mod tests {
         ] {
             assert_eq!(
                 bash_argv(cmd).unwrap_err(),
-                "invalid",
+                MSG_BASH_DOCKER_FORM,
                 "expected block: {cmd}"
             );
         }
@@ -715,6 +737,7 @@ mod tests {
 
     #[test]
     fn curl_rejects_header_and_data_file_indirection() {
+        // The @-prefix is caught first by the shared metacharacter gate (reject_token_metacharacters).
         for cmd in [
             "curl -H @/etc/passwd http://127.0.0.1/health",
             "curl --header @/tmp/h http://127.0.0.1/health",
@@ -722,7 +745,7 @@ mod tests {
         ] {
             assert_eq!(
                 bash_argv(cmd).unwrap_err(),
-                "invalid",
+                MSG_BASH_METACHARACTER,
                 "expected block: {cmd}"
             );
         }
@@ -738,7 +761,7 @@ mod tests {
         ] {
             assert_eq!(
                 bash_argv(cmd).unwrap_err(),
-                "invalid",
+                MSG_BASH_DU_FLAGS,
                 "expected block: {cmd}"
             );
         }

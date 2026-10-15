@@ -8,6 +8,12 @@ import { workerToolRequestFields } from "./approved-action-wire.js";
 
 const hash = (v: unknown) => createHash("sha256").update(JSON.stringify(v)).digest("hex");
 
+/**
+ * The self-check creates a real job on every call, so a burst must not flood
+ * the worker queue; the same budget as /auth/login, keyed per client IP.
+ */
+export const INTERCEPT_CHECK_RATE_LIMIT = { max: 5, timeWindow: 60000 };
+
 function nextSessionMessageSeq(db: Database.Database, sessionId: string) {
   return Number((db.prepare("SELECT COALESCE(MAX(seq),0)+1 AS n FROM messages WHERE session_id=?").get(sessionId) as { n: number }).n);
 }
@@ -19,7 +25,10 @@ export function registerDiagnosisInterceptProbeRoutes(
   now: () => number,
   wake: (session: { session_id: string; kind: string; worker_id: string | null }) => void,
 ) {
-  app.post("/api/sessions/:session_id/diagnosis-intercept-check", async (req: any, reply: any) => {
+  app.post(
+    "/api/sessions/:session_id/diagnosis-intercept-check",
+    { config: { rateLimit: INTERCEPT_CHECK_RATE_LIMIT } },
+    async (req: any, reply: any) => {
     const session = db.prepare("SELECT * FROM sessions WHERE session_id=?").get(req.params.session_id) as any;
     if (!session || session.kind !== "worker") return reply.code(404).send({ error: "session_not_found" });
     if (session.execution_mode !== "diagnosis") return reply.code(409).send({ error: "diagnosis_session_required" });
@@ -97,5 +106,6 @@ export function registerDiagnosisInterceptProbeRoutes(
     })();
     wake(session);
     return reply.code(202).send({ job_id: jobId, state, call_id: callId });
-  });
+    },
+  );
 }

@@ -2,6 +2,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { request } from "./api";
 import { endReasonLabel } from "./end-reasons";
+import { attentionActionView, attentionActionOriginLabel, attentionActionCallLines, isRetryAttentionAction, retryActionsForWorker, type AttentionAction } from "./attention-actions";
 import type { Alert } from "./feed-state";
 export { endReasonLabel };
 
@@ -35,7 +36,7 @@ type AttentionCall = {
 type Attention = {
   workers: { worker_id: string; blocked: number; unblock_pending: number; reported_ledger_id: string | null }[];
   calls: AttentionCall[];
-  actions: { action_id: string; action: string; job_id: string | null; worker_id: string; created_at: number; evidence: unknown }[];
+  actions: AttentionAction[];
 };
 type Outcome = "executed" | "not_executed" | "terminated";
 
@@ -157,6 +158,59 @@ export function RetryButton({ job, onDone, onError }: { job: JobControl; onDone:
 }
 
 /**
+ * One past attention action, for this worker's record (#109): retry items show
+ * why they exist and what to do; each offers "标记已处理" and "忽略" exits.
+ */
+export function AttentionActionRow({ action, onDone, onError }: {
+  action: AttentionAction; onDone: () => void; onError: (e: unknown) => void;
+}) {
+  const [busy, setBusy] = useState<"handle" | "dismiss" | null>(null);
+  if (!isRetryAttentionAction(action)) return null;
+  const view = attentionActionView(action);
+  const resolve = async (kind: "handle" | "dismiss") => {
+    setBusy(kind);
+    try {
+      await post(`/api/attention/actions/${action.action_id}/${kind}`);
+      onDone();
+    } catch (e) { onError(e); } finally { setBusy(null); }
+  };
+  return (
+    <li className="attention-action-item" aria-label={`重试记录 ${action.action_id.slice(0, 8)}`}>
+      <div className="attention-action-reason">
+        {view.backfilled && <span className="attention-origin">{attentionActionOriginLabel(view)}</span>}
+        {view.legacy && <span className="attention-origin attention-origin-legacy">{attentionActionOriginLabel(view)}</span>}
+        {view.note && <p>{view.note}</p>}
+        {view.reason && (
+          <>
+            {attentionActionCallLines(view).length > 0 && (
+              <ul className="attention-action-calls">
+                {attentionActionCallLines(view).map((line) => <li key={line}>{line}</li>)}
+              </ul>
+            )}
+            {view.reason.suggested && <p className="attention-suggested">建议：{view.reason.suggested}</p>}
+            <details className="technical-detail">
+              <summary>详细信息</summary>
+              <code>原任务 {view.reason.source_job_id ?? "未知"} → 新任务 {view.reason.new_job_id ?? "未知"}</code>
+              {view.reason.source_job_state && (
+                <code>状态 {view.reason.source_job_state}{view.reason.source_end_reason ? ` · ${endReasonLabel(view.reason.source_end_reason) || view.reason.source_end_reason}` : ""}</code>
+              )}
+            </details>
+          </>
+        )}
+      </div>
+      <div className="attention-action-exits">
+        <button type="button" className="secondary-button" disabled={busy !== null} onClick={() => resolve("handle")}>
+          {busy === "handle" ? "正在处理…" : "标记已处理"}
+        </button>
+        <button type="button" className="secondary-button" disabled={busy !== null} onClick={() => resolve("dismiss")}>
+          {busy === "dismiss" ? "正在忽略…" : "忽略"}
+        </button>
+      </div>
+    </li>
+  );
+}
+
+/**
  * Manual handling of a job or machine whose execution cannot be proven.
  * Nothing here re-runs anything: the operator records what they verified.
  */
@@ -181,59 +235,75 @@ export function AttentionPanel({ job, workerId, workerBlocked, refreshKey, onDon
   const calls = view.calls.filter((c) => c.worker_id === workerId);
   const unknown = calls.filter((c) => c.status === "unknown");
   const pending = view.workers.find((w) => w.worker_id === workerId);
+  // #109: only retry records have handle / ignore actions in this history.
+  const actions = retryActionsForWorker(view.actions, workerId);
+  const needsManualAttention = job?.state === "needs_attention" || workerBlocked;
   const act = async (fn: () => Promise<unknown>) => {
     setBusy(true);
     try { await fn(); onDone(); } catch (e) { onError(e); } finally { setBusy(false); }
   };
+  if (!needsManualAttention && actions.length === 0) return null;
   return (
-    <section className="attention-panel" aria-label="人工核对">
-      <p className="attention-note">
-        这些调用的执行情况无法证明。机器会一直保留占用，不会自动重跑，直到你核对后解除。
-      </p>
-      {calls.length > 0 && (
-        <ul className="attention-calls">
-          {calls.map((c) => (
-            <li key={c.call_id}>
-              <code>{c.tool_name}</code> {c.arguments.command ?? c.arguments.path ?? ""}
-              <span className="call-id">调用 {c.call_id}{c.status === "resolved" ? " · 已核对，等待机器确认" : ""}</span>
-              {c.status === "unknown" && (
-                <select
-                  aria-label={`调用 ${c.call_id} 的核对结果`}
-                  value={choices[c.call_id] ?? ""}
-                  onChange={(e) => setChoices({ ...choices, [c.call_id]: e.target.value as Outcome })}
-                >
-                  <option value="" disabled>选择核对结果</option>
-                  {(Object.keys(outcomes) as Outcome[]).map((o) => <option key={o} value={o}>{outcomes[o]}</option>)}
-                </select>
-              )}
-            </li>
-          ))}
-        </ul>
+    <>
+      {needsManualAttention && (
+        <section className="attention-panel" aria-label="人工核对">
+          <p className="attention-note">
+            这些调用的执行情况无法证明。机器会一直保留占用，不会自动重跑，直到你核对后解除。
+          </p>
+          {calls.length > 0 && (
+            <ul className="attention-calls">
+              {calls.map((c) => (
+                <li key={c.call_id}>
+                  <code>{c.tool_name}</code> {c.arguments.command ?? c.arguments.path ?? ""}
+                  <span className="call-id">调用 {c.call_id}{c.status === "resolved" ? " · 已核对，等待机器确认" : ""}</span>
+                  {c.status === "unknown" && (
+                    <select
+                      aria-label={`调用 ${c.call_id} 的核对结果`}
+                      value={choices[c.call_id] ?? ""}
+                      onChange={(e) => setChoices({ ...choices, [c.call_id]: e.target.value as Outcome })}
+                    >
+                      <option value="" disabled>选择核对结果</option>
+                      {(Object.keys(outcomes) as Outcome[]).map((o) => <option key={o} value={o}>{outcomes[o]}</option>)}
+                    </select>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+          {pending?.reported_ledger_id && <p className="inspector-note">机器上报了新的账本，解除后将采用它。</p>}
+          {job?.state === "needs_attention" && (
+            <div className="attention-action">
+              <label>放弃说明<textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} /></label>
+              <button type="button" className="secondary-button" disabled={busy || !note.trim()} onClick={() => act(() => post(`/api/jobs/${job.job_id}/abandon`, { note }))}>
+                放弃任务
+              </button>
+              <span className="inspector-note">放弃只结束任务，不会解除机器阻塞。</span>
+            </div>
+          )}
+          {workerBlocked && job?.state !== "needs_attention" && (
+            <div className="attention-action">
+              <label>核对依据（必填）<textarea value={evidence} onChange={(e) => setEvidence(e.target.value)} rows={3} placeholder="例如：已登录机器，进程不存在，marker 只有一行" /></label>
+              <button
+                type="button"
+                className="primary-button"
+                disabled={busy || !evidence.trim() || unknown.some((c) => !choices[c.call_id]) || Boolean(pending?.unblock_pending)}
+                onClick={() => act(() => post(`/api/workers/${workerId}/unblock`, { evidence, resolutions: unknown.map((c) => ({ call_id: c.call_id, outcome: choices[c.call_id] })) }))}
+              >
+                {pending?.unblock_pending ? "等待机器确认" : "解除阻塞"}
+              </button>
+            </div>
+          )}
+        </section>
       )}
-      {pending?.reported_ledger_id && <p className="inspector-note">机器上报了新的账本，解除后将采用它。</p>}
-      {job?.state === "needs_attention" && (
-        <div className="attention-action">
-          <label>放弃说明<textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} /></label>
-          <button type="button" className="secondary-button" disabled={busy || !note.trim()} onClick={() => act(() => post(`/api/jobs/${job.job_id}/abandon`, { note }))}>
-            放弃任务
-          </button>
-          <span className="inspector-note">放弃只结束任务，不会解除机器阻塞。</span>
-        </div>
+      {actions.length > 0 && (
+        <section className="attention-panel attention-actions-record" aria-label="历史重试记录">
+          <p className="inspector-note">这台机器尚未处理的重试记录（标记已处理或忽略后不再列出）：</p>
+          <ul className="attention-actions-list">
+            {actions.map((a) => <AttentionActionRow key={a.action_id} action={a} onDone={onDone} onError={onError} />)}
+          </ul>
+        </section>
       )}
-      {workerBlocked && job?.state !== "needs_attention" && (
-        <div className="attention-action">
-          <label>核对依据（必填）<textarea value={evidence} onChange={(e) => setEvidence(e.target.value)} rows={3} placeholder="例如：已登录机器，进程不存在，marker 只有一行" /></label>
-          <button
-            type="button"
-            className="primary-button"
-            disabled={busy || !evidence.trim() || unknown.some((c) => !choices[c.call_id]) || Boolean(pending?.unblock_pending)}
-            onClick={() => act(() => post(`/api/workers/${workerId}/unblock`, { evidence, resolutions: unknown.map((c) => ({ call_id: c.call_id, outcome: choices[c.call_id] })) }))}
-          >
-            {pending?.unblock_pending ? "等待机器确认" : "解除阻塞"}
-          </button>
-        </div>
-      )}
-    </section>
+    </>
   );
 }
 

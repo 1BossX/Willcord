@@ -16,6 +16,7 @@ import { effectiveExecutionMode } from "./device-policy.js";
 import { emitAlert } from "./alerts.js";
 import { assertCallMatchesApproval, settleApprovedExecuteJob } from "./approved-action.js";
 import { isApprovedBoundExecuteCall, workerToolRequestFields } from "./approved-action-wire.js";
+import { retryReasonForAction } from "./attention-reason.js";
 import { MAX_MODEL_TURNS_PER_JOB } from "./job-limits.js";
 
 type Socket = { readyState: number; send(data: string): void };
@@ -1251,7 +1252,11 @@ export class ExecutionCoordinator {
       jobs: this.db.prepare("SELECT job_id,session_id,worker_id,input_text,state,cancel_requested,cancel_reason,end_reason,created_at FROM jobs WHERE state='needs_attention' ORDER BY queue_seq").all(),
       calls: (this.db.prepare("SELECT c.job_id,c.call_id,c.call_seq,c.tool_name,c.arguments_json,c.status,c.cancel_sent_at,c.resolution_json,c.resolve_acked,j.worker_id,j.state job_state FROM runtime_calls c JOIN jobs j USING(job_id) WHERE c.status='unknown' OR (c.status='resolved' AND c.resolve_acked=0) ORDER BY c.job_id,c.call_seq").all() as any[])
         .map(({ arguments_json, resolution_json, ...c }) => ({ ...c, arguments: JSON.parse(arguments_json), resolution: resolution_json ? JSON.parse(resolution_json) : null })),
-      actions: (this.db.prepare("SELECT * FROM attention_actions ORDER BY created_at DESC,rowid DESC LIMIT 200").all() as any[]).map((a) => ({ ...a, evidence: JSON.parse(a.evidence) })),
+      actions: (this.db.prepare("SELECT * FROM attention_actions WHERE handled_at IS NULL AND dismissed_at IS NULL ORDER BY created_at DESC,rowid DESC LIMIT 200").all() as any[]).map((a) => {
+        const evidence = JSON.parse(a.evidence);
+        // #109: retry actions carry a readable reason; old rows get one backfilled from the jobs they point at.
+        return { ...a, evidence, ...(a.action === "retry" ? { reason: retryReasonForAction(this.db, { job_id: a.job_id, evidence }) } : {}) };
+      }),
     };
   }
 

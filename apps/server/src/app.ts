@@ -27,6 +27,7 @@ import { deviceRequiresDiagnosis } from "./device-policy.js";
 import { emitAlert, recentAlerts } from "./alerts.js";
 import { registerApprovedActionRoutes } from "./approved-action.js";
 import { registerDiagnosisInterceptProbeRoutes } from "./diagnosis-intercept-probe.js";
+import { buildRetryReason } from "./attention-reason.js";
 const digest = (value: string) =>
   createHash("sha256").update(value).digest("hex");
 const secret = () => randomBytes(32).toString("base64url");
@@ -365,14 +366,42 @@ export async function createApp(
       const session=db.prepare("SELECT * FROM sessions WHERE session_id=?").get(job.session_id) as any;
       if(session.kind==="worker"&&!workspaceCurrent(db,session.session_id)) return {code:409,error:"workspace_version_changed"};
       const created=insertJob(session,`retry:${job.job_id}:${randomBytes(8).toString("hex")}`,job.input_text,job.request_hash);
+      const reason=buildRetryReason(db,job,created.job_id);
       // attention_actions is per worker; a Main job retry is recorded as an event.
-      if(job.worker_id) db.prepare("INSERT INTO attention_actions(action_id,worker_id,job_id,action,evidence,created_at) VALUES(?,?,?,'retry',?,?)").run(randomBytes(16).toString("hex"),job.worker_id,job.job_id,JSON.stringify({new_job_id:created.job_id}),now());
-      else db.prepare("INSERT INTO events(created_at,content_json) VALUES(?,?)").run(now(),JSON.stringify({type:"job_retried",job_id:job.job_id,new_job_id:created.job_id}));
+      if(job.worker_id) db.prepare("INSERT INTO attention_actions(action_id,worker_id,job_id,action,evidence,created_at) VALUES(?,?,?,'retry',?,?)").run(randomBytes(16).toString("hex"),job.worker_id,job.job_id,JSON.stringify({new_job_id:created.job_id,reason}),now());
+      else db.prepare("INSERT INTO events(created_at,content_json) VALUES(?,?)").run(now(),JSON.stringify({type:"job_retried",job_id:job.job_id,new_job_id:created.job_id,reason}));
       return {code:202,...created,session};
     }).immediate();
     if("error" in outcome) return reply.code(outcome.code).send({error:outcome.error});
     if(outcome.state==="queued") wake(outcome.session);
     return reply.code(202).send({job_id:outcome.job_id,state:outcome.state,retry_of:req.params.job_id,notice:"新任务不会知道原任务做过什么；请先核对原任务已产生的副作用。"});
+  });
+  // #109: an operator resolves a retry attention item after checking the side
+  // effects the retry was about, or dismisses it as noise / legacy record.
+  const retryActionToResolve=(actionId:string)=>{
+    const outcome=db.transaction(()=>{
+      const action=db.prepare("SELECT * FROM attention_actions WHERE action_id=?").get(actionId) as any;
+      if(!action) return {code:404,error:"action_not_found"};
+      if(action.action!=="retry") return {code:409,error:"action_not_retry"};
+      if(action.handled_at!=null||action.dismissed_at!=null) return {code:409,error:"already_resolved",status:action.handled_at!=null?"handled":"dismissed"};
+      return {action};
+    }).immediate();
+    return outcome as {code:number,error:string,status?:string}|{action:any};
+  };
+  app.post<{Params:{action_id:string}}>("/api/attention/actions/:action_id/handle",async(req,reply)=>{
+    const note=(req.body as {note?:unknown}|null)?.note;
+    if(note!==undefined&&(typeof note!=="string"||!note.trim()||note.length>2000)) return reply.code(400).send({error:"invalid_note"});
+    const outcome=retryActionToResolve(req.params.action_id);
+    if("error" in outcome) return reply.code(outcome.code).send({error:outcome.error});
+    const evidence=JSON.parse(outcome.action.evidence);
+    db.prepare("UPDATE attention_actions SET handled_at=?,evidence=? WHERE action_id=?").run(now(),JSON.stringify({...evidence,handled_note:typeof note==="string"?note:null}),req.params.action_id);
+    return {action_id:req.params.action_id,status:"handled"};
+  });
+  app.post<{Params:{action_id:string}}>("/api/attention/actions/:action_id/dismiss",async(req,reply)=>{
+    const outcome=retryActionToResolve(req.params.action_id);
+    if("error" in outcome) return reply.code(outcome.code).send({error:outcome.error});
+    db.prepare("UPDATE attention_actions SET dismissed_at=? WHERE action_id=?").run(now(),req.params.action_id);
+    return {action_id:req.params.action_id,status:"dismissed"};
   });
   app.get<{Params:{job_id:string;call_id:string};Querystring:{stream?:string;from_seq?:string}}>("/api/jobs/:job_id/calls/:call_id/logs",async(req,reply)=>{
     const stream=req.query.stream??"stdout";

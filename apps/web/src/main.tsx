@@ -2012,16 +2012,14 @@ function App() {
               <summary>任务标识</summary>
               <code>{selectedJob.job_id}</code>
             </details>
-            {(selectedJob.state === "needs_attention" || Boolean(activeWorker?.blocked)) && (
-              <AttentionPanel
-                job={selectedJob}
-                workerId={selectedJob.worker_id}
-                workerBlocked={Boolean(activeWorker?.blocked)}
-                refreshKey={refreshKey + feed.state.attentionVersion}
-                onDone={() => setRefreshKey((value) => value + 1)}
-                onError={report}
-              />
-            )}
+            <AttentionPanel
+              job={selectedJob}
+              workerId={selectedJob.worker_id}
+              workerBlocked={Boolean(workers.find((worker) => worker.worker_id === selectedJob.worker_id)?.blocked)}
+              refreshKey={refreshKey + feed.state.attentionVersion}
+              onDone={() => setRefreshKey((value) => value + 1)}
+              onError={report}
+            />
             {selectedJobToolFailures.length > 0 && (
               <div className="inspector-command-failures" role="status">
                 <strong><Icon name="alert" /> 工具调用失败</strong>

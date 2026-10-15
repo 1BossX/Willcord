@@ -2598,6 +2598,56 @@ summary:focus-visible {
   border-radius: 6px;
   max-width: 100%;
 }
+/* #109: recorded retry actions with their reason and resolution exits */
+.attention-actions-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+  font-size: 12px;
+}
+.attention-action-item {
+  display: grid;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.attention-action-reason {
+  display: grid;
+  gap: 6px;
+  overflow-wrap: anywhere;
+}
+.attention-action-reason p {
+  margin: 0;
+}
+.attention-action-calls {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 2px;
+  font-size: 11px;
+}
+.attention-origin {
+  justify-self: start;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+}
+.attention-origin-legacy {
+  color: #8a5a1f;
+  border-color: #8a5a1f;
+}
+.attention-suggested {
+  color: #4a5a4f;
+}
+.attention-action-exits {
+  display: flex;
+  gap: 6px;
+}
 .log-viewer {
   display: grid;
   gap: 6px;

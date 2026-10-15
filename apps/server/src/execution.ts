@@ -12,6 +12,8 @@ import { logView } from "./feed.js";
 import { modelFromEnv, type ModelConfig } from "./config.js";
 import { buildDiagnosisReport } from "./diagnosis-report.js";
 import { diagnosisAnswerFormat } from "./diagnosis-scenarios.js";
+import { effectiveExecutionMode } from "./device-policy.js";
+import { emitAlert } from "./alerts.js";
 import { assertCallMatchesApproval, settleApprovedExecuteJob } from "./approved-action.js";
 import { isApprovedBoundExecuteCall, workerToolRequestFields } from "./approved-action-wire.js";
 import { MAX_MODEL_TURNS_PER_JOB } from "./job-limits.js";
@@ -166,7 +168,10 @@ export class ExecutionCoordinator {
   }
 
   private call(jobId: string, callId: string) {
-    return this.db.prepare(`SELECT c.*,j.worker_id,j.approved_action_id,s.workspace_id,s.workspace_version,s.execution_mode,a.binding_hash AS approved_binding_hash FROM runtime_calls c JOIN jobs j USING(job_id) JOIN sessions s USING(session_id) LEFT JOIN approved_actions a ON a.approved_action_id=j.approved_action_id WHERE c.job_id=? AND c.call_id=?`).get(jobId, callId) as (CallRow & { approved_action_id?: string | null; approved_binding_hash?: string | null }) | undefined;
+    // row.execution_mode is the mode frozen at commit time (the request hash
+    // was computed with it); the session's own mode is aliased separately so
+    // a later policy change can never alter what dispatch rebuilds (#86).
+    return this.db.prepare(`SELECT c.*,j.worker_id,j.approved_action_id,s.workspace_id,s.workspace_version,s.execution_mode AS session_execution_mode,a.binding_hash AS approved_binding_hash FROM runtime_calls c JOIN jobs j USING(job_id) JOIN sessions s USING(session_id) LEFT JOIN approved_actions a ON a.approved_action_id=j.approved_action_id WHERE c.job_id=? AND c.call_id=?`).get(jobId, callId) as (CallRow & { approved_action_id?: string | null; approved_binding_hash?: string | null }) | undefined;
   }
 
   /** A connection may carry calls only after this epoch reconciled and while the worker is unblocked. */
@@ -192,6 +197,7 @@ export class ExecutionCoordinator {
       if (jobId) this.db.prepare("UPDATE jobs SET state='needs_attention' WHERE job_id=? AND state NOT IN ('succeeded','failed','cancelled')").run(jobId);
       const job = jobId && this.db.prepare("SELECT 1 FROM jobs WHERE job_id=?").get(jobId) ? jobId : null;
       this.db.prepare("INSERT INTO attention_actions(action_id,worker_id,job_id,action,evidence,created_at) VALUES(?,?,?,'blocked',?,?)").run(randomUUID(), workerId, job, JSON.stringify({ reason, evidence }), this.now());
+      emitAlert(this.db, this.now, { type: "device_blocked", severity: "error", worker_id: workerId, job_id: job, message: `机器 ${workerId} 因 ${reason} 进入需要核对状态`, detail: { reason } });
     })();
   }
 
@@ -978,13 +984,18 @@ export class ExecutionCoordinator {
       inserted = true;
       this.commitDrafts(job.job_id);
       this.db.prepare("INSERT INTO runtime_turns VALUES(?,?,?,?,?)").run(job.job_id, turnKey, JSON.stringify(assistantMessage), fingerprint, this.now());
-      const add = this.db.prepare("INSERT INTO runtime_calls(job_id,turn_key,call_id,call_seq,request_hash,tool_name,arguments_json,status) VALUES(?,?,?,?,?,?,?,'committed')");
+      const add = this.db.prepare("INSERT INTO runtime_calls(job_id,turn_key,call_id,call_seq,request_hash,tool_name,arguments_json,status,execution_mode) VALUES(?,?,?,?,?,?,?,'committed',?)");
       let seq = (this.db.prepare("SELECT COALESCE(MAX(call_seq),0) n FROM runtime_calls WHERE job_id=?").get(job.job_id) as any).n;
       for (const c of calls) {
         seq++;
         if (job.approved_action_id && !job.verify_command) {
           assertCallMatchesApproval(this.db, job, c.name, c.arguments ?? {});
         }
+        // Commit and dispatch must rebuild the request from one source: the
+        // effective mode is frozen onto the call here and read back by
+        // sendCall, so a lock raised (or lifted) after this commit never
+        // changes the request the stored hash covers (#86).
+        const callMode = job.approved_action_id && !job.verify_command ? "approved" : effectiveExecutionMode(this.db, job.worker_id, job.execution_mode ?? null);
         const request = workerToolRequest({
           worker_id: job.worker_id,
           job_id: job.job_id,
@@ -994,14 +1005,14 @@ export class ExecutionCoordinator {
           workspace_version: job.workspace_version,
           tool_name: c.name,
           arguments_json: JSON.stringify(c.arguments ?? {}),
-          execution_mode: job.approved_action_id && !job.verify_command ? "approved" : job.execution_mode ?? null,
+          execution_mode: callMode,
           approved_binding_hash:
             job.approved_action_id && !job.verify_command
               ? (this.db.prepare("SELECT binding_hash FROM approved_actions WHERE approved_action_id=?").get(job.approved_action_id) as { binding_hash: string }).binding_hash
               : null,
         });
         // Main calls never leave this node, so they need no worker-protocol hash.
-        add.run(job.job_id, turnKey, c.id, seq, job.session_kind === "main" ? hash(request) : requestHash(request), c.name, JSON.stringify(c.arguments ?? {}));
+        add.run(job.job_id, turnKey, c.id, seq, job.session_kind === "main" ? hash(request) : requestHash(request), c.name, JSON.stringify(c.arguments ?? {}), callMode);
       }
       this.db.prepare("INSERT INTO runtime_history(job_id,entry_key,turn_key,message_json) VALUES(?,?,?,NULL)").run(job.job_id, `turn:${turnKey}`, turnKey);
       this.recordUsage(job, turnKey, assistantMessage);
@@ -1031,6 +1042,8 @@ export class ExecutionCoordinator {
         const callId = `verify-${job.job_id}`, turnKey = `verify:${job.job_id}`, args = { command: job.verify_command };
         const assistant = { role: "assistant", content: [{ type: "toolCall", id: callId, name: "bash", arguments: args }], timestamp: this.now() };
         const seq = (this.db.prepare("SELECT COALESCE(MAX(call_seq),0)+1 n FROM runtime_calls WHERE job_id=?").get(job.job_id) as { n: number }).n;
+        // Same frozen-mode rule as commit(): dispatch rebuilds from this value.
+        const verifyMode = effectiveExecutionMode(this.db, job.worker_id, job.execution_mode ?? null);
         const request = workerToolRequest({
           worker_id: job.worker_id,
           job_id: job.job_id,
@@ -1040,10 +1053,10 @@ export class ExecutionCoordinator {
           workspace_version: job.workspace_version,
           tool_name: "bash",
           arguments_json: JSON.stringify(args),
-          execution_mode: job.execution_mode ?? null,
+          execution_mode: verifyMode,
         });
         this.db.prepare("INSERT INTO runtime_turns VALUES(?,?,?,?,?)").run(job.job_id, turnKey, JSON.stringify(assistant), hash(assistant), this.now());
-        this.db.prepare("INSERT INTO runtime_calls(job_id,turn_key,call_id,call_seq,request_hash,tool_name,arguments_json,status) VALUES(?,?,?,?,?,'bash',?,'committed')").run(job.job_id, turnKey, callId, seq, requestHash(request), JSON.stringify(args));
+        this.db.prepare("INSERT INTO runtime_calls(job_id,turn_key,call_id,call_seq,request_hash,tool_name,arguments_json,status,execution_mode) VALUES(?,?,?,?,?,'bash',?,'committed',?)").run(job.job_id, turnKey, callId, seq, requestHash(request), JSON.stringify(args), verifyMode);
         return true;
       }
       this.db.prepare("UPDATE jobs SET state='succeeded',end_reason='completed' WHERE job_id=? AND state='running'").run(job.job_id);

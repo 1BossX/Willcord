@@ -23,6 +23,8 @@ import {
 } from "@willcord/protocol";
 import type { WorkerFrame } from "@willcord/protocol";
 import { isDiagnosisScenarioId, scenarioById } from "./diagnosis-scenarios.js";
+import { deviceRequiresDiagnosis } from "./device-policy.js";
+import { emitAlert, recentAlerts } from "./alerts.js";
 import { registerApprovedActionRoutes } from "./approved-action.js";
 import { registerDiagnosisInterceptProbeRoutes } from "./diagnosis-intercept-probe.js";
 const digest = (value: string) =>
@@ -254,6 +256,8 @@ export async function createApp(
     const worker=db.prepare("SELECT 1 FROM workers WHERE worker_id=?").get(body.worker_id);
     if(!worker||!workspace) return reply.code(404).send({error:"worker_or_workspace_not_found"});
     if(body.repo_id!==undefined&&(typeof body.repo_id!=="string"||body.repo_id!==workspace.repo_id)) return reply.code(409).send({error:"repo_mismatch"});
+    // A device locked to diagnosis cannot open a writable session (#86).
+    if(body.execution_mode!=="diagnosis"&&deviceRequiresDiagnosis(db,body.worker_id)) return reply.code(409).send({error:"device_requires_diagnosis"});
     const session_id=randomBytes(16).toString("hex");
     const executionMode=body.execution_mode==="diagnosis"?"diagnosis":null;
     const diagnosisScenario=executionMode&&isDiagnosisScenarioId(body.diagnosis_scenario)?body.diagnosis_scenario:null;
@@ -455,6 +459,7 @@ export async function createApp(
       "UPDATE worker_tokens SET revoked_at=? WHERE digest=? AND revoked_at IS NULL",
     ).run(now(), tokenDigest);
     if (row) {
+      emitAlert(db, now, { type: "token_revoked", severity: "warn", worker_id: row.worker_id, message: `设备 ${row.worker_id} 的一个凭据已吊销（token_id ${tokenId(tokenDigest)}）` });
       const c = connections.get(row.worker_id);
       if (c?.tokenDigest === tokenDigest) {
         offline(row.worker_id, c.epoch);
@@ -721,6 +726,8 @@ export async function createApp(
         .prepare("SELECT last_seen FROM workers WHERE worker_id=?")
         .get(id) as { last_seen: number };
       if (now() - row.last_seen >= 30000) {
+        // A device that stops answering is an anomaly an operator should see (#86).
+        emitAlert(db, now, { type: "device_unresponsive", severity: "warn", worker_id: id, message: `设备 ${id} 超过 30 秒没有心跳，连接已关闭` });
         offline(id, c.epoch);
         connections.delete(id);
         c.socket.close(1008, "heartbeat timeout");

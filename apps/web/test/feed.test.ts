@@ -22,6 +22,28 @@ test("an event at or below the cursor is a repeat and changes nothing", () => {
   assert.deepEqual(Object.keys(twice.messages), ["m1", "m2"]);
 });
 
+test("dispatch pause events update the banner state; snapshot alerts land newest first", () => {
+  let s = fromSnapshot(snapshot, "s1");
+  assert.equal(s.dispatch, null);
+  s = applyEvent(s, ev(11, "dispatch", "main", { paused: 1, reason: "operator", note: "巡检中", since: 1700000000000 }, null, null));
+  assert.equal(s.dispatch?.paused, 1);
+  assert.equal(s.dispatch?.reason, "operator");
+  s = applyEvent(s, ev(12, "dispatch", "main", { paused: 0, reason: null, note: null, since: null }, null, null));
+  assert.equal(s.dispatch?.paused, 0);
+  // Alerts prepend, cap at 20 and bump the attention version.
+  const base = fromSnapshot({ ...snapshot, alerts: [{ alert_id: "a0", type: "token_revoked", severity: "warn", worker_id: "w", message: "旧告警", created_at: 1 }] }, "s1");
+  assert.equal(base.alerts.length, 1);
+  let withAlert = applyEvent(base, ev(13, "alert", "alert-x", { alert_id: "alert-x", type: "device_unresponsive", severity: "error", worker_id: "w", message: "设备失联", created_at: 2 }, null, null));
+  assert.equal(withAlert.alerts[0].alert_id, "alert-x");
+  assert.equal(withAlert.alerts.length, 2);
+  assert.equal(withAlert.attentionVersion, base.attentionVersion + 1);
+  for (let i = 0; i < 25; i++) withAlert = applyEvent(withAlert, ev(14 + i, "alert", `alert-${i}`, { alert_id: `alert-${i}`, type: "device_unresponsive", severity: "info", worker_id: "w", message: "n", created_at: 3 }, null, null));
+  assert.equal(withAlert.alerts.length, 20);
+  // An alert with no payload (event retention) leaves the list alone.
+  const empty = applyEvent(withAlert, ev(99, "alert", "alert-gone", null, null, null));
+  assert.equal(empty.alerts.length, 20);
+});
+
 test("the latest state of an entity replaces the earlier one", () => {
   let s = fromSnapshot(snapshot, "s1");
   s = applyEvent(s, ev(11, "job", "j1", { job_id: "j1", state: "cancel_requested" }));

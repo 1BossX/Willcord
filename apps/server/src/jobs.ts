@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { Budget, ToolRecord } from "./execution.js";
+import { deviceRequiresDiagnosis } from "./device-policy.js";
 
 const hash = (v: unknown) => createHash("sha256").update(JSON.stringify(v)).digest("hex");
 const TERMINAL = new Set(["succeeded", "failed", "cancelled"]);
@@ -104,9 +105,13 @@ export function delegate(db: Database.Database, now: () => number, budget: Budge
   const failed = prerequisites.find((p) => TERMINAL.has(p.state) && p.state !== "succeeded");
   if (failed) return refuse("dependency_failed", { depends_on: failed.job_id, state: failed.state });
 
+  // A device locked to diagnosis takes no delegated work at all (#86): the
+  // delegate call fails instead of silently becoming a diagnosis session.
+  if (deviceRequiresDiagnosis(db, args.worker_id)) return refuse("device_requires_diagnosis", { worker_id: args.worker_id });
+
   const root = db.prepare("SELECT root_job_id,max_tool_calls,max_tokens,max_runtime_secs,deadline_at FROM jobs WHERE job_id=?").get(parent.root_job_id) as Root;
   const sessionId = randomUUID();
-  db.prepare("INSERT INTO sessions(session_id,kind,worker_id,workspace_id,workspace_version,repo_id,path,created_at,title,parent_job_id,delegation_id) VALUES(?,'worker',?,?,?,?,?,?,?,?,?)")
+  db.prepare("INSERT INTO sessions(session_id,kind,worker_id,workspace_id,workspace_version,repo_id,path,created_at,title,parent_job_id,delegation_id,execution_mode) VALUES(?,'worker',?,?,?,?,?,?,?,?,?,NULL)")
     .run(sessionId, args.worker_id, workspace.workspace_id, workspace.config_version, workspace.repo_id, workspace.path, now(), Array.from(args.prompt.trim().replace(/\s+/g, " ")).slice(0, 80).join(""), parent.job_id, delegationId);
   const ready = prerequisites.every((p) => p.state === "succeeded");
   const created = createJob(db, now, {

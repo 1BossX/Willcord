@@ -122,8 +122,14 @@ test("P4-A real Rust worker: process-group cancel and timeout, bounded output, l
     assert.equal((await peer.next("log_status", 15000, (f) => f.call_id === "c6")).state, "expired");
 
     // 5. Output written while disconnected is fetched afterwards, in order.
-    const chatty = peer.call(1, "c7", 7, "bash", { command: "for i in 1 2 3 4 5; do echo line$i; sleep 0.3; done" });
-    await peer.next("tool_accepted");
+    // The whole loop must outlast the 1s reconnect backoff plus handshake even
+    // on a loaded machine, or the call finishes before the server can report
+    // it as still running; five 1s lines give that window without slowing
+    // the test beyond its 60s budget.
+    const chatty = peer.call(1, "c7", 7, "bash", { command: "for i in 1 2 3 4 5; do echo line$i; sleep 1; done" });
+    // Match the call itself: earlier sections may leave accepted frames in the
+    // queue, and terminating on one of those races c7 out of the ledger.
+    await peer.next("tool_accepted", 15000, (f) => f.call_id === "c7");
     peer.socket.terminate();
     peer = await nextPeer();
     const second = await peer.handshake(2);
@@ -148,7 +154,7 @@ test("P4-A real Rust worker: process-group cancel and timeout, bounded output, l
 
     // 7. A graceful shutdown stops running commands instead of abandoning them.
     peer.call(2, "c9", 9, "bash", { command: "sleep 60 & echo $! > orphan.pid; wait" });
-    await peer.next("tool_accepted");
+    await peer.next("tool_accepted", 15000, (f) => f.call_id === "c9");
     await waitFor(() => existsSync(join(workspace, "orphan.pid")));
     const orphan = Number(readFileSync(join(workspace, "orphan.pid"), "utf8"));
     await stopWorker(worker!, "SIGINT");

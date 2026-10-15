@@ -13,6 +13,7 @@ export type FeedEvent = {
 
 type Row = Record<string, any>;
 export type Dispatch = { paused: number; reason: string | null; note: string | null; since: number | null };
+export type Alert = { event_id: number; alert_id: string; type: string; severity: "info" | "warn" | "error"; worker_id?: string | null; job_id?: string | null; message: string; created_at: number };
 export type Snapshot = {
   cursor: number;
   server_time?: number;
@@ -20,6 +21,8 @@ export type Snapshot = {
   workers: Row[];
   /** Whether the main node starts work; paused after a restore, on low disk or by an operator. */
   dispatch?: Dispatch;
+  /** Newest device alerts first (#86). */
+  alerts?: Alert[];
   sessions: Row[];
   session: { session: Row; messages: Row[]; jobs: Row[]; calls: Row[]; logs: Row[]; drafts: Row[] } | null;
 };
@@ -41,10 +44,12 @@ export type FeedState = {
   drafts: Record<string, Row>;
   /** Bumped by events that change what the attention panel shows. */
   attentionVersion: number;
+  /** Newest device alerts first (#86). */
+  alerts: Alert[];
 };
 
 export const emptyFeed = (sessionId: string | null = null): FeedState => ({
-  cursor: 0, sessionId, mainSessionId: null, workers: {}, dispatch: null, sessions: {}, messages: {}, jobs: {}, calls: {}, logs: {}, drafts: {}, attentionVersion: 0,
+  cursor: 0, sessionId, mainSessionId: null, workers: {}, dispatch: null, sessions: {}, messages: {}, jobs: {}, calls: {}, logs: {}, drafts: {}, attentionVersion: 0, alerts: [],
 });
 
 const byKey = (rows: Row[], key: (row: Row) => string) => Object.fromEntries(rows.map((row) => [key(row), row]));
@@ -66,6 +71,7 @@ export function fromSnapshot(snapshot: Snapshot, sessionId: string | null, atten
     logs: s ? byKey(s.logs, logKey) : {},
     drafts: s ? byKey(s.drafts, (d) => d.draft_id) : {},
     attentionVersion: attentionVersion + 1,
+    alerts: snapshot.alerts ?? [],
   };
 }
 
@@ -89,6 +95,8 @@ export function applyEvent(state: FeedState, e: FeedEvent): FeedState {
       return { ...next, sessions: put(state.sessions, e.entity_id, e.data) };
     case "attention":
       return { ...next, attentionVersion: state.attentionVersion + 1 };
+    case "alert":
+      return e.data ? { ...next, alerts: [e.data, ...state.alerts].slice(0, 20), attentionVersion: state.attentionVersion + 1 } : next;
     case "job":
       if (!mine) return next;
       return { ...next, jobs: put(state.jobs, e.entity_id, e.data), attentionVersion: e.data?.state === "needs_attention" || state.jobs[e.entity_id]?.state === "needs_attention" ? state.attentionVersion + 1 : state.attentionVersion };

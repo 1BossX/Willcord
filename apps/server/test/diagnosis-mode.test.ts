@@ -121,7 +121,7 @@ test("diagnosis mode is bound to the session request hash on the main node", asy
     };
     const h = requestHash(request);
     db.prepare("INSERT INTO runtime_turns VALUES('j',?,'{}','h',?)").run(`turn-${callId}`, Date.now());
-    db.prepare("INSERT INTO runtime_calls(job_id,turn_key,call_id,call_seq,request_hash,tool_name,arguments_json,status) VALUES('j',?,?,?,?,?,?,'committed')").run(`turn-${callId}`, callId, seq, h, tool, JSON.stringify(args));
+    db.prepare("INSERT INTO runtime_calls(job_id,turn_key,call_id,call_seq,request_hash,tool_name,arguments_json,status,execution_mode) VALUES('j',?,?,?,?,?,?,'committed','diagnosis')").run(`turn-${callId}`, callId, seq, h, tool, JSON.stringify(args));
     return h;
   };
   const hash = commit("c1", 1, "bash", { command: "docker compose up" });

@@ -7,6 +7,7 @@ import { CopyButton } from "./copy-button";
 
 type Device = {
   worker_id: string; name: string; os: string; arch: string; state: string; created_at: number;
+  execution_policy?: "diagnosis" | null;
   online: number | null; reconciled: number | null; blocked: number | null; active_job_id: string | null;
   workspaces: Array<{ workspace_id: string; path: string; is_default: number }>;
 };
@@ -150,8 +151,14 @@ export function EnrollmentPanel() {
           <CopyButton text={d.worker_id} label="复制指纹" />
         </div>
         <p>{new Date(d.created_at).toLocaleString()}</p>
-        {d.state === "approved" && <p>{d.blocked ? "需要核对" : !d.online ? "离线" : !d.reconciled ? "对账中" : d.active_job_id ? "正在执行" : "可执行"}</p>}
+        {d.state === "approved" && <p>{d.blocked ? "需要核对" : !d.online ? "离线" : !d.reconciled ? "对账中" : d.active_job_id ? "正在执行" : "可执行"}{d.execution_policy === "diagnosis" ? " · 仅诊断" : ""}</p>}
         {d.workspaces.map(w => <p key={w.workspace_id}>{w.workspace_id}{w.is_default ? "（默认）" : ""} · {w.path}</p>)}
+        {d.state === "approved" && <form onSubmit={e => { e.preventDefault(); void mutate(`/api/enrollments/${d.worker_id}`, "PATCH", { name: d.name, execution_policy: d.execution_policy === "diagnosis" ? null : "diagnosis" }); }}>
+          <label>执行策略<select value={d.execution_policy === "diagnosis" ? "diagnosis" : "none"} onChange={e => void mutate(`/api/enrollments/${d.worker_id}`, "PATCH", { name: d.name, execution_policy: e.target.value === "diagnosis" ? "diagnosis" : null })} disabled={busy}>
+            <option value="none">不限制：按会话选择执行方式</option><option value="diagnosis">仅诊断：这台设备只跑诊断会话</option>
+          </select></label>
+          <p className="inspector-note">{d.execution_policy === "diagnosis" ? "新会话被拒绝，委派调用会失败；锁定前会话的调用按提交时刻的诊断模式派发。修复命令须走批准后执行，但已锁定的设备不接受批准或执行。" : "会话可自由选择诊断或普通模式。"}</p>
+        </form>}
         {d.state !== "approved" && <button className="primary-button" disabled={busy} onClick={() => void mutate(`/api/enrollments/${d.worker_id}/approve`, "POST", {})}>核对指纹后批准</button>}
         {d.state === "pending" && <button className="secondary-button" disabled={busy} onClick={() => void mutate(`/api/enrollments/${d.worker_id}/reject`, "POST", {})}>拒绝</button>}
         {d.state === "approved" && <button className="secondary-button" disabled={busy} onClick={() => void mutate(`/api/enrollments/${d.worker_id}/revoke`, "POST", {})}>撤销授权</button>}

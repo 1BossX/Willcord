@@ -5,6 +5,7 @@ import type { ExecutionCoordinator } from "./execution.js";
 import { createJob, nextQueueSeq, readyState } from "./jobs.js";
 import { DEFAULT_BUDGET } from "./execution.js";
 import { workerToolRequestFields } from "./approved-action-wire.js";
+import { deviceRequiresDiagnosis } from "./device-policy.js";
 
 export type ApprovedActionRow = {
   approved_action_id: string;
@@ -111,6 +112,8 @@ export function registerApprovedActionRoutes(
     if (!session || session.kind !== "worker") return reply.code(404).send({ error: "session_not_found" });
     if (session.execution_mode !== "diagnosis") return reply.code(409).send({ error: "diagnosis_session_required" });
     const workerId = session.worker_id as string;
+    // A device locked to diagnosis never takes approved writes (#86).
+    if (deviceRequiresDiagnosis(db, workerId)) return reply.code(409).send({ error: "device_requires_diagnosis" });
     const binding = actionBinding(workerId, body.tool, args);
     const id = randomBytes(16).toString("hex");
     const diagnosisJobId = typeof body.diagnosis_job_id === "string" ? body.diagnosis_job_id : null;
@@ -142,6 +145,10 @@ export function registerApprovedActionRoutes(
     const row = getAction(db, req.params.approved_action_id);
     if (!row) return reply.code(404).send({ error: "not_found" });
     if (row.state !== "proposed") return reply.code(409).send({ error: "invalid_state", state: row.state });
+    // A device locked after the proposal still never takes the write (#86):
+    // approve and execute are checked separately, so lifting one gate cannot
+    // carry the action through the other.
+    if (deviceRequiresDiagnosis(db, row.worker_id)) return reply.code(409).send({ error: "device_requires_diagnosis" });
     db.prepare("UPDATE approved_actions SET state='approved',approved_at=? WHERE approved_action_id=?").run(now(), row.approved_action_id);
     return getAction(db, row.approved_action_id);
   });
@@ -161,6 +168,9 @@ export function registerApprovedActionRoutes(
     if (!row) return reply.code(404).send({ error: "not_found" });
     if (row.state !== "approved") return reply.code(409).send({ error: "invalid_state", state: row.state });
     if (row.execute_job_id) return reply.code(409).send({ error: "already_executed", execute_job_id: row.execute_job_id });
+    // A device locked after the approval never runs the write (#86): the
+    // execute gate is checked again here, not only at approve time.
+    if (deviceRequiresDiagnosis(db, row.worker_id)) return reply.code(409).send({ error: "device_requires_diagnosis" });
     const session = db.prepare("SELECT * FROM sessions WHERE session_id=?").get(row.diagnosis_session_id) as any;
     const args = JSON.parse(row.arguments_json) as Record<string, unknown>;
     const jobId = randomUUID();
@@ -215,7 +225,7 @@ export function registerApprovedActionRoutes(
       const digest = requestHash(request);
       db.prepare("INSERT INTO runtime_turns VALUES(?,?,?,?,?)").run(jobId, `approved:${row.approved_action_id}`, "{}", hash(request), now());
       db.prepare(
-        "INSERT INTO runtime_calls(job_id,turn_key,call_id,call_seq,request_hash,tool_name,arguments_json,status) VALUES(?,?,?,?,?,?,?,'committed')",
+        "INSERT INTO runtime_calls(job_id,turn_key,call_id,call_seq,request_hash,tool_name,arguments_json,status,execution_mode) VALUES(?,?,?,?,?,?,?,'committed','approved')",
       ).run(jobId, `approved:${row.approved_action_id}`, callId, 1, digest, row.tool, JSON.stringify(args));
       db.prepare(
         "INSERT INTO runtime_history(job_id,entry_key,turn_key,message_json) VALUES(?,?,?,NULL)",

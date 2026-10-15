@@ -6,7 +6,8 @@ import { createRoot } from "react-dom/client";
 
 import { MarkdownMessage } from "./main-markdown";
 import { ApiError, request } from "./api";
-import { AttentionPanel, BudgetRows, CancelButton, DispatchBanner, InlineCancel, LogViewer, RetryButton, endReasonLabel, type JobControl } from "./control";
+import { AttentionPanel, BudgetRows, CancelButton, DispatchBanner, InlineCancel, LogViewer, RetryButton, AlertList, endReasonLabel, type JobControl } from "./control";
+
 import { callLiveness, jobActivity, lastOutputOf } from "./call-liveness";
 import { useNow } from "./clock";
 import { CaTrustGuide } from "./ca-trust-guide";
@@ -1515,6 +1516,7 @@ function App() {
           unreconciled={workers.filter((w) => !w.reconciled).map((w) => w.worker_id)}
           onError={(e) => setError(e instanceof Error ? e.message : String(e))}
         />
+        {feed.state.alerts.length > 0 && <AlertList alerts={feed.state.alerts} />}
         {feed.connection === "reconnecting" && (
           <div className="connection-banner" role="status">
             <span className="loading-indicator" />

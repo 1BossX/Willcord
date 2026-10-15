@@ -2644,6 +2644,18 @@ summary:focus-visible {
 .dispatch-banner p {
   margin: 0 0 6px;
 }
+/* Pause control shown while scheduling runs; collapsed so it never shouts over normal work. */
+.dispatch-pause-control {
+  color: #4b6b4b;
+  background: #f2f7f0;
+  border-color: #d8e5d4;
+}
+.dispatch-pause-control summary {
+  cursor: pointer;
+  user-select: none;
+  font-weight: 600;
+}
+.dispatch-pause-control .attention-action { margin-top: 8px; }
 .connection-banner {
   margin: 12px 30px 0;
   display: flex;

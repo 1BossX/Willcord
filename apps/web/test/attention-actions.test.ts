@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { attentionActionView, attentionActionOriginLabel, attentionActionCallLines, type AttentionAction } from "../src/attention-actions.ts";
+import React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { AttentionActionRow } from "../src/control.tsx";
+import { attentionActionView, attentionActionOriginLabel, attentionActionCallLines, retryActionsForWorker, type AttentionAction } from "../src/attention-actions.ts";
 
 const action = (over: Partial<AttentionAction> = {}): AttentionAction => ({
   action_id: "a1".padEnd(32, "0"),
@@ -68,6 +71,37 @@ test("non-retry actions get no retry-specific rendering", () => {
   assert.equal(blocked.note, null);
   assert.equal(blocked.legacy, false);
   assert.deepEqual(attentionActionCallLines(blocked), []);
+});
+
+test("only retry rows render handle and ignore controls", () => {
+  const render = (item: AttentionAction) => renderToStaticMarkup(React.createElement(AttentionActionRow, {
+    action: item,
+    onDone: () => {},
+    onError: () => {},
+  }));
+
+  const retryMarkup = render(action());
+  assert.match(retryMarkup, /标记已处理/);
+  assert.match(retryMarkup, />忽略</);
+
+  for (const actionType of ["blocked", "abandon", "unblock", "unblocked"]) {
+    const markup = render(action({ action: actionType }));
+    assert.equal(markup, "", `${actionType} must not render retry resolution controls`);
+  }
+});
+
+test("the retry history includes only retry actions for its worker", () => {
+  const retry = action();
+  const actions = [
+    retry,
+    action({ action_id: "blocked", action: "blocked" }),
+    action({ action_id: "abandon", action: "abandon" }),
+    action({ action_id: "unblock", action: "unblock" }),
+    action({ action_id: "unblocked", action: "unblocked" }),
+    action({ action_id: "other-worker", worker_id: "mars" }),
+  ];
+
+  assert.deepEqual(retryActionsForWorker(actions, "venus"), [retry]);
 });
 
 test("unknown call statuses are shown as-is, known ones localized", () => {

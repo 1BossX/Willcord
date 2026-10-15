@@ -36,7 +36,7 @@ async function fixture() {
   return { db, app, headers, insertJob, retryActions };
 }
 
-test("a retry attention action records source job, failure reason and suggested action (#109)", async () => {
+test("a retry record remains available for an unblocked worker and terminal source job (#109)", async () => {
   const { db, app, headers, retryActions } = await fixture();
   try {
     const retry = await app.inject({ method: "POST", url: "/api/jobs/j1/retry", headers });
@@ -46,6 +46,8 @@ test("a retry attention action records source job, failure reason and suggested 
     const view = (await app.inject({ url: "/api/attention", headers })).json();
     const action = view.actions.find((a: any) => a.action === "retry");
     assert.ok(action, "the retry appears in /api/attention");
+    assert.equal(view.workers.some((w: any) => w.worker_id === "venus"), false, "the worker is not blocked");
+    assert.equal(view.jobs.some((j: any) => j.job_id === "j1"), false, "the source job is terminal");
     assert.equal(action.job_id, "j1");
     assert.equal(action.evidence.new_job_id, newJobId);
     const reason = action.reason;

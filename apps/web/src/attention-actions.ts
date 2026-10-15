@@ -28,6 +28,15 @@ export type AttentionAction = {
   reason?: RetryReason;
 };
 
+export function isRetryAttentionAction(action: Pick<AttentionAction, "action">): boolean {
+  return action.action === "retry";
+}
+
+/** Retry records shown in a worker's console history, excluding other attention events. */
+export function retryActionsForWorker(actions: AttentionAction[], workerId: string): AttentionAction[] {
+  return actions.filter((action) => action.worker_id === workerId && isRetryAttentionAction(action));
+}
+
 export type AttentionActionView = {
   reason: RetryReason | null;
   /** True when this is an old row whose reason was rebuilt at read time. */
@@ -57,7 +66,7 @@ const callStatusText = (status: string) => callStatusLabels[status] ?? status;
 
 /** How the console summarizes one retry attention action. */
 export function attentionActionView(action: AttentionAction): AttentionActionView {
-  if (action.action !== "retry") return { reason: null, backfilled: false, legacy: false, note: null };
+  if (!isRetryAttentionAction(action)) return { reason: null, backfilled: false, legacy: false, note: null };
   const reason = action.reason ?? null;
   if (reason)
     return {
